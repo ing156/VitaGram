@@ -1,7 +1,28 @@
+# build directories and generated artifacts
 build/
+build-*/
+install/
 external/tdlib-vita/
+external/ffmpeg-animation/install/
+external/rlottie-vita/install/
+
+# executables and package outputs
 *.vpk
 *.self
 *.velf
 *.elf
+*.a
+*.so
+*.dll
+*.dylib
+
+# editor / temp / backup files
+*~
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*.log
 .DS_Store

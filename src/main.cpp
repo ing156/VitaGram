@@ -6,6 +6,7 @@
 #include "voice_player.h"
 #include "cpu_scheduler.h"
 #include "settings.h"
+#include "photo_view.h"
 #include <psp2/rtc.h>
 #include <ctime>
 
@@ -391,8 +392,13 @@ int main() {
     int post_text_scroll = 0;
     bool post_open = false;
     bool reactions_open = false;
+    bool stickers_open = false;
+    int sticker_index = 0, sticker_pack = 0;
+    int64_t square_since = 0;
+    bool square_long = false;
     int reaction_index = 0;
     bool photo_open = false;
+    PhotoView photo_view;
     bool running = true;
     bool touch_down = false, touch_dragged = false, touch_blocked = false;
     int touch_x = 0, touch_y = 0, touch_start_x = 0, touch_start_y = 0, touch_step_y = 0;
@@ -408,7 +414,22 @@ int main() {
         if (now >= next_network_poll) { net.poll(); next_network_poll = now + 1000000; }
         sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed = pad.buttons & ~old_buttons;
+        unsigned int released = old_buttons & ~pad.buttons;
         old_buttons = pad.buttons;
+        bool compose_context = tg.currentChatId() && !post_open && !photo_open && !settings_open &&
+            !reactions_open && !stickers_open && !kb.active() && tg.inputKind() == InputKind::None;
+        if (compose_context) {
+            if (pressed & SCE_CTRL_SQUARE) { square_since = now; square_long = false; }
+            pressed &= ~SCE_CTRL_SQUARE;
+            if ((pad.buttons & SCE_CTRL_SQUARE) && square_since && now-square_since >= 550000) {
+                square_long = true; square_since = 0;
+                stickers_open = true; sticker_index = sticker_pack = 0; tg.openStickers();
+            }
+            if (released & SCE_CTRL_SQUARE) {
+                if (square_since && !square_long) pressed |= SCE_CTRL_SQUARE;
+                square_since = 0;
+            }
+        } else square_since = 0;
 
         int64_t selected_chat = chat_index >= 0 && chat_index < (int)tg.chats().size() ? tg.chats()[chat_index].id : 0;
         int64_t selected_id = message_index >= 0 && message_index < (int)tg.messages().size() ? tg.messages()[message_index].id : 0;
@@ -419,6 +440,7 @@ int main() {
         bool was_ready = tg.ready();
         tg.pump();
         if (!tg.currentChatId()) reactions_open = false;
+        if (!tg.currentChatId() || !tg.ready()) stickers_open = false;
         if ((was_cleaning && !tg.cacheMaintenance()) || (was_ready && !tg.ready())) {
             vita2d_wait_rendering_done(); textures.clear();
         }
@@ -446,6 +468,8 @@ int main() {
         folder_scroll = std::max(0, std::min(folder_scroll, folder_max_scroll));
         SceTouchData touch{};
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
+        photo_view.updateMotion(photo_open, sceKernelGetProcessTimeWide(), touch.reportNum != 0);
+        bool photo_gesture = photo_open && photo_view.touch(touch);
         bool touching = touch.reportNum > 0;
         bool tap = false;
         if (touching) {
@@ -455,7 +479,7 @@ int main() {
                 touch_start_x = touch_x; touch_start_y = touch_step_y = touch_y;
                 touch_dragged = false;
                 touch_blocked = kb.active() || tg.inputKind() != InputKind::None;
-                folder_drag = !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 38 && touch_start_y < 82;
+                folder_drag = !stickers_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 38 && touch_start_y < 82;
                 folder_touch_x = touch_x;
             }
             if (std::abs(touch_y - touch_start_y) > 14 || std::abs(touch_x - touch_start_x) > 14) touch_dragged = true;
@@ -469,7 +493,7 @@ int main() {
                 pressed |= touch_y < touch_step_y ? SCE_CTRL_DOWN : SCE_CTRL_UP;
                 touch_step_y = touch_y;
             }
-        } else if (touch_down && !touch_blocked) {
+        } else if (touch_down && !touch_blocked && !photo_gesture) {
             tap = !touch_dragged;
             if ((photo_open || post_open) && std::abs(touch_x - touch_start_x) > 45 &&
                 std::abs(touch_x - touch_start_x) > std::abs(touch_y - touch_start_y))
@@ -481,7 +505,14 @@ int main() {
         textures.beginFrame(decode_cooldown != 0 || kb.active());
 
         if (tap && !kb.active() && tg.inputKind() == InputKind::None) {
-            if (reactions_open) {
+            if (stickers_open) {
+                if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
+                else if (touch_y >= 42 && touch_y < 98) pressed |= touch_x < 480 ? SCE_CTRL_LTRIGGER : SCE_CTRL_RTRIGGER;
+                else if (touch_x >= 30 && touch_x < 930 && touch_y >= 130 && touch_y < 460) {
+                    int index = (sticker_index/18)*18 + (touch_y-130)/110*6 + (touch_x-30)/150;
+                    if (index < (int)tg.stickers().size()) { sticker_index = index; pressed |= SCE_CTRL_CROSS; }
+                }
+            } else if (reactions_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
                 else if (touch_x >= 32 && touch_x < 928 && touch_y >= 130 && touch_y < 418) {
                     int index = (reaction_index/32)*32 + (touch_y-130)/72*8 + (touch_x-32)/112;
@@ -576,6 +607,19 @@ int main() {
         } else if (kb.cancelled()) {
             kb.close();
             tg.cancelInput();
+        } else if (stickers_open) {
+            if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SQUARE)) stickers_open = false;
+            int packs = (int)tg.stickerPacks().size(), previous_pack = sticker_pack;
+            if (packs && (pressed & SCE_CTRL_LTRIGGER)) sticker_pack = (sticker_pack+packs-1)%packs;
+            if (packs && (pressed & SCE_CTRL_RTRIGGER)) sticker_pack = (sticker_pack+1)%packs;
+            if (previous_pack != sticker_pack) { sticker_index = 0; tg.selectStickerPack(sticker_pack); }
+            int count = (int)tg.stickers().size();
+            if (pressed & SCE_CTRL_LEFT) --sticker_index;
+            if (pressed & SCE_CTRL_RIGHT) ++sticker_index;
+            if (pressed & SCE_CTRL_UP) sticker_index -= 6;
+            if (pressed & SCE_CTRL_DOWN) sticker_index += 6;
+            sticker_index = std::max(0, std::min(std::max(0, count-1), sticker_index));
+            if (stickers_open && (pressed & SCE_CTRL_CROSS) && tg.sendSticker(sticker_index)) stickers_open = false;
         } else if (reactions_open) {
             int count = (int)tg.reactionChoices().size();
             if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SQUARE)) reactions_open = false;
@@ -612,10 +656,13 @@ int main() {
             const auto& messages = tg.messages();
             if (photo_open) {
                 if (pressed & SCE_CTRL_CIRCLE) photo_open = false;
+                if (pressed & SCE_CTRL_TRIANGLE) photo_view.reset();
                 if (!messages.empty() && message_index >= 0) {
+                    int previous_photo = photo_index;
                     int count = (int)messages[message_index].photos.size();
                     if ((pressed & SCE_CTRL_LEFT) && count) photo_index = (photo_index + count - 1) % count;
                     if ((pressed & SCE_CTRL_RIGHT) && count) photo_index = (photo_index + 1) % count;
+                    if (photo_index != previous_photo) photo_view.reset();
                     if (count) tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
                 }
             } else if (post_open) {
@@ -663,6 +710,7 @@ int main() {
                     if ((pressed & SCE_CTRL_CROSS) && count) {
                         tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
                         photo_open = true;
+                        photo_view.reset();
                     }
                 }
             } else {
@@ -790,21 +838,21 @@ int main() {
         }
 
         // Settings own the content area and footer; never draw a second screen over them.
-        if (!settings_open) {
+        if (!settings_open && !stickers_open) {
         if (tg.currentChatId() != 0) {
             const auto& msgs = tg.messages();
             if (photo_open && message_index >= 0 && message_index < (int)msgs.size() &&
                 photo_index < (int)msgs[message_index].photos.size()) {
                 const PhotoItem& photo = msgs[message_index].photos[photo_index];
-                vita2d_draw_rectangle(0, 78, 960, 421, RGBA8(8,12,18,255));
+                vita2d_draw_rectangle(0, 38, 960, 468, RGBA8(8,12,18,255));
                 vita2d_texture* image = textures.get(photo.full_path.empty() ? photo.thumbnail_path : photo.full_path);
-                if (image) draw_texture_fit(image, 30, 88, 900, 395);
+                if (image) photo_view.draw(image);
                 else draw_text(font, 390, 290, "Loading full image...", header_text, 0.75f);
                 if (photo.full_path.empty() && image) draw_text(font, 30, 480, "Loading larger photo...", header_text, 0.65f);
                 char counter[32];
                 std::snprintf(counter, sizeof(counter), "%d / %d", photo_index + 1, (int)msgs[message_index].photos.size());
-                draw_text(font, 440, 105, counter, header_text, 0.65f);
-                draw_text(font, 28, 528, "Left / Right  Photo", ink, 0.65f);
+                draw_text(font, 440, 60, counter, header_text, 0.65f);
+                draw_text(font, 28, 528, "D-pad: фото   Pinch: zoom   Triangle: сброс", ink, 0.55f);
                 draw_text(font, 700, 528, "O  Back", ink, 0.65f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size() && scrollable_post(msgs[message_index])) {
                 const auto& message = msgs[message_index];
@@ -1004,7 +1052,7 @@ int main() {
                 vita2d_disable_clipping();
                 if (msgs.empty()) draw_text(font, 38, 150, "No messages", muted, 0.75f);
                 draw_text(font, 28, 528, "X  Open post", ink, 0.65f);
-                draw_text(font, 300, 528, "Square  Message", ink, 0.65f);
+                draw_text(font, 275, 528, "Square: текст / держать: стикеры", ink, 0.5f);
                 draw_text(font, 700, 528, "O  Back", ink, 0.65f);
             }
         } else if (tg.canBrowse()) {
@@ -1075,7 +1123,7 @@ int main() {
 
         } // !settings_open
 
-        if (!settings_open && tg.currentChatId()) {
+        if (!settings_open && !stickers_open && !photo_open && tg.currentChatId()) {
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
             int progress = tg.historyPercent();
             vita2d_draw_rectangle(0, 497, 960.0f * progress / 100, 2, accent);
@@ -1108,6 +1156,28 @@ int main() {
             }
             draw_text(font, 28, 528, "D-pad: выбор   X: поставить / убрать   O: назад", ink, 0.6f);
         }
+        if (stickers_open) {
+            vita2d_draw_rectangle(0, 36, 960, 508, white);
+            const auto& packs = tg.stickerPacks();
+            std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : "Стикеры";
+            draw_text(font, 30, 76, fit_text(font, "L  " + title + "  R", 900, 0.8f), ink, 0.8f);
+            draw_text(font, 30, 112, fit_text(font, tg.stickerStatus(), 900, 0.6f), muted, 0.6f);
+            const auto& items = tg.stickers();
+            int first = (sticker_index/18)*18;
+            for (int i = first; i < std::min(first+18, (int)items.size()); ++i) {
+                int x = 30+(i-first)%6*150, y = 130+(i-first)/6*110;
+                vita2d_draw_rectangle(x, y, 144, 104, i == sticker_index ? selected : white);
+                if (!decode_cooldown) tg.ensureSticker(i);
+                auto texture = textures.get(items[i].path);
+                if (texture) {
+                    float w = vita2d_texture_get_width(texture), h = vita2d_texture_get_height(texture);
+                    float scale = std::min(130.0f/w, 90.0f/h);
+                    draw_texture_fit(texture, x+(144-w*scale)/2, y+(104-h*scale)/2, 130, 90);
+                } else draw_text(font, x+45, y+60, items[i].emoji.empty() ? "..." : items[i].emoji, ink, 0.85f);
+            }
+            draw_text(font, 30, 490, "Страница " + std::to_string(first/18+1) + " / " + std::to_string(std::max(1, ((int)items.size()+17)/18)), muted, 0.6f);
+            draw_text(font, 30, 528, "D-pad: выбор   L/R: набор   X: отправить   O: назад", ink, 0.6f);
+        }
         if (kb.active()) kb.draw(font);
 
         vita2d_end_drawing();
@@ -1118,6 +1188,7 @@ int main() {
     }
 
     vita2d_wait_rendering_done();
+    photo_view.updateMotion(false, 0, false);
     animation.shutdown();
     voice.shutdown();
     textures.clear();

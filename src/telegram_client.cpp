@@ -225,7 +225,7 @@ void TelegramClient::sendJson(void* opaque) {
     const char* method = json_str(root, "@type");
     const char* kind = json_str(json_object_get(root, "@extra"), "kind");
     int priority = 1;
-    if (!std::strncmp(kind, "reaction_", 9)) priority = 4;
+    if (!std::strncmp(kind, "reaction_", 9) || !std::strncmp(kind, "sticker_", 8)) priority = 4;
     if (!std::strcmp(method, "getChatHistory")) priority = 3;
     else if (!std::strcmp(method, "downloadFile")) priority = json_i53(root, "priority") >= 32 ? 4 : 1;
     else if (!std::strcmp(method, "cancelDownloadFile") || !std::strcmp(method, "sendMessage")) priority = 4;
@@ -688,6 +688,8 @@ void TelegramClient::updateFile(void* opaque) {
     json_t* local = json_object_get(file, "local");
     const char* path = json_is_object(local) ? json_str(local, "path") : "";
     if (id <= 0) return;
+    if (json_is_true(json_object_get(local, "is_downloading_completed")))
+        for (auto& sticker : stickers_) if (sticker.preview == id) sticker.path = path;
     auto update_voice = [&](MessageItem& message) {
         if (message.voice_file_id != id) return;
         message.voice_size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
@@ -847,6 +849,39 @@ void TelegramClient::process(void* opaque) {
         json_decref(root); return;
     }
     json_t* extra = json_object_get(root, "@extra");
+    if (!std::strcmp(json_str(extra, "kind"), "sticker_packs") ||
+        !std::strcmp(json_str(extra, "kind"), "sticker_items")) {
+        bool packs = !std::strcmp(json_str(extra, "kind"), "sticker_packs");
+        if (json_i53(extra, "chat") == current_chat_id_ &&
+            json_i53(extra, "session") == sticker_session_ &&
+            (packs || json_i53(extra, "generation") == sticker_generation_)) {
+            if (!std::strcmp(type, "error")) sticker_status_ = json_str(root, "message");
+            else if (packs) {
+                json_t* sets = json_object_get(root, "sets"); size_t i; json_t* set;
+                json_array_foreach(sets, i, set) {
+                    sticker_packs_.push_back({(int32_t)sticker_packs_.size(), json_str(set, "title")});
+                    sticker_set_ids_.push_back(json_i53(set, "id"));
+                }
+            } else {
+                stickers_.clear(); json_t* items = json_object_get(root, "stickers"); size_t i; json_t* item;
+                json_array_foreach(items, i, item) {
+                    SendStickerItem s;
+                    s.file = (int32_t)json_i53(json_object_get(item, "sticker"), "id");
+                    s.width = (int)json_i53(item, "width"); s.height = (int)json_i53(item, "height");
+                    s.emoji = json_str(item, "emoji");
+                    json_t* preview = json_object_get(json_object_get(item, "thumbnail"), "file");
+                    if (!std::strcmp(json_str(json_object_get(item, "format"), "@type"), "stickerFormatWebp"))
+                        preview = json_object_get(item, "sticker");
+                    s.preview = (int32_t)json_i53(preview, "id");
+                    json_t* local = json_object_get(preview, "local");
+                    if (json_is_true(json_object_get(local, "is_downloading_completed"))) s.path = json_str(local, "path");
+                    if (s.file) stickers_.push_back(s);
+                }
+                sticker_status_ = stickers_.empty() ? "В этом разделе нет стикеров" : "X: отправить выбранный стикер";
+            }
+        }
+        json_decref(root); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "reaction_choices") || !std::strcmp(json_str(extra, "kind"), "reaction_send")) {
         if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "message") == reaction_message_) {
             reaction_pending_ = false;
@@ -1368,6 +1403,43 @@ void TelegramClient::requestHistoryPage() {
     json_object_set_new(req, "@extra", extra);
     sendJson(req);
     status_ = "Loading messages...";
+}
+
+void TelegramClient::openStickers() {
+    ++sticker_session_;
+    sticker_packs_ = {{0, "Недавние"}, {1, "Избранные"}};
+    sticker_set_ids_ = {0, 0};
+    selectStickerPack(0);
+    if (!ready_ || !current_chat_id_) return;
+    json_t* root = json_pack("{s:s,s:{s:s}}", "@type", "getInstalledStickerSets", "sticker_type", "@type", "stickerTypeRegular");
+    json_object_set_new(root, "@extra", json_pack("{s:s,s:I,s:i}", "kind", "sticker_packs", "chat", (json_int_t)current_chat_id_, "session", (int)sticker_session_));
+    sendJson(root);
+}
+
+void TelegramClient::selectStickerPack(int index) {
+    if (index < 0 || index >= (int)sticker_set_ids_.size()) return;
+    ++sticker_generation_; stickers_.clear();
+    sticker_status_ = ready_ ? "Загрузка стикеров..." : "Нет подключения к Telegram";
+    if (!ready_ || !current_chat_id_) return;
+    json_t* root = json_pack("{s:s}", "@type", index == 0 ? "getRecentStickers" : index == 1 ? "getFavoriteStickers" : "getStickerSet");
+    if (!index) json_object_set_new(root, "is_attached", json_false());
+    if (index >= 2) json_object_set_new(root, "set_id", json_integer(sticker_set_ids_[index]));
+    json_object_set_new(root, "@extra", json_pack("{s:s,s:I,s:i,s:i}", "kind", "sticker_items", "chat", (json_int_t)current_chat_id_, "session", (int)sticker_session_, "generation", (int)sticker_generation_));
+    sendJson(root);
+}
+
+void TelegramClient::ensureSticker(size_t index) {
+    if (index < stickers_.size() && stickers_[index].path.empty()) requestFile(stickers_[index].preview, 32);
+}
+
+bool TelegramClient::sendSticker(size_t index) {
+    if (!ready_ || !current_chat_id_ || index >= stickers_.size()) return false;
+    const auto& s = stickers_[index];
+    json_t* input = json_pack("{s:s,s:{s:s,s:i},s:i,s:i}", "@type", "inputSticker", "sticker", "@type", "inputFileId", "id", s.file, "width", s.width, "height", s.height);
+    json_t* content = json_pack("{s:s,s:o,s:s}", "@type", "inputMessageSticker", "sticker", input, "emoji", s.emoji.c_str());
+    json_t* root = json_pack("{s:s,s:I,s:o,s:s}", "@type", "sendMessage", "chat_id", (json_int_t)current_chat_id_, "input_message_content", content, "@extra", "send_message");
+    sendJson(root); status_ = "Sending sticker...";
+    return true;
 }
 
 void TelegramClient::requestCompose() {

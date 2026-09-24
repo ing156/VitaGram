@@ -33,6 +33,7 @@ struct PhotoItem {
 };
 
 enum class DeliveryState { Pending, Sent, Read, Failed };
+struct SendStickerItem { int32_t file = 0, preview = 0; int width = 0, height = 0; std::string emoji, path; };
 struct ChatFolderItem { int32_t id; std::string title; };
 
 struct MessageItem {
@@ -129,6 +130,13 @@ public:
     void openChat(int64_t chat_id, const std::string& title);
     void refreshHistory();
     void requestCompose();
+    void openStickers();
+    void selectStickerPack(int index);
+    void ensureSticker(size_t index);
+    bool sendSticker(size_t index);
+    const std::vector<SendStickerItem>& stickers() const { return stickers_; }
+    const std::vector<ChatFolderItem>& stickerPacks() const { return sticker_packs_; }
+    const std::string& stickerStatus() const { return sticker_status_; }
     void loadReactions(int64_t message_id);
     void toggleReaction(int64_t message_id, const std::string& emoji);
     const std::vector<std::string>& reactionChoices() const { return reaction_choices_; }
@@ -142,6 +150,11 @@ public:
     void ensureFullPhoto(size_t message_index, size_t photo_index);
 
 private:
+    std::vector<SendStickerItem> stickers_;
+    std::vector<ChatFolderItem> sticker_packs_;
+    std::vector<int64_t> sticker_set_ids_;
+    std::string sticker_status_;
+    unsigned sticker_generation_ = 0, sticker_session_ = 0;
     std::vector<std::string> reaction_choices_;
     std::string reaction_status_;
     int64_t reaction_message_ = 0;
