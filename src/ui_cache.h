@@ -7,6 +7,10 @@ public:
     ~UiCache();
     void load();
     void remember(json_t* update);
+    json_t* snapshot(); // New reference, caller owns it.
+    void saveStickerPacks(json_t* value);
+    void saveStickerItems(int64_t set_id, json_t* value);
+    json_t* stickerItems(int64_t set_id);
     json_t* chats(); // New reference, caller owns it.
     json_t* users();
     json_t* folders();

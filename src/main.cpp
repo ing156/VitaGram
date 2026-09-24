@@ -4,6 +4,7 @@
 #include "media_render.h"
 #include "animation_player.h"
 #include "voice_player.h"
+#include "audio_recorder.h"
 #include "cpu_scheduler.h"
 #include "settings.h"
 #include "photo_view.h"
@@ -378,6 +379,7 @@ int main() {
     AppSettings settings;
     startup_screen(font, "5/5  Loading settings", 5);
     settings.load();
+    tg.setRequestBatchSize(settings.request_batch_size);
     rich_text_set_scale(settings.fontScale());
     bool settings_open = false, confirm_logout = false;
     int settings_row = 0;
@@ -386,6 +388,7 @@ int main() {
     TextureCache textures;
     AnimationPlayer animation;
     VoicePlayer voice;
+    AudioRecorder recorder;
     int chat_index = 0;
     int message_index = -1;
     int photo_index = 0;
@@ -393,6 +396,7 @@ int main() {
     bool post_open = false;
     bool reactions_open = false;
     bool stickers_open = false;
+    bool sticker_pack_menu = false;
     int sticker_index = 0, sticker_pack = 0;
     int topic_index = 0;
     int64_t square_since = 0;
@@ -424,7 +428,7 @@ int main() {
             pressed &= ~SCE_CTRL_SQUARE;
             if ((pad.buttons & SCE_CTRL_SQUARE) && square_since && now-square_since >= 550000) {
                 square_long = true; square_since = 0;
-                stickers_open = true; sticker_index = sticker_pack = 0; tg.openStickers();
+                stickers_open = true; sticker_pack_menu = true; sticker_index = sticker_pack = 0; tg.openStickers();
             }
             if (released & SCE_CTRL_SQUARE) {
                 if (square_since && !square_long) pressed |= SCE_CTRL_SQUARE;
@@ -514,8 +518,10 @@ int main() {
                 }
             } else if (stickers_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (touch_y >= 42 && touch_y < 98) pressed |= touch_x < 480 ? SCE_CTRL_LTRIGGER : SCE_CTRL_RTRIGGER;
-                else if (touch_x >= 30 && touch_x < 930 && touch_y >= 130 && touch_y < 460) {
+                else if (sticker_pack_menu && touch_y >= 116 && touch_y < 494) {
+                    int index = std::max(0, sticker_pack - 6) + (touch_y - 116) / 54;
+                    if (index < (int)tg.stickerPacks().size()) { sticker_pack = index; pressed |= SCE_CTRL_CROSS; }
+                } else if (!sticker_pack_menu && touch_x >= 30 && touch_x < 930 && touch_y >= 130 && touch_y < 460) {
                     int index = (sticker_index/18)*18 + (touch_y-130)/110*6 + (touch_x-30)/150;
                     if (index < (int)tg.stickers().size()) { sticker_index = index; pressed |= SCE_CTRL_CROSS; }
                 }
@@ -527,8 +533,8 @@ int main() {
                 }
             } else if (settings_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (touch_y >= 104 && touch_y < 404) {
-                    settings_row = (touch_y - 104) / 60; pressed |= SCE_CTRL_CROSS;
+                else if (touch_y >= 104 && touch_y < 454) {
+                    settings_row = (touch_y - 104) / 50; pressed |= SCE_CTRL_CROSS;
                 }
             } else if (!tg.currentChatId() && tg.canBrowse() && folder_tabs && touch_y >= 38 && touch_y < 82 && touch_x >= 20 && touch_x < 940) {
                 int index = (touch_x - 20 + folder_scroll) / 180;
@@ -602,6 +608,7 @@ int main() {
 
         bool toggle_voice = false;
         bool toggle_video = false;
+        bool record_toggle = false;
         if ((pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT) && !kb.active() && !tg.currentChatId()) {
             settings_open = !settings_open; confirm_logout = false; pressed = 0;
         }
@@ -627,18 +634,26 @@ int main() {
                 if (pressed & SCE_CTRL_CROSS) { tg.openTopic(topic_index); message_index = -1; }
             }
         } else if (stickers_open) {
-            if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SQUARE)) stickers_open = false;
-            int packs = (int)tg.stickerPacks().size(), previous_pack = sticker_pack;
-            if (packs && (pressed & SCE_CTRL_LTRIGGER)) sticker_pack = (sticker_pack+packs-1)%packs;
-            if (packs && (pressed & SCE_CTRL_RTRIGGER)) sticker_pack = (sticker_pack+1)%packs;
-            if (previous_pack != sticker_pack) { sticker_index = 0; tg.selectStickerPack(sticker_pack); }
-            int count = (int)tg.stickers().size();
-            if (pressed & SCE_CTRL_LEFT) --sticker_index;
-            if (pressed & SCE_CTRL_RIGHT) ++sticker_index;
-            if (pressed & SCE_CTRL_UP) sticker_index -= 6;
-            if (pressed & SCE_CTRL_DOWN) sticker_index += 6;
-            sticker_index = std::max(0, std::min(std::max(0, count-1), sticker_index));
-            if (stickers_open && (pressed & SCE_CTRL_CROSS) && tg.sendSticker(sticker_index)) stickers_open = false;
+            if (sticker_pack_menu) {
+                if (pressed & SCE_CTRL_CIRCLE) stickers_open = false;
+                int count = (int)tg.stickerPacks().size();
+                if (pressed & SCE_CTRL_UP) --sticker_pack;
+                if (pressed & SCE_CTRL_DOWN) ++sticker_pack;
+                sticker_pack = std::max(0, std::min(std::max(0, count - 1), sticker_pack));
+                if ((pressed & SCE_CTRL_CROSS) && count) {
+                    sticker_pack_menu = false; sticker_index = 0; tg.selectStickerPack(sticker_pack);
+                }
+            } else {
+                if (pressed & SCE_CTRL_SQUARE) stickers_open = false;
+                if (pressed & SCE_CTRL_CIRCLE) sticker_pack_menu = true;
+                int count = (int)tg.stickers().size();
+                if (pressed & SCE_CTRL_LEFT) --sticker_index;
+                if (pressed & SCE_CTRL_RIGHT) ++sticker_index;
+                if (pressed & SCE_CTRL_UP) sticker_index -= 6;
+                if (pressed & SCE_CTRL_DOWN) sticker_index += 6;
+                sticker_index = std::max(0, std::min(std::max(0, count-1), sticker_index));
+                if ((pressed & SCE_CTRL_CROSS) && tg.sendSticker(sticker_index)) stickers_open = false;
+            }
         } else if (reactions_open) {
             int count = (int)tg.reactionChoices().size();
             if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SQUARE)) reactions_open = false;
@@ -653,8 +668,8 @@ int main() {
             }
         } else if (settings_open) {
             if (pressed & SCE_CTRL_CIRCLE) { if (confirm_logout) confirm_logout = false; else settings_open = false; }
-            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+4)%5; confirm_logout = false; }
-            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%5; confirm_logout = false; }
+            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+6)%7; confirm_logout = false; }
+            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%7; confirm_logout = false; }
             if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                 int direction = (pressed & SCE_CTRL_LEFT) ? -1 : 1;
                 if (settings_row < 4) {
@@ -665,6 +680,14 @@ int main() {
                     rich_text_set_scale(settings.fontScale());
                     settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
                     next_cache_cleanup = now + 300000000;
+                } else if (settings_row == 4) {
+                    settings.show_threads = !settings.show_threads;
+                    settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
+                } else if (settings_row == 5) {
+                    int index = (AppSettings::requestBatchIndex(settings.request_batch_size) + direction + 5) % 5;
+                    settings.request_batch_size = AppSettings::requestBatchSize(index);
+                    tg.setRequestBatchSize(settings.request_batch_size);
+                    settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
                 } else if (pressed & SCE_CTRL_CROSS) {
                     if (!tg.ready()) settings_error = "Для выхода дождитесь подключения";
                     else if (confirm_logout) { tg.logout(); confirm_logout = false; settings_open = false; }
@@ -735,6 +758,7 @@ int main() {
             } else {
                 if (pressed & SCE_CTRL_CIRCLE) { if (tg.inTopic()) tg.backToTopics(); else tg.leaveChat(); pressed = 0; }
                 if (pressed & SCE_CTRL_SQUARE) tg.requestCompose();
+                if (pressed & SCE_CTRL_RTRIGGER) record_toggle = true;
                 if (pressed & SCE_CTRL_TRIANGLE) tg.refreshHistory();
                 if (pressed & SCE_CTRL_UP) {
                     if (message_index > 0) message_index--;
@@ -773,6 +797,15 @@ int main() {
                 }
             }
             if (pressed & SCE_CTRL_TRIANGLE) tg.refreshChats();
+        }
+
+        if (record_toggle && tg.currentChatId() && !kb.active() && !post_open && !photo_open) {
+            if (recorder.recording()) {
+                std::string path = recorder.stop();
+                if (!path.empty()) tg.sendAudioFile(path, recorder.seconds());
+            } else {
+                recorder.start("ux0:data/vitagram/voice-message-" + std::to_string(now) + ".ogg");
+            }
         }
 
         if ((pressed & SCE_CTRL_START) && (pad.buttons & SCE_CTRL_SELECT) && !kb.active()) {
@@ -838,18 +871,19 @@ int main() {
         vita2d_draw_rectangle(0, 499, 960, 1, separator);
 
         if (settings_open) {
-            const char* labels[] = {"Хранить кэш", "Объём кэша медиа", "Тема", "Размер шрифта", "Выйти из аккаунта"};
+            const char* labels[] = {"Хранить кэш", "Объём кэша медиа", "Тема", "Размер шрифта", "Показывать потоки", "Пакет запросов", "Выйти из аккаунта"};
             std::string values[] = {
                 settings.retention == 4 ? "Всегда" : std::to_string(AppSettings::days(settings.retention)) + " дн.",
                 settings.capacity == 5 ? "Без лимита" : std::to_string(AppSettings::megabytes(settings.capacity)) + " МБ",
-                dark ? "Тёмная" : "Светлая", std::to_string(90+settings.font*10) + "%", confirm_logout ? "X: подтвердить выход" : ""};
-            for (int row=0; row<5; ++row) {
-                rounded_rect(24, 104+row*60, 912, 54, row == settings_row ? selected : white);
-                draw_text(font, 40, 138+row*60, labels[row], ink, 0.7f);
-                draw_text(font, 520, 138+row*60, values[row], ink, 0.65f);
+                dark ? "Тёмная" : "Светлая", std::to_string(90+settings.font*10) + "%",
+                settings.show_threads ? "Да" : "Нет", std::to_string(settings.request_batch_size), confirm_logout ? "X: подтвердить выход" : ""};
+            for (int row=0; row<7; ++row) {
+                rounded_rect(24, 104+row*50, 912, 44, row == settings_row ? selected : white);
+                draw_text(font, 40, 132+row*50, labels[row], ink, 0.65f);
+                draw_text(font, 520, 132+row*50, values[row], ink, 0.6f);
             }
-            draw_text(font, 30, 437, "Кэш медиа очищается в главном меню. Сообщения сохраняются.", muted, 0.55f);
-            draw_text(font, 30, 465, settings_error, ink, 0.6f);
+            draw_text(font, 30, 466, "Кэш медиа очищается в главном меню. Сообщения сохраняются.", muted, 0.46f);
+            draw_text(font, 30, 484, settings_error, ink, 0.5f);
             draw_text(font, 28, 528, "D-pad: выбор / изменение    X Изменить    O Назад", ink, 0.6f);
         } else if (!net_ok) {
             draw_text(font, 30, 115, "Network initialization failed.", ink, 0.85f);
@@ -1148,9 +1182,19 @@ int main() {
             int progress = tg.historyPercent();
             vita2d_draw_rectangle(0, 497, 960.0f * progress / 100, 2, accent);
             char loading[96];
-            std::snprintf(loading, sizeof(loading), "History block: %d%%%s", progress, tg.historyLoading() ? " - loading..." : " - ready");
+            std::string thread_info = settings.show_threads ? " | " + cpu_scheduler::threadStatus() : "";
+            std::snprintf(loading, sizeof(loading), "History block: %d%%%s%s", progress,
+                tg.historyLoading() ? " - loading..." : " - ready", thread_info.c_str());
             draw_text(font, 28, 494, !browser_error.empty() ? browser_error :
-                (tg.historyError().empty() ? std::string(loading) : "History: " + tg.historyError()), ink, 0.48f);
+                (tg.historyError().empty() ? fit_text(font, loading, 904, 0.48f) : "History: " + tg.historyError()), ink, 0.48f);
+            if (recorder.recording()) {
+                draw_text(font, 515, 494, recorder.peak() ? "Микрофон активен" : "Нет сигнала микрофона", ink, 0.45f);
+                vita2d_draw_rectangle(690, 484, 235, 8, separator);
+                vita2d_draw_rectangle(690, 484, 2.35f * recorder.peak(), 8, accent);
+                vita2d_draw_rectangle(690, 494, 235, 3, muted);
+                vita2d_draw_rectangle(690, 494, 2.35f * recorder.level(), 3, accent);
+                draw_text(font, 28, 528, "R: остановить и отправить", accent, 0.55f);
+            }
         }
         if (!settings_open && (pad.buttons & SCE_CTRL_SELECT) && !kb.active()) {
             vita2d_draw_rectangle(0, 78, 960, 52, RGBA8(20,35,50,240));
@@ -1194,24 +1238,40 @@ int main() {
         if (stickers_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
             const auto& packs = tg.stickerPacks();
-            std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : "Стикеры";
-            draw_text(font, 30, 76, fit_text(font, "L  " + title + "  R", 900, 0.8f), ink, 0.8f);
-            draw_text(font, 30, 112, fit_text(font, tg.stickerStatus(), 900, 0.6f), muted, 0.6f);
-            const auto& items = tg.stickers();
-            int first = (sticker_index/18)*18;
-            for (int i = first; i < std::min(first+18, (int)items.size()); ++i) {
-                int x = 30+(i-first)%6*150, y = 130+(i-first)/6*110;
-                vita2d_draw_rectangle(x, y, 144, 104, i == sticker_index ? selected : white);
-                if (!decode_cooldown) tg.ensureSticker(i);
-                auto texture = textures.get(items[i].path);
-                if (texture) {
-                    float w = vita2d_texture_get_width(texture), h = vita2d_texture_get_height(texture);
-                    float scale = std::min(130.0f/w, 90.0f/h);
-                    draw_texture_fit(texture, x+(144-w*scale)/2, y+(104-h*scale)/2, 130, 90);
-                } else draw_text(font, x+45, y+60, items[i].emoji.empty() ? "..." : items[i].emoji, ink, 0.85f);
+            if (sticker_pack_menu) {
+                draw_text(font, 30, 76, "Наборы стикеров", ink, 0.8f);
+                draw_text(font, 30, 108, fit_text(font, tg.stickerStatus(), 900, 0.55f), muted, 0.55f);
+                int first = std::max(0, sticker_pack - 6);
+                for (int i = first; i < std::min(first + 7, (int)packs.size()); ++i) {
+                    int y = 116 + (i-first)*54;
+                    vita2d_draw_rectangle(24, y, 912, 48, i == sticker_pack ? selected : white);
+                    if (!decode_cooldown) tg.ensureStickerPackIcon(i);
+                    auto icon = textures.get(packs[i].icon_path);
+                    if (icon) draw_texture_fit(icon, 30, y+4, 40, 40);
+                    else { vita2d_draw_rectangle(30, y+6, 36, 36, separator); draw_text(font, 40, y+32, "S", ink, 0.6f); }
+                    draw_text(font, 82, y+31, fit_text(font, packs[i].title, 820, 0.65f), ink, 0.65f);
+                }
+                draw_text(font, 30, 528, "D-pad: выбор   X: открыть набор   O: назад", ink, 0.6f);
+            } else {
+                std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : "Стикеры";
+                draw_text(font, 30, 76, fit_text(font, title, 900, 0.8f), ink, 0.8f);
+                draw_text(font, 30, 112, fit_text(font, tg.stickerStatus(), 900, 0.6f), muted, 0.6f);
+                const auto& items = tg.stickers();
+                int first = (sticker_index/18)*18;
+                for (int i = first; i < std::min(first+18, (int)items.size()); ++i) {
+                    int x = 30+(i-first)%6*150, y = 130+(i-first)/6*110;
+                    vita2d_draw_rectangle(x, y, 144, 104, i == sticker_index ? selected : white);
+                    if (!decode_cooldown) tg.ensureSticker(i);
+                    auto texture = textures.get(items[i].path);
+                    if (texture) {
+                        float w = vita2d_texture_get_width(texture), h = vita2d_texture_get_height(texture);
+                        float scale = std::min(130.0f/w, 90.0f/h);
+                        draw_texture_fit(texture, x+(144-w*scale)/2, y+(104-h*scale)/2, 130, 90);
+                    } else draw_text(font, x+45, y+60, items[i].emoji.empty() ? "..." : items[i].emoji, ink, 0.85f);
+                }
+                draw_text(font, 30, 490, "Страница " + std::to_string(first/18+1) + " / " + std::to_string(std::max(1, ((int)items.size()+17)/18)), muted, 0.6f);
+                draw_text(font, 30, 528, "D-pad: выбор   X: отправить   O: наборы   Square: закрыть", ink, 0.6f);
             }
-            draw_text(font, 30, 490, "Страница " + std::to_string(first/18+1) + " / " + std::to_string(std::max(1, ((int)items.size()+17)/18)), muted, 0.6f);
-            draw_text(font, 30, 528, "D-pad: выбор   L/R: набор   X: отправить   O: назад", ink, 0.6f);
         }
         if (kb.active()) kb.draw(font);
 

@@ -4,9 +4,17 @@
 #include <algorithm>
 
 struct AppSettings {
-    int retention = 2, capacity = 2, theme = 0, font = 1;
+    int retention = 2, capacity = 2, theme = 0, font = 1, request_batch_size = 16;
+    bool show_threads = false;
     static int days(int i) { const int values[] = {1, 7, 30, 90, 0}; return values[i]; }
     static int megabytes(int i) { const int values[] = {128, 256, 512, 1024, 2048, 0}; return values[i]; }
+    static int requestBatchSize(int i) { const int values[] = {4, 8, 16, 32, 64}; return values[std::max(0, std::min(4, i))]; }
+    static int requestBatchIndex(int value) {
+        const int values[] = {4, 8, 16, 32, 64};
+        int best = 0;
+        for (int i = 1; i < 5; ++i) if (std::abs(values[i] - value) < std::abs(values[best] - value)) best = i;
+        return best;
+    }
     float fontScale() const { return 0.9f + font * 0.1f; }
     void load() {
         json_error_t error{};
@@ -18,10 +26,13 @@ struct AppSettings {
         };
         retention = value("retention", 2, 4); capacity = value("capacity", 2, 5);
         theme = value("theme", 0, 1); font = value("font", 1, 2);
+        request_batch_size = value("request_batch_size", 16, 64);
+        show_threads = json_is_true(json_object_get(root, "show_threads"));
         json_decref(root);
     }
     bool save() const {
-        json_t* root = json_pack("{s:i,s:i,s:i,s:i}", "retention", retention, "capacity", capacity, "theme", theme, "font", font);
+        json_t* root = json_pack("{s:i,s:i,s:i,s:i,s:i,s:b}", "retention", retention, "capacity", capacity,
+            "theme", theme, "font", font, "request_batch_size", request_batch_size, "show_threads", show_threads);
         bool ok = json_dump_file(root, "ux0:data/vitagram/settings.json.tmp", JSON_COMPACT) == 0;
         json_decref(root);
         return ok && std::rename("ux0:data/vitagram/settings.json.tmp", "ux0:data/vitagram/settings.json") == 0;

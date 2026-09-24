@@ -36,7 +36,12 @@ struct PhotoItem {
 enum class DeliveryState { Pending, Sent, Read, Failed };
 struct ForumTopicItem { int32_t id = 0; std::string title; int unread = 0; bool closed = false; };
 struct SendStickerItem { int32_t file = 0, preview = 0; int width = 0, height = 0; std::string emoji, path; };
-struct ChatFolderItem { int32_t id; std::string title; };
+struct ChatFolderItem {
+    int32_t id = 0;
+    std::string title;
+    int32_t icon_file_id = 0;
+    std::string icon_path;
+};
 
 struct MessageItem {
     struct Reaction { std::string emoji; int count = 0; bool chosen = false; };
@@ -85,6 +90,7 @@ public:
     ~TelegramClient();
 
     bool start();
+    void setRequestBatchSize(int size) { request_batch_size_.store(std::max(1, std::min(64, size))); }
     void restoreCache();
     bool canBrowse() const { return ready_ || !known_chats_.empty(); }
     void pump();
@@ -139,8 +145,10 @@ public:
     bool inTopic() const { return current_topic_ != 0; }
     void refreshHistory();
     void requestCompose();
+    bool sendAudioFile(const std::string& path, int duration);
     void openStickers();
     void selectStickerPack(int index);
+    void ensureStickerPackIcon(size_t index);
     void ensureSticker(size_t index);
     bool sendSticker(size_t index);
     const std::vector<SendStickerItem>& stickers() const { return stickers_; }
@@ -180,6 +188,8 @@ private:
     struct UserPresence { std::string type; int64_t time = 0; bool bot = false; };
     std::unordered_map<int64_t, UserPresence> user_presence_;
     void parseUserStatus(int64_t id, void* status);
+    void restoreStickerCache(void* snapshot);
+    void applyStickerResponse(void* root, bool packs);
     std::unordered_set<std::string> sender_requests_;
     void parseUser(void* user);
     MediaCache media_cache_;
@@ -219,13 +229,14 @@ private:
     void requestChatsPage();
     pthread_t worker_{};
     pthread_t cache_worker_{};
-    bool cache_worker_started_ = false;
+    std::atomic<bool> cache_worker_started_{false};
     static void* cacheEntry(void* self);
     pthread_t parser_{};
     pthread_mutex_t queue_mutex_ = PTHREAD_MUTEX_INITIALIZER;
     std::atomic<bool> stopping_{false};
-    bool worker_started_ = false;
-    bool parser_started_ = false;
+    std::atomic<bool> worker_started_{false};
+    std::atomic<bool> parser_started_{false};
+    std::atomic<int> request_batch_size_{16};
     struct Request { std::string text; int priority; int64_t queued; };
     std::deque<Request> outgoing_;
     std::deque<std::string> incoming_;

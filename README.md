@@ -5,7 +5,7 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.24**. VPK package version: **24.00**. This project is under development.
+Source version: **0.27.0**. VPK package version: **27.00**. This project is under development.
 
 ## Features
 
@@ -19,6 +19,7 @@ Source version: **0.24**. VPK package version: **24.00**. This project is under 
 - Centered fullscreen photos, automatic image rotation and pinch-to-zoom up to 6×.
 - Static and animated stickers; send from recent, favorite and installed sticker sets.
 - Standard emoji reactions, voice messages, audio and supported animations.
+- Microphone recording and sending audio messages from the current chat.
 - Forum groups: topic lists, separate topic history, text and sticker sending to the selected topic.
 - Light/dark themes, font size, cache retention settings and account logout.
 - Connection indicator, HTTP(S) links opened in the browser, and a startup screen showing initialization stages.
@@ -44,6 +45,7 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - **Short press Square** — compose text; the keyboard opens after releasing the button.
 - **Hold Square for at least 0.55 seconds** — open the sticker picker.
 - **Triangle** — refresh history.
+- **R** — start/stop microphone recording and send the recorded audio message.
 - **O** — go back; inside a forum topic, return to the topic list.
 
 ### Forum topics

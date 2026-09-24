@@ -196,4 +196,22 @@ std::string status() {
     pthread_mutex_unlock(&mutex);
     return result;
 }
+std::string threadStatus() {
+    pthread_mutex_lock(&mutex);
+    int ui = 0, audio = 0, video = 0, network = 0, parser = 0;
+    for (const auto& thread : threads) {
+        if (thread.id < 0) continue;
+        switch (thread.role) {
+            case Role::Ui: ++ui; break;
+            case Role::Audio: ++audio; break;
+            case Role::Video: ++video; break;
+            case Role::Network: ++network; break;
+            case Role::Parser: ++parser; break;
+        }
+    }
+    pthread_mutex_unlock(&mutex);
+    return "Threads UI:" + std::to_string(ui) + " Net:" + std::to_string(network) +
+        " Parser:" + std::to_string(parser) + " Audio:" + std::to_string(audio) +
+        " Video:" + std::to_string(video);
+}
 }

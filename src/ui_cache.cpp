@@ -45,6 +45,39 @@ void UiCache::load() {
         data_ = json_pack("{s:{},s:{}}", "chats", "history");
     }
 }
+json_t* UiCache::snapshot() {
+    pthread_mutex_lock(&mutex_);
+    json_t* result = json_deep_copy(data_);
+    pthread_mutex_unlock(&mutex_);
+    return result;
+}
+void UiCache::saveStickerPacks(json_t* value) {
+    pthread_mutex_lock(&mutex_);
+    if (data_ && value) { json_object_set(data_, "sticker_packs", value); ++revision_; }
+    pthread_mutex_unlock(&mutex_);
+}
+void UiCache::saveStickerItems(int64_t set_id, json_t* value) {
+    pthread_mutex_lock(&mutex_);
+    if (data_ && value) {
+        json_t* items = json_object_get(data_, "sticker_items");
+        if (!items) { items = json_object(); json_object_set_new(data_, "sticker_items", items); }
+        json_object_set(items, std::to_string(set_id).c_str(), value);
+        while (json_object_size(items) > 8) {
+            void* first = json_object_iter(items);
+            if (!first) break;
+            json_object_del(items, json_object_iter_key(first));
+        }
+        ++revision_;
+    }
+    pthread_mutex_unlock(&mutex_);
+}
+json_t* UiCache::stickerItems(int64_t set_id) {
+    pthread_mutex_lock(&mutex_);
+    json_t* all = data_ ? json_object_get(data_, "sticker_items") : nullptr;
+    json_t* result = all ? json_deep_copy(json_object_get(all, std::to_string(set_id).c_str())) : nullptr;
+    pthread_mutex_unlock(&mutex_);
+    return result;
+}
 void UiCache::clear() {
     pthread_mutex_lock(&mutex_);
     if (data_) json_decref(data_);

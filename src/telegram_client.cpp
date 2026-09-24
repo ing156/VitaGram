@@ -50,20 +50,69 @@ static void clear_cached_file_ids(json_t* root) {
 
 void TelegramClient::restoreCache() {
     media_cache_.load(); ui_cache_.load();
-    json_t* users = ui_cache_.users();
+    json_t* snapshot = ui_cache_.snapshot();
+    json_t* users = snapshot ? json_object_get(snapshot, "users") : nullptr;
     const char* user_key; json_t* user;
     if (json_is_object(users)) json_object_foreach(users, user_key, user) parseUser(user);
-    if (users) json_decref(users);
-    json_t* cached = ui_cache_.chats();
+    json_t* cached = snapshot ? json_object_get(snapshot, "chats") : nullptr;
     media_cache_.resolve(cached); clear_cached_file_ids(cached);
     const char* key; json_t* chat;
     if (json_is_object(cached)) json_object_foreach(cached, key, chat) parseChat(chat);
-    if (cached) json_decref(cached);
     for (auto& chat : known_chats_) chat.cached_metadata = true;
-    json_t* folders = ui_cache_.folders();
-    if (folders) { parseFolders(folders); json_decref(folders); }
+    json_t* folders = snapshot ? json_object_get(snapshot, "folders") : nullptr;
+    if (folders) parseFolders(folders);
+    if (snapshot) restoreStickerCache(snapshot);
+    if (snapshot) json_decref(snapshot);
     publishChats();
     if (!chats_.empty()) status_ = "Cached chats - connecting...";
+}
+
+void TelegramClient::restoreStickerCache(void* opaque) {
+    json_t* snapshot = static_cast<json_t*>(opaque);
+    json_t* packs = json_object_get(snapshot, "sticker_packs");
+    if (json_is_object(packs)) {
+        sticker_packs_ = {{0, "Избранные"}, {1, "Недавние"}};
+        sticker_set_ids_ = {0, 0};
+        applyStickerResponse(packs, true);
+    }
+    json_t* items = json_object_get(snapshot, "sticker_items");
+    if (json_is_object(items)) {
+        json_t* cached = json_object_get(items, "0");
+        if (json_is_object(cached)) applyStickerResponse(cached, false);
+    }
+    sticker_status_ = sticker_packs_.size() > 2 ? "Выберите набор стикеров" : sticker_status_;
+}
+
+void TelegramClient::applyStickerResponse(void* opaque, bool packs) {
+    json_t* root = static_cast<json_t*>(opaque);
+    if (packs) {
+        json_t* sets = json_object_get(root, "sets"); size_t i; json_t* set;
+        json_array_foreach(sets, i, set) {
+            ChatFolderItem pack;
+            pack.id = (int32_t)sticker_packs_.size();
+            pack.title = json_str(set, "title");
+            json_t* icon = json_object_get(set, "thumbnail");
+            pack.icon_file_id = (int32_t)json_i53(json_object_get(icon, "file"), "id");
+            pack.icon_path = json_str(json_object_get(json_object_get(icon, "file"), "local"), "path");
+            sticker_packs_.push_back(pack);
+            sticker_set_ids_.push_back(json_i53(set, "id"));
+        }
+        return;
+    }
+    stickers_.clear(); json_t* items = json_object_get(root, "stickers"); size_t i; json_t* item;
+    json_array_foreach(items, i, item) {
+        SendStickerItem s;
+        s.file = (int32_t)json_i53(json_object_get(item, "sticker"), "id");
+        s.width = (int)json_i53(item, "width"); s.height = (int)json_i53(item, "height");
+        s.emoji = json_str(item, "emoji");
+        json_t* preview = json_object_get(json_object_get(item, "thumbnail"), "file");
+        if (!std::strcmp(json_str(json_object_get(item, "format"), "@type"), "stickerFormatWebp")) preview = json_object_get(item, "sticker");
+        s.preview = (int32_t)json_i53(preview, "id");
+        json_t* local = json_object_get(preview, "local");
+        if (json_is_true(json_object_get(local, "is_downloading_completed"))) s.path = json_str(local, "path");
+        if (s.file) stickers_.push_back(s);
+    }
+    sticker_status_ = stickers_.empty() ? "В этом разделе нет стикеров" : "X: отправить выбранный стикер";
 }
 
 TelegramClient::TelegramClient()
@@ -77,11 +126,19 @@ TelegramClient::~TelegramClient() {
 
 void TelegramClient::stopWorker() {
     stopping_ = true;
-    if (worker_started_) { pthread_join(worker_, nullptr); worker_started_ = false; }
-    if (parser_started_) { pthread_join(parser_, nullptr); parser_started_ = false; }
-    if (cache_worker_started_) { pthread_join(cache_worker_, nullptr); cache_worker_started_ = false; }
+
+    const bool worker_running = worker_started_.exchange(false);
+    const bool parser_running = parser_started_.exchange(false);
+    const bool cache_running = cache_worker_started_.exchange(false);
+
+    if (worker_running) pthread_join(worker_, nullptr);
+    if (parser_running) pthread_join(parser_, nullptr);
+    if (cache_running) pthread_join(cache_worker_, nullptr);
+
+    pthread_mutex_lock(&queue_mutex_);
     for (void* root : parsed_) json_decref(static_cast<json_t*>(root));
     parsed_.clear(); incoming_.clear(); outgoing_.clear();
+    pthread_mutex_unlock(&queue_mutex_);
 }
 
 void* TelegramClient::workerEntry(void* self) {
@@ -150,7 +207,7 @@ void TelegramClient::runWorker() {
         pthread_mutex_lock(&queue_mutex_);
         // Bound each send batch; receiving updates and yielding must not be
         // postponed behind a large burst of thumbnail/history requests.
-        for (int i = 0; i < 4 && !outgoing_.empty(); ++i) {
+        for (int i = 0; i < request_batch_size_.load() && !outgoing_.empty(); ++i) {
             int64_t now = sceKernelGetSystemTimeWide();
             auto best = outgoing_.begin();
             auto score = [&](const Request& request) {
@@ -691,8 +748,10 @@ void TelegramClient::updateFile(void* opaque) {
     json_t* local = json_object_get(file, "local");
     const char* path = json_is_object(local) ? json_str(local, "path") : "";
     if (id <= 0) return;
-    if (json_is_true(json_object_get(local, "is_downloading_completed")))
+    if (json_is_true(json_object_get(local, "is_downloading_completed"))) {
         for (auto& sticker : stickers_) if (sticker.preview == id) sticker.path = path;
+        for (auto& pack : sticker_packs_) if (pack.icon_file_id == id) pack.icon_path = path;
+    }
     auto update_voice = [&](MessageItem& message) {
         if (message.voice_file_id != id) return;
         message.voice_size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
@@ -888,27 +947,14 @@ void TelegramClient::process(void* opaque) {
             (packs || json_i53(extra, "generation") == sticker_generation_)) {
             if (!std::strcmp(type, "error")) sticker_status_ = json_str(root, "message");
             else if (packs) {
-                json_t* sets = json_object_get(root, "sets"); size_t i; json_t* set;
-                json_array_foreach(sets, i, set) {
-                    sticker_packs_.push_back({(int32_t)sticker_packs_.size(), json_str(set, "title")});
-                    sticker_set_ids_.push_back(json_i53(set, "id"));
-                }
+                ui_cache_.saveStickerPacks(root);
+                sticker_packs_ = {{0, "Избранные"}, {1, "Недавние"}};
+                sticker_set_ids_ = {0, 0};
+                applyStickerResponse(root, true);
             } else {
-                stickers_.clear(); json_t* items = json_object_get(root, "stickers"); size_t i; json_t* item;
-                json_array_foreach(items, i, item) {
-                    SendStickerItem s;
-                    s.file = (int32_t)json_i53(json_object_get(item, "sticker"), "id");
-                    s.width = (int)json_i53(item, "width"); s.height = (int)json_i53(item, "height");
-                    s.emoji = json_str(item, "emoji");
-                    json_t* preview = json_object_get(json_object_get(item, "thumbnail"), "file");
-                    if (!std::strcmp(json_str(json_object_get(item, "format"), "@type"), "stickerFormatWebp"))
-                        preview = json_object_get(item, "sticker");
-                    s.preview = (int32_t)json_i53(preview, "id");
-                    json_t* local = json_object_get(preview, "local");
-                    if (json_is_true(json_object_get(local, "is_downloading_completed"))) s.path = json_str(local, "path");
-                    if (s.file) stickers_.push_back(s);
-                }
-                sticker_status_ = stickers_.empty() ? "В этом разделе нет стикеров" : "X: отправить выбранный стикер";
+                int64_t cache_key = json_i53(extra, "index");
+                ui_cache_.saveStickerItems(cache_key, root);
+                applyStickerResponse(root, false);
             }
         }
         json_decref(root); return;
@@ -1480,24 +1526,36 @@ void TelegramClient::requestHistoryPage() {
 
 void TelegramClient::openStickers() {
     ++sticker_session_;
-    sticker_packs_ = {{0, "Недавние"}, {1, "Избранные"}};
-    sticker_set_ids_ = {0, 0};
-    selectStickerPack(0);
-    if (!ready_ || !current_chat_id_) return;
+    if (sticker_packs_.size() < 2) {
+        sticker_packs_ = {{0, "Избранные"}, {1, "Недавние"}};
+        sticker_set_ids_ = {0, 0};
+    }
+    stickers_.clear();
+    sticker_status_ = ready_ ? "Выберите набор стикеров" : "Нет подключения к Telegram";
+    if (!ready_ || !current_chat_id_ || sticker_packs_.size() > 2) return;
     json_t* root = json_pack("{s:s,s:{s:s}}", "@type", "getInstalledStickerSets", "sticker_type", "@type", "stickerTypeRegular");
     json_object_set_new(root, "@extra", json_pack("{s:s,s:I,s:i}", "kind", "sticker_packs", "chat", (json_int_t)current_chat_id_, "session", (int)sticker_session_));
     sendJson(root);
+}
+
+void TelegramClient::ensureStickerPackIcon(size_t index) {
+    if (index >= sticker_packs_.size()) return;
+    auto& pack = sticker_packs_[index];
+    if (pack.icon_file_id <= 0 || !pack.icon_path.empty()) return;
+    requestFile(pack.icon_file_id, 20);
 }
 
 void TelegramClient::selectStickerPack(int index) {
     if (index < 0 || index >= (int)sticker_set_ids_.size()) return;
     ++sticker_generation_; stickers_.clear();
     sticker_status_ = ready_ ? "Загрузка стикеров..." : "Нет подключения к Telegram";
+    json_t* cached = ui_cache_.stickerItems(index);
+    if (cached) { applyStickerResponse(cached, false); json_decref(cached); }
     if (!ready_ || !current_chat_id_) return;
-    json_t* root = json_pack("{s:s}", "@type", index == 0 ? "getRecentStickers" : index == 1 ? "getFavoriteStickers" : "getStickerSet");
-    if (!index) json_object_set_new(root, "is_attached", json_false());
+    json_t* root = json_pack("{s:s}", "@type", index == 0 ? "getFavoriteStickers" : index == 1 ? "getRecentStickers" : "getStickerSet");
+    if (index == 1) json_object_set_new(root, "is_attached", json_false());
     if (index >= 2) json_object_set_new(root, "set_id", json_integer(sticker_set_ids_[index]));
-    json_object_set_new(root, "@extra", json_pack("{s:s,s:I,s:i,s:i}", "kind", "sticker_items", "chat", (json_int_t)current_chat_id_, "session", (int)sticker_session_, "generation", (int)sticker_generation_));
+    json_object_set_new(root, "@extra", json_pack("{s:s,s:I,s:i,s:i,s:i}", "kind", "sticker_items", "chat", (json_int_t)current_chat_id_, "session", (int)sticker_session_, "generation", (int)sticker_generation_, "index", index));
     sendJson(root);
 }
 
@@ -1517,6 +1575,19 @@ bool TelegramClient::sendSticker(size_t index) {
 
 void TelegramClient::requestCompose() {
     if (current_chat_id_ && ready_ && !topics_open_) setInput(InputKind::Message, "Compose message");
+}
+
+bool TelegramClient::sendAudioFile(const std::string& path, int duration) {
+    if (!ready_ || !current_chat_id_ || path.empty()) return false;
+    json_t* file = json_pack("{s:s,s:s}", "@type", "inputFileLocal", "path", path.c_str());
+    json_t* voice = json_pack("{s:s,s:o,s:i,s:s}", "@type", "inputVoiceNote", "voice", file,
+        "duration", std::max(1, duration), "waveform", "");
+    json_t* content = json_pack("{s:s,s:o,s:o}", "@type", "inputMessageVoiceNote", "voice_note", voice,
+        "caption", json_pack("{s:s,s:[]}", "@type", "formattedText", "entities"));
+    json_t* root = json_pack("{s:s,s:I,s:o,s:s}", "@type", "sendMessage", "chat_id", (json_int_t)current_chat_id_,
+        "input_message_content", content, "@extra", "send_audio");
+    sendJson(root); status_ = "Отправка аудио...";
+    return true;
 }
 
 void TelegramClient::loadReactions(int64_t id) {
