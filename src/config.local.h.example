@@ -1,0 +1,4 @@
+#pragma once
+
+#define VITAGRAM_API_ID 0
+#define VITAGRAM_API_HASH ""
