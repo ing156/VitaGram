@@ -95,8 +95,58 @@ Do not replace prepared dependencies without preserving local changes.
 
 ### Preparation
 
-Set your own `VITAGRAM_API_ID` and `VITAGRAM_API_HASH` in `src/config.h`.
-Obtain them from API development tools at my.telegram.org. Do not publish personal API credentials or session data.
+Obtain your own `VITAGRAM_API_ID` and `VITAGRAM_API_HASH` from API development tools at my.telegram.org.
+Do not publish personal API credentials or session data.
+
+#### Keeping API credentials out of Git
+
+If your checkout still defines these values directly in `src/config.h`, perform the following migration before publishing it. These instructions do not automatically change the configuration files.
+
+1. Move the real values into `src/config.local.h`:
+
+   ```cpp
+   #pragma once
+   #define VITAGRAM_API_ID 123456
+   #define VITAGRAM_API_HASH "your_api_hash"
+   ```
+
+   The values above are placeholders; use your own credentials locally.
+
+2. Replace only the two credential definitions in `src/config.h` with the following include, keeping all other settings unchanged:
+
+   ```cpp
+   #include "config.local.h"
+   ```
+
+3. Add this entry to the repository-root `.gitignore`:
+
+   ```gitignore
+   /src/config.local.h
+   ```
+
+4. Commit a public template named `src/config.local.h.example` with no real credentials:
+
+   ```cpp
+   #pragma once
+   #define VITAGRAM_API_ID 0
+   #define VITAGRAM_API_HASH ""
+   ```
+
+After cloning a repository configured this way, create the local file and fill in your credentials:
+
+```bash
+cp -n src/config.local.h.example src/config.local.h
+```
+
+Keep the sanitized `src/config.h`, the example file and `.gitignore` in Git. Do not add the real local file, including with `git add -f`.
+If `src/config.local.h` is already tracked, `.gitignore` alone will not exclude it. Remove it from the index while keeping the local copy:
+
+```bash
+git rm --cached -- src/config.local.h
+```
+
+Before committing, review the staged changes locally with `git diff --cached` and verify the ignore rule with `git check-ignore -v src/config.local.h`. Do not share output containing credentials.
+Removing secrets from the current files does **not** remove them from earlier commits. If real values were committed, clean the history before publishing; if already published, treat them as exposed. Coordinate any history rewrite with other contributors.
 
 From the project root:
 
@@ -281,8 +331,58 @@ When distributing the application, retain notices and comply with dependency lic
 
 ### Подготовка
 
-Укажите собственные `VITAGRAM_API_ID` и `VITAGRAM_API_HASH` в `src/config.h`.
-Их получают в разделе API development tools на my.telegram.org. Не публикуйте личные реквизиты API и данные сессии.
+Получите собственные `VITAGRAM_API_ID` и `VITAGRAM_API_HASH` в разделе API development tools на my.telegram.org.
+Не публикуйте личные реквизиты API и данные сессии.
+
+#### Как исключить API-реквизиты из Git
+
+Если значения в вашей копии проекта ещё определены прямо в `src/config.h`, перед публикацией выполните перенос ниже. Эта инструкция сама по себе не изменяет файлы конфигурации.
+
+1. Перенесите реальные значения в `src/config.local.h`:
+
+   ```cpp
+   #pragma once
+   #define VITAGRAM_API_ID 123456
+   #define VITAGRAM_API_HASH "your_api_hash"
+   ```
+
+   Значения выше — примеры; локально укажите собственные реквизиты.
+
+2. В `src/config.h` замените только два определения реквизитов на подключение локального файла. Остальные настройки оставьте без изменений:
+
+   ```cpp
+   #include "config.local.h"
+   ```
+
+3. Добавьте в корневой `.gitignore` репозитория:
+
+   ```gitignore
+   /src/config.local.h
+   ```
+
+4. Добавьте в репозиторий публичный шаблон `src/config.local.h.example` без настоящих данных:
+
+   ```cpp
+   #pragma once
+   #define VITAGRAM_API_ID 0
+   #define VITAGRAM_API_HASH ""
+   ```
+
+После клонирования подготовленного таким образом репозитория создайте локальный файл и заполните реквизиты:
+
+```bash
+cp -n src/config.local.h.example src/config.local.h
+```
+
+В Git должны остаться очищенный `src/config.h`, шаблон и `.gitignore`. Реальный локальный файл не добавляйте, в том числе через `git add -f`.
+Если `src/config.local.h` уже отслеживается, одного `.gitignore` недостаточно. Уберите файл из индекса, сохранив локальную копию:
+
+```bash
+git rm --cached -- src/config.local.h
+```
+
+Перед коммитом локально проверьте подготовленные изменения через `git diff --cached` и правило исключения через `git check-ignore -v src/config.local.h`. Не публикуйте вывод с реквизитами.
+Удаление секретов из текущих файлов **не удаляет их из предыдущих коммитов**. Если реальные значения уже закоммичены, очистите историю перед публикацией; если опубликованы — считайте их раскрытыми. Перезапись общей истории согласуйте с другими участниками.
 
 Из корня проекта:
 
