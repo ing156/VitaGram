@@ -394,6 +394,7 @@ int main() {
     bool reactions_open = false;
     bool stickers_open = false;
     int sticker_index = 0, sticker_pack = 0;
+    int topic_index = 0;
     int64_t square_since = 0;
     bool square_long = false;
     int reaction_index = 0;
@@ -416,7 +417,7 @@ int main() {
         unsigned int pressed = pad.buttons & ~old_buttons;
         unsigned int released = old_buttons & ~pad.buttons;
         old_buttons = pad.buttons;
-        bool compose_context = tg.currentChatId() && !post_open && !photo_open && !settings_open &&
+        bool compose_context = tg.currentChatId() && !tg.topicsOpen() && !post_open && !photo_open && !settings_open &&
             !reactions_open && !stickers_open && !kb.active() && tg.inputKind() == InputKind::None;
         if (compose_context) {
             if (pressed & SCE_CTRL_SQUARE) { square_since = now; square_long = false; }
@@ -505,7 +506,13 @@ int main() {
         textures.beginFrame(decode_cooldown != 0 || kb.active());
 
         if (tap && !kb.active() && tg.inputKind() == InputKind::None) {
-            if (stickers_open) {
+            if (tg.topicsOpen()) {
+                if (touch_y >= 500) pressed |= touch_x >= 650 ? SCE_CTRL_CIRCLE : SCE_CTRL_TRIANGLE;
+                else if (touch_y >= 70 && touch_y < 470) {
+                    int index = std::max(0, topic_index-7)+(touch_y-70)/50;
+                    if (index < (int)tg.topics().size()) { topic_index = index; pressed |= SCE_CTRL_CROSS; }
+                }
+            } else if (stickers_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
                 else if (touch_y >= 42 && touch_y < 98) pressed |= touch_x < 480 ? SCE_CTRL_LTRIGGER : SCE_CTRL_RTRIGGER;
                 else if (touch_x >= 30 && touch_x < 930 && touch_y >= 130 && touch_y < 460) {
@@ -607,6 +614,18 @@ int main() {
         } else if (kb.cancelled()) {
             kb.close();
             tg.cancelInput();
+        } else if (tg.topicsOpen()) {
+            if (pressed & SCE_CTRL_CIRCLE) tg.leaveChat();
+            else {
+                if (pressed & SCE_CTRL_UP) --topic_index;
+                if (pressed & SCE_CTRL_DOWN) {
+                    ++topic_index;
+                    if (topic_index >= (int)tg.topics().size()-2) tg.loadTopics();
+                }
+                if (pressed & SCE_CTRL_TRIANGLE) tg.loadTopics(tg.topics().empty());
+                topic_index = std::max(0, std::min(std::max(0, (int)tg.topics().size()-1), topic_index));
+                if (pressed & SCE_CTRL_CROSS) { tg.openTopic(topic_index); message_index = -1; }
+            }
         } else if (stickers_open) {
             if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SQUARE)) stickers_open = false;
             int packs = (int)tg.stickerPacks().size(), previous_pack = sticker_pack;
@@ -714,7 +733,7 @@ int main() {
                     }
                 }
             } else {
-                if (pressed & SCE_CTRL_CIRCLE) tg.leaveChat();
+                if (pressed & SCE_CTRL_CIRCLE) { if (tg.inTopic()) tg.backToTopics(); else tg.leaveChat(); pressed = 0; }
                 if (pressed & SCE_CTRL_SQUARE) tg.requestCompose();
                 if (pressed & SCE_CTRL_TRIANGLE) tg.refreshHistory();
                 if (pressed & SCE_CTRL_UP) {
@@ -748,6 +767,7 @@ int main() {
                 chat_index = std::max(0, std::min(chat_index, (int)chats.size() - 1));
                 if (pressed & SCE_CTRL_CROSS) {
                     tg.openChat(chats[chat_index].id, chats[chat_index].title);
+                    topic_index = 0;
                     message_index = -1;
                     post_open = photo_open = false;
                 }
@@ -838,7 +858,7 @@ int main() {
         }
 
         // Settings own the content area and footer; never draw a second screen over them.
-        if (!settings_open && !stickers_open) {
+        if (!settings_open && !stickers_open && !tg.topicsOpen()) {
         if (tg.currentChatId() != 0) {
             const auto& msgs = tg.messages();
             if (photo_open && message_index >= 0 && message_index < (int)msgs.size() &&
@@ -1123,7 +1143,7 @@ int main() {
 
         } // !settings_open
 
-        if (!settings_open && !stickers_open && !photo_open && tg.currentChatId()) {
+        if (!settings_open && !stickers_open && !tg.topicsOpen() && !photo_open && tg.currentChatId()) {
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
             int progress = tg.historyPercent();
             vita2d_draw_rectangle(0, 497, 960.0f * progress / 100, 2, accent);
@@ -1155,6 +1175,21 @@ int main() {
                 draw_text(font, x+32, y+43, choices[i], ink, 1.0f);
             }
             draw_text(font, 28, 528, "D-pad: выбор   X: поставить / убрать   O: назад", ink, 0.6f);
+        }
+        if (tg.topicsOpen()) {
+            vita2d_draw_rectangle(0, 36, 960, 508, white);
+            draw_text(font, 30, 61, "Темы группы", ink, 0.7f);
+            const auto& topics = tg.topics();
+            int first = std::max(0, topic_index-7);
+            for (int i = first; i < std::min(first+8, (int)topics.size()); ++i) {
+                int y = 70+(i-first)*50;
+                vita2d_draw_rectangle(20, y, 920, 48, i == topic_index ? selected : white);
+                std::string title = topics[i].title + (topics[i].closed ? " [закрыта]" : "");
+                draw_text(font, 34, y+32, fit_text(font, title, 740, 0.75f), ink, 0.75f);
+                if (topics[i].unread) draw_text(font, 830, y+32, std::to_string(topics[i].unread), accent, 0.7f);
+            }
+            draw_text(font, 30, 492, fit_text(font, tg.topicsStatus(), 900, 0.55f), muted, 0.55f);
+            draw_text(font, 30, 528, "X: открыть   Triangle: ещё темы   O: назад", ink, 0.6f);
         }
         if (stickers_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);

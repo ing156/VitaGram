@@ -16,6 +16,11 @@ external/rlottie-vita/install/
 *.dll
 *.dylib
 
+# secrets and local config
+src/config.h
+config.h
+**/config.h
+
 # editor / temp / backup files
 *~
 *.tmp

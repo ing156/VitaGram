@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 struct ChatItem {
+    int64_t supergroup_id = 0;
     int64_t user_id = 0;
     bool group = false;
     bool cached_metadata = false;
@@ -33,6 +34,7 @@ struct PhotoItem {
 };
 
 enum class DeliveryState { Pending, Sent, Read, Failed };
+struct ForumTopicItem { int32_t id = 0; std::string title; int unread = 0; bool closed = false; };
 struct SendStickerItem { int32_t file = 0, preview = 0; int width = 0, height = 0; std::string emoji, path; };
 struct ChatFolderItem { int32_t id; std::string title; };
 
@@ -128,6 +130,13 @@ public:
     bool chatsEnd() const { return chats_end_ && chats_.size() == selected_chat_count_; }
     const std::string& chatsError() const { return chats_error_; }
     void openChat(int64_t chat_id, const std::string& title);
+    bool topicsOpen() const { return topics_open_; }
+    const std::vector<ForumTopicItem>& topics() const { return topics_; }
+    const std::string& topicsStatus() const { return topics_status_; }
+    void loadTopics(bool refresh = false);
+    void openTopic(size_t index);
+    void backToTopics();
+    bool inTopic() const { return current_topic_ != 0; }
     void refreshHistory();
     void requestCompose();
     void openStickers();
@@ -150,6 +159,13 @@ public:
     void ensureFullPhoto(size_t message_index, size_t photo_index);
 
 private:
+    std::vector<ForumTopicItem> topics_;
+    std::string topics_status_, forum_title_;
+    bool topics_open_ = false, topics_pending_ = false, topics_end_ = false;
+    int32_t current_topic_ = 0, topics_date_ = 0, topics_offset_ = 0;
+    int64_t topics_message_ = 0;
+    unsigned topics_generation_ = 0;
+    bool matchesTopic(void* message) const;
     std::vector<SendStickerItem> stickers_;
     std::vector<ChatFolderItem> sticker_packs_;
     std::vector<int64_t> sticker_set_ids_;

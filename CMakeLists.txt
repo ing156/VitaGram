@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "23.00")
-set(VITAGRAM_VERSION "0.23")
+set(VITA_VERSION  "24.00")
+set(VITAGRAM_VERSION "0.24")
 
 set(ANIMATION_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-animation/install" CACHE PATH "Minimal Vita FFmpeg prefix")
 foreach(ANIMATION_LIB avformat avcodec swscale swresample avutil)
