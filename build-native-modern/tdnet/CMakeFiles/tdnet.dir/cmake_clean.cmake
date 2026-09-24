@@ -1,0 +1,43 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/tdnet.dir/td/net/GetHostByNameActor.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/GetHostByNameActor.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpChunkedByteFlow.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpChunkedByteFlow.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpConnectionBase.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpConnectionBase.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpContentLengthByteFlow.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpContentLengthByteFlow.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpFile.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpFile.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpHeaderCreator.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpHeaderCreator.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpInboundConnection.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpInboundConnection.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpOutboundConnection.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpOutboundConnection.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpProxy.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpProxy.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpQuery.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpQuery.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/HttpReader.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/HttpReader.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/Socks5.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/Socks5.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/SslCtx.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/SslCtx.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/SslStream.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/SslStream.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/TcpListener.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/TcpListener.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/TransparentProxy.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/TransparentProxy.cpp.o.d"
+  "CMakeFiles/tdnet.dir/td/net/Wget.cpp.o"
+  "CMakeFiles/tdnet.dir/td/net/Wget.cpp.o.d"
+  "libtdnet.a"
+  "libtdnet.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/tdnet.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

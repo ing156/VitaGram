@@ -1,0 +1,15 @@
+static const FFCodec * const codec_list[] = {
+    &ff_gif_decoder,
+    &ff_h264_decoder,
+    &ff_vp8_decoder,
+    &ff_vp9_decoder,
+    &ff_aac_decoder,
+    &ff_flac_decoder,
+    &ff_mp3_decoder,
+    &ff_opus_decoder,
+    &ff_vorbis_decoder,
+    &ff_pcm_f32le_decoder,
+    &ff_pcm_s16le_decoder,
+    &ff_pcm_s24le_decoder,
+    &ff_pcm_s32le_decoder,
+    NULL };

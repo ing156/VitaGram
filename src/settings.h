@@ -1,0 +1,29 @@
+#pragma once
+#include <jansson.h>
+#include <cstdio>
+#include <algorithm>
+
+struct AppSettings {
+    int retention = 2, capacity = 2, theme = 0, font = 1;
+    static int days(int i) { const int values[] = {1, 7, 30, 90, 0}; return values[i]; }
+    static int megabytes(int i) { const int values[] = {128, 256, 512, 1024, 2048, 0}; return values[i]; }
+    float fontScale() const { return 0.9f + font * 0.1f; }
+    void load() {
+        json_error_t error{};
+        json_t* root = json_load_file("ux0:data/vitagram/settings.json", 0, &error);
+        if (!json_is_object(root)) { if (root) json_decref(root); return; }
+        auto value = [&](const char* key, int fallback, int maximum) {
+            json_t* v = json_object_get(root, key);
+            return json_is_integer(v) ? std::max(0, std::min(maximum, (int)json_integer_value(v))) : fallback;
+        };
+        retention = value("retention", 2, 4); capacity = value("capacity", 2, 5);
+        theme = value("theme", 0, 1); font = value("font", 1, 2);
+        json_decref(root);
+    }
+    bool save() const {
+        json_t* root = json_pack("{s:i,s:i,s:i,s:i}", "retention", retention, "capacity", capacity, "theme", theme, "font", font);
+        bool ok = json_dump_file(root, "ux0:data/vitagram/settings.json.tmp", JSON_COMPACT) == 0;
+        json_decref(root);
+        return ok && std::rename("ux0:data/vitagram/settings.json.tmp", "ux0:data/vitagram/settings.json") == 0;
+    }
+};

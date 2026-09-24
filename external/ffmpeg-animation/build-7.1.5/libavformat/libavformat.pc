@@ -1,0 +1,14 @@
+prefix=/home/ing156/projects/vitagram/external/ffmpeg-animation/install
+exec_prefix=${prefix}
+libdir=/home/ing156/projects/vitagram/external/ffmpeg-animation/install/lib
+includedir=/home/ing156/projects/vitagram/external/ffmpeg-animation/install/include
+
+Name: libavformat
+Description: FFmpeg container format library
+Version: 61.7.103
+Requires: libavcodec >= 61.19.101, libswresample >= 5.3.100, libavutil >= 59.39.100
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavformat -lm
+Libs.private: 
+Cflags: -I${includedir}

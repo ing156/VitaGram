@@ -1,0 +1,2 @@
+/usr/bin/ar qc libtdjson_static.a CMakeFiles/tdjson_static.dir/td/telegram/td_json_client.cpp.o CMakeFiles/tdjson_static.dir/td/telegram/td_log.cpp.o
+/usr/bin/ranlib libtdjson_static.a

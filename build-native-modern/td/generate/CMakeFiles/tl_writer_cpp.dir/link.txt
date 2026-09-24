@@ -1,0 +1,2 @@
+/usr/bin/ar qc libtl_writer_cpp.a CMakeFiles/tl_writer_cpp.dir/tl_writer_cpp.cpp.o CMakeFiles/tl_writer_cpp.dir/tl_writer_h.cpp.o CMakeFiles/tl_writer_cpp.dir/tl_writer_hpp.cpp.o CMakeFiles/tl_writer_cpp.dir/tl_writer_jni_cpp.cpp.o CMakeFiles/tl_writer_cpp.dir/tl_writer_jni_h.cpp.o CMakeFiles/tl_writer_cpp.dir/tl_writer_td.cpp.o
+/usr/bin/ranlib libtl_writer_cpp.a

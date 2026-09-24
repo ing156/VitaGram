@@ -1,0 +1,7 @@
+build/
+external/tdlib-vita/
+*.vpk
+*.self
+*.velf
+*.elf
+.DS_Store

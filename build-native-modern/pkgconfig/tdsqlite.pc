@@ -1,0 +1,9 @@
+prefix=/usr/local
+
+Name: tdsqlite
+Description: Telegram Library - SQLite
+Version: 1.8.67
+
+CFlags: -I"${prefix}/include"
+Libs: -L"${prefix}/lib" -ltdsqlite
+Libs.private: -L"/usr/lib/x86_64-linux-gnu" -lcrypto -ldl -L"/usr/lib/x86_64-linux-gnu" -lz

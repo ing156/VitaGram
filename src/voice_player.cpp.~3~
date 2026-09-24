@@ -1,0 +1,208 @@
+#include "voice_player.h"
+#include <psp2/audioout.h>
+#include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/cpu.h>
+#include <algorithm>
+#include <cstring>
+#include <vector>
+#include <sys/stat.h>
+#include <malloc.h>
+#include <cstdlib>
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswresample/swresample.h>
+}
+
+VoicePlayer::~VoicePlayer() { shutdown(); pthread_mutex_destroy(&mutex_); }
+void VoicePlayer::report(const std::string& text) {
+    pthread_mutex_lock(&mutex_); status_ = text; pthread_mutex_unlock(&mutex_);
+}
+std::string VoicePlayer::status() {
+    pthread_mutex_lock(&mutex_); auto text = status_; pthread_mutex_unlock(&mutex_);
+    if (!text.empty()) return text;
+    return finished_ ? "Finished - X replay" : playing_ ? "Playing - X pause" : "X Play / Pause";
+}
+std::string VoicePlayer::error() {
+    pthread_mutex_lock(&mutex_); auto text = status_; pthread_mutex_unlock(&mutex_); return text;
+}
+void VoicePlayer::setSource(const std::string& path, bool video) {
+    pthread_mutex_lock(&mutex_);
+    if (path_ == path && video_ == video) { pthread_mutex_unlock(&mutex_); return; }
+    video_ = video; clock_ready_ = false; clock_us_ = 0;
+    path_ = path; playing_ = false; finished_ = false; samples_ = 0; status_.clear(); ++generation_;
+    pthread_mutex_unlock(&mutex_);
+    if (!started_ && !path.empty()) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 1024 * 1024);
+        int rc = pthread_create(&thread_, &attr, entry, this);
+        pthread_attr_destroy(&attr);
+        if (rc == 0) started_ = true;
+        else { report("Cannot start audio worker"); finished_ = true; }
+    }
+}
+void VoicePlayer::toggle() {
+    pthread_mutex_lock(&mutex_);
+    if (!path_.empty() && started_) {
+        if (finished_) { ++generation_; samples_ = 0; clock_us_ = 0; clock_ready_ = false; finished_ = false; status_.clear(); }
+        playing_ = !playing_.load();
+    }
+    pthread_mutex_unlock(&mutex_);
+}
+void VoicePlayer::shutdown() {
+    stop_ = true;
+    if (started_) { pthread_join(thread_, nullptr); started_ = false; }
+}
+void* VoicePlayer::entry(void* self) { static_cast<VoicePlayer*>(self)->run(); return nullptr; }
+void VoicePlayer::run() {
+    // Keep audio conversion separate from the CPU2 video decoder and CPU0 UI.
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_1);
+    unsigned seen = 0;
+    while (!stop_) {
+        pthread_mutex_lock(&mutex_); auto path = path_; unsigned gen = generation_; bool video = video_; pthread_mutex_unlock(&mutex_);
+        if (!path.empty() && gen != seen && playing_) { seen = gen; decode(path, gen, video); }
+        else sceKernelDelayThread(10000);
+    }
+}
+void VoicePlayer::decode(const std::string& path, unsigned gen, bool video) {
+    AVFormatContext* format = nullptr;
+    AVCodecContext* codec = nullptr;
+    SwrContext* resampler = nullptr;
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    int port = -1, result = 0;
+    std::string error;
+    // Vita may still consume the submitted block after Output returns.
+    // Keep two 64-byte-aligned blocks alive until the port has drained.
+    constexpr int block_frames = 1024;
+    constexpr int block_samples = block_frames * 2;
+    auto* audio_buffers = static_cast<int16_t*>(memalign(64, 2 * block_samples * sizeof(int16_t)));
+    unsigned next_buffer = 0;
+    int64_t audio_start_us = 0;
+    bool first_frame = true;
+    auto current = [&] { return !stop_ && generation_ == gen; };
+    auto wait = [&] { while (current() && !playing_) sceKernelDelayThread(10000); return current(); };
+    auto submit = [&](const int16_t* data, int frames) {
+        if (!wait()) return false;
+        int16_t* buffer = audio_buffers + next_buffer * block_samples;
+        std::memcpy(buffer, data, frames * 2 * sizeof(int16_t));
+        std::fill(buffer + frames * 2, buffer + block_samples, 0);
+        if (sceAudioOutOutput(port, buffer) < 0) { error = "Audio output failed"; return false; }
+        next_buffer ^= 1;
+        pthread_mutex_lock(&mutex_);
+        if (current()) {
+            samples_ += frames;
+            int rest = std::max(0, sceAudioOutGetRestSample(port));
+            clock_us_ = audio_start_us + std::max<int64_t>(0, samples_.load() - rest) * 1000000 / 48000;
+            clock_ready_ = true;
+        }
+        pthread_mutex_unlock(&mutex_);
+        return true;
+    };
+    // Streaming PCM keeps memory bounded even for long recordings.
+    std::vector<int16_t> pending;
+    auto output = [&](const int16_t* data, int frames) {
+        if (frames <= 0) return true;
+        pending.insert(pending.end(), data, data + frames * 2);
+        size_t offset = 0;
+        while (pending.size() - offset >= block_samples) {
+            if (!submit(pending.data() + offset, block_frames)) return false;
+            offset += block_samples;
+        }
+        pending.erase(pending.begin(), pending.begin() + offset);
+        return true;
+    };
+    do {
+        struct stat info{};
+        if (stat(path.c_str(), &info) || info.st_size <= 0 || info.st_size > (video ? 128 : 20) * 1024 * 1024) { error = "Audio file unavailable or exceeds size limit"; break; }
+        if (!packet || !frame || !audio_buffers) { error = "Not enough audio memory"; break; }
+        AVDictionary* options = nullptr;
+        av_dict_set(&options, "protocol_whitelist", "file", 0);
+        av_dict_set(&options, "format_whitelist", video ? "mov,mp4,m4a,3gp,3g2,mj2" : "ogg", 0);
+        result = avformat_open_input(&format, ("file:" + path).c_str(), nullptr, &options);
+        av_dict_free(&options);
+        if (result < 0) break;
+        int stream = -1;
+        for (unsigned i = 0; i < format->nb_streams; ++i)
+            if (format->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) { stream = i; break; }
+        if (stream < 0) { if (!video) error = "Voice format is not Ogg/Opus"; break; }
+        AVCodecID id = format->streams[stream]->codecpar->codec_id;
+        if (id != AV_CODEC_ID_OPUS && !(video && id == AV_CODEC_ID_AAC)) { error = "Unsupported audio codec (AAC/Opus only)"; break; }
+        const AVCodec* decoder = avcodec_find_decoder(id);
+        if (!decoder) { error = "Rebuild FFmpeg with AAC/Opus support"; break; }
+        codec = avcodec_alloc_context3(decoder);
+        if (!codec) { error = "Not enough audio memory"; break; }
+        result = avcodec_parameters_to_context(codec, format->streams[stream]->codecpar);
+        if (result < 0) break;
+        codec->thread_count = 1;
+        codec->pkt_timebase = format->streams[stream]->time_base;
+        result = avcodec_open2(codec, decoder, nullptr);
+        if (result < 0) break;
+        port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN, block_frames, 48000, SCE_AUDIO_OUT_MODE_STEREO);
+        if (port < 0) { error = "Cannot open Vita audio output"; break; }
+        bool eof = false, done = false;
+        while (current() && !done && error.empty()) {
+            if (!wait()) break;
+            result = av_read_frame(format, packet);
+            if (result == AVERROR_EOF) { eof = true; result = avcodec_send_packet(codec, nullptr); }
+            else if (result < 0) break;
+            else {
+                if (packet->stream_index != stream) { av_packet_unref(packet); continue; }
+                result = avcodec_send_packet(codec, packet); av_packet_unref(packet);
+            }
+            if (result < 0) break;
+            while (current()) {
+                result = avcodec_receive_frame(codec, frame);
+                if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) { result = 0; break; }
+                if (result < 0) break;
+                if (first_frame) {
+                    first_frame = false;
+                    if (video && frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+                        audio_start_us = av_rescale_q(frame->best_effort_timestamp, codec->pkt_timebase, AVRational{1,1000000});
+                        if (format->start_time != AV_NOPTS_VALUE) audio_start_us -= format->start_time;
+                        audio_start_us = std::max<int64_t>(0, audio_start_us);
+                    }
+                }
+                if (!resampler) {
+                    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+                    result = swr_alloc_set_opts2(&resampler, &stereo, AV_SAMPLE_FMT_S16, 48000,
+                        &frame->ch_layout, (AVSampleFormat)frame->format, frame->sample_rate, 0, nullptr);
+                    if (result >= 0) result = swr_init(resampler);
+                    if (result < 0) break;
+                }
+                int capacity = swr_get_out_samples(resampler, frame->nb_samples);
+                if (capacity < 0 || capacity > 48000) { error = "Invalid voice frame size"; break; }
+                std::vector<int16_t> pcm(capacity * 2);
+                uint8_t* dest = reinterpret_cast<uint8_t*>(pcm.data());
+                result = swr_convert(resampler, &dest, capacity, (const uint8_t**)frame->extended_data, frame->nb_samples);
+                av_frame_unref(frame);
+                if (result < 0 || !output(pcm.data(), result)) { done = true; break; }
+            }
+            if (result < 0 || eof) break;
+        }
+        if (current() && eof && result >= 0 && error.empty()) {
+            if (resampler) {
+                int16_t tail[8192]; uint8_t* dest = reinterpret_cast<uint8_t*>(tail);
+                int n;
+                while ((n = swr_convert(resampler, &dest, 4096, nullptr, 0)) > 0 && current())
+                    if (!output(tail, n)) break;
+                if (n < 0) result = n;
+            }
+            if (!pending.empty() && wait() && error.empty()) {
+                submit(pending.data(), static_cast<int>(pending.size() / 2));
+            }
+        }
+    } while (false);
+    if (port >= 0) { sceAudioOutOutput(port, nullptr); sceAudioOutReleasePort(port); }
+    std::free(audio_buffers);
+    swr_free(&resampler); av_frame_free(&frame); av_packet_free(&packet);
+    avcodec_free_context(&codec); avformat_close_input(&format);
+    pthread_mutex_lock(&mutex_);
+    if (generation_ == gen && !stop_) {
+        if (clock_ready_) clock_us_ = audio_start_us + samples_.load() * 1000000 / 48000;
+        if (error.empty() && result < 0) { char buffer[128]; av_strerror(result, buffer, sizeof(buffer)); error = std::string("Voice: ") + buffer; }
+        status_ = error; playing_ = false; finished_ = true;
+    }
+    pthread_mutex_unlock(&mutex_);
+}

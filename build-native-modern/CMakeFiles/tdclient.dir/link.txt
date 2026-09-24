@@ -1,0 +1,2 @@
+/usr/bin/ar qc libtdclient.a CMakeFiles/tdclient.dir/td/telegram/Client.cpp.o CMakeFiles/tdclient.dir/td/telegram/Log.cpp.o
+/usr/bin/ranlib libtdclient.a

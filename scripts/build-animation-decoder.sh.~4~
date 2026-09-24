@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${VITASDK:?Set VITASDK to your existing VitaSDK directory}"
+export PATH="$VITASDK/bin:$PATH"
+command -v arm-vita-eabi-gcc >/dev/null
+cd "$(dirname "$0")/.."
+project_dir="$PWD"
+version=7.1.5
+root="$project_dir/external/ffmpeg-animation"
+mkdir -p "$root"
+cd "$root"
+if ! test -f "ffmpeg-$version/configure"; then
+    archive=$(mktemp "$root/ffmpeg-download.XXXXXX.tar.xz")
+    curl --fail --location --retry 3 "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz" --output "$archive"
+    tar -xJf "$archive"
+    # Keep the downloaded release archive with the corresponding source for redistribution.
+    mv -- "$archive" "ffmpeg-$version.tar.xz"
+fi
+mkdir -p "build-$version"
+cd "build-$version"
+# Deliberately independent of the SDK's audio-oriented FFmpeg package.
+# No SDK writes, sudo, GPL/nonfree codecs, external libraries or network protocols.
+"../ffmpeg-$version/configure" \
+  --prefix="$root/install" \
+  --enable-cross-compile --cross-prefix="$VITASDK/bin/arm-vita-eabi-" \
+  --target-os=none --arch=armv7-a --cpu=cortex-a9 \
+  --disable-shared --enable-static --disable-autodetect \
+  --disable-runtime-cpudetect --disable-armv5te --disable-armv6t2 \
+  --disable-programs --disable-doc --disable-debug --enable-small \
+  --disable-everything --disable-network --disable-avdevice --disable-avfilter \
+  --enable-avformat --enable-avcodec --enable-avutil --enable-swscale --enable-swresample \
+  --enable-decoder=gif,h264,opus,aac,mp3,flac,vorbis,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
+  --enable-demuxer=gif,mov,ogg,mp3,aac,flac,wav --enable-parser=h264,opus,aac,mpegaudio,flac,vorbis --enable-protocol=file \
+  --disable-bzlib --disable-iconv --disable-lzma --disable-zlib \
+  --enable-pthreads \
+  --extra-cflags="-O2 -D_BSD_SOURCE -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types" \
+  --extra-ldflags="-Wl,-q" --extra-libs="-lpthread -lm"
+make -j"$(nproc)"
+make install
+mkdir -p "$root/install/share"
+cp "../ffmpeg-$version/COPYING.LGPLv2.1" "$root/install/share/"
+printf '\nAnimation decoder installed locally in %s\n' "$root/install"

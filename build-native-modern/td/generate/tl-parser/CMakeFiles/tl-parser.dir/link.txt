@@ -1,0 +1,1 @@
+/usr/bin/cc  -ffunction-sections -fdata-sections -O3 -DNDEBUG  -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,--dependency-file=CMakeFiles/tl-parser.dir/link.d "CMakeFiles/tl-parser.dir/crc32.c.o" "CMakeFiles/tl-parser.dir/tlc.c.o" "CMakeFiles/tl-parser.dir/tl-parser.c.o" -o tl-parser  -lm

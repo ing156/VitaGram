@@ -1,0 +1,2 @@
+/usr/bin/ar qc libmemprof_stat.a CMakeFiles/memprof_stat.dir/memprof/memprof_stat.cpp.o
+/usr/bin/ranlib libmemprof_stat.a
