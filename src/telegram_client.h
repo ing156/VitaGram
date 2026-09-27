@@ -1,4 +1,5 @@
 #pragma once
+#include "media_uploads.h"
 #include "media_cache.h"
 #include "ui_cache.h"
 #include <string>
@@ -90,6 +91,8 @@ public:
     ~TelegramClient();
 
     bool start();
+    void configureProxy(bool enabled, const std::string& server, int port, const std::string& secret);
+    const std::string& proxyStatus() const { return proxy_status_; }
     void setRequestBatchSize(int size) { request_batch_size_.store(std::max(1, std::min(64, size))); }
     void restoreCache();
     bool canBrowse() const { return ready_ || !known_chats_.empty(); }
@@ -108,6 +111,8 @@ public:
     bool ready() const { return ready_; }
     bool closed() const { return closed_; }
     const std::string& status() const { return status_; }
+    std::string uploadStatus() const;
+    std::vector<std::string> uploadDetails() const;
     const std::string& lastError() const { return error_; }
     std::string mediaCacheStatus() { return media_cache_.status(); }
 
@@ -145,7 +150,10 @@ public:
     bool inTopic() const { return current_topic_ != 0; }
     void refreshHistory();
     void requestCompose();
-    bool sendAudioFile(const std::string& path, int duration);
+    bool sendVideoNoteFile(const std::string& path, int duration, int64_t chat, int32_t topic);
+    const std::string& videoNoteStatus() const { return video_note_status_; }
+    int32_t currentTopicId() const { return current_topic_; }
+    bool sendAudioFile(const std::string& path, int duration, int64_t chat, int32_t topic);
     void openStickers();
     void selectStickerPack(int index);
     void ensureStickerPackIcon(size_t index);
@@ -167,6 +175,12 @@ public:
     void ensureFullPhoto(size_t message_index, size_t photo_index);
 
 private:
+    std::string video_note_status_;
+
+    bool proxy_enabled_ = false;
+    std::string proxy_server_, proxy_secret_, proxy_status_;
+    int proxy_port_ = 443, proxy_generation_ = 0;
+    void applyProxy();
     std::vector<ForumTopicItem> topics_;
     std::string topics_status_, forum_title_;
     bool topics_open_ = false, topics_pending_ = false, topics_end_ = false;
@@ -269,6 +283,12 @@ private:
     std::vector<MessageItem> messages_;
     std::unordered_set<int32_t> pending_files_;
     std::unordered_map<int32_t, int> file_priorities_;
+    MediaUploads uploads_;
+    int64_t upload_log_time_ = 0;
+    std::string upload_log_snapshot_;
+    std::deque<std::string> upload_logs_;
+    void logUploads(bool force = false);
+    void flushUploadLogs();
 
     void sendJson(void* json_root);
     void sendRaw(const char* json, int priority = 3);

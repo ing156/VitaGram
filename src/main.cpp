@@ -1,12 +1,18 @@
 #include "telegram_client.h"
+#include "history_selection.h"
 #include "keyboard.h"
 #include "vita_net.h"
 #include "media_render.h"
 #include "animation_player.h"
 #include "voice_player.h"
 #include "audio_recorder.h"
+#include "video_note_recorder.h"
+#include "config.h"
+#include <memory>
 #include "cpu_scheduler.h"
 #include "settings.h"
+#include "proxy_link.h"
+#include "qr_scanner.h"
 #include "photo_view.h"
 #include <psp2/rtc.h>
 #include <ctime>
@@ -369,26 +375,44 @@ int main() {
     SceCtrlData pad{};
     unsigned int old_buttons = 0;
 
+    AppSettings settings;
+    settings.load();
     TelegramClient tg;
+    tg.configureProxy(settings.proxy_enabled, settings.proxy_server, settings.proxy_port, settings.proxy_secret);
     startup_screen(font, "3/5  Restoring cached chats and media", 3);
     tg.restoreCache();
     startup_screen(font, "4/5  Starting Telegram", 4);
     if (net_ok) tg.start();
 
     Keyboard kb;
-    AppSettings settings;
     startup_screen(font, "5/5  Loading settings", 5);
-    settings.load();
     tg.setRequestBatchSize(settings.request_batch_size);
     rich_text_set_scale(settings.fontScale());
     bool settings_open = false, confirm_logout = false;
     int settings_row = 0;
+    bool proxy_open = false;
+    int proxy_input = -1;
+    AppSettings proxy_draft;
+    QrScanner qr_scanner;
+    bool proxy_return_to_chat = false, proxy_imported = false;
+    std::string pending_proxy_link;
+    auto open_link = [&](const std::string& url) -> std::string {
+        if (is_proxy_link(url)) { pending_proxy_link = url; return ""; }
+        return open_web_link(url);
+    };
     std::string settings_error;
     int64_t next_cache_cleanup = sceKernelGetSystemTimeWide() + 300000000;
     TextureCache textures;
     AnimationPlayer animation;
     VoicePlayer voice;
     AudioRecorder recorder;
+    int64_t audio_chat = 0;
+    int32_t audio_topic = 0;
+    VideoNoteRecorder circle_recorder;
+    std::unique_ptr<AnimationPlayer> circle_playback;
+    int64_t circle_chat = 0;
+    int32_t circle_topic = 0;
+    std::string circle_error;
     int chat_index = 0;
     int message_index = -1;
     int photo_index = 0;
@@ -414,6 +438,18 @@ int main() {
     int32_t shown_folder_id = -1;
     bool folder_drag = false;
 
+    auto open_circle = [&]() {
+        if (recorder.recording() || recorder.processing()) {
+            browser_error = "Сначала завершите запись голосового сообщения"; return;
+        }
+        if (!tg.ready() || !tg.currentChatId()) { browser_error = "Для записи дождитесь подключения"; return; }
+        circle_chat = tg.currentChatId(); circle_topic = tg.currentTopicId(); circle_error.clear();
+        circle_playback.reset();
+        animation.setSource(""); voice.setSource("");
+        circle_recorder.open(std::string(VITAGRAM_FILES_DIR) + "/video-note-" +
+            std::to_string(sceKernelGetSystemTimeWide()) + ".mp4");
+    };
+
     while (running) {
         int64_t now = sceKernelGetSystemTimeWide();
         if (now >= next_network_poll) { net.poll(); next_network_poll = now + 1000000; }
@@ -421,7 +457,7 @@ int main() {
         unsigned int pressed = pad.buttons & ~old_buttons;
         unsigned int released = old_buttons & ~pad.buttons;
         old_buttons = pad.buttons;
-        bool compose_context = tg.currentChatId() && !tg.topicsOpen() && !post_open && !photo_open && !settings_open &&
+        bool compose_context = !circle_recorder.active() && tg.currentChatId() && !tg.topicsOpen() && !post_open && !photo_open && !settings_open &&
             !reactions_open && !stickers_open && !kb.active() && tg.inputKind() == InputKind::None;
         if (compose_context) {
             if (pressed & SCE_CTRL_SQUARE) { square_since = now; square_long = false; }
@@ -437,8 +473,7 @@ int main() {
         } else square_since = 0;
 
         int64_t selected_chat = chat_index >= 0 && chat_index < (int)tg.chats().size() ? tg.chats()[chat_index].id : 0;
-        int64_t selected_id = message_index >= 0 && message_index < (int)tg.messages().size() ? tg.messages()[message_index].id : 0;
-        int64_t selected_album = message_index >= 0 && message_index < (int)tg.messages().size() ? tg.messages()[message_index].media_album_id : 0;
+        const auto history_selection = HistorySelection::capture(tg.messages(), message_index);
         int64_t previous_last = tg.messages().empty() ? 0 : tg.messages().back().id;
         bool was_at_bottom = message_index < 0 || message_index + 1 == (int)tg.messages().size();
         bool was_cleaning = tg.cacheMaintenance();
@@ -456,11 +491,8 @@ int main() {
         }
         chat_index = std::max(0, std::min(chat_index, (int)tg.chats().size() - 1));
         if (tg.takeChatTopRequest() && !tg.currentChatId()) chat_index = 0;
-        if (selected_id) {
-            const auto& updated = tg.messages();
-            for (size_t i = 0; i < updated.size(); ++i)
-                if (updated[i].id == selected_id || (selected_album && updated[i].media_album_id == selected_album)) { message_index = (int)i; break; }
-        }
+        const int restored_message = history_selection.find(tg.messages());
+        if (restored_message >= 0) message_index = restored_message;
         if (was_at_bottom && !post_open && !photo_open && !tg.messages().empty() &&
             tg.messages().back().outgoing && tg.messages().back().id != previous_last)
             message_index = (int)tg.messages().size() - 1;
@@ -483,8 +515,8 @@ int main() {
             if (!touch_down) {
                 touch_start_x = touch_x; touch_start_y = touch_step_y = touch_y;
                 touch_dragged = false;
-                touch_blocked = kb.active() || tg.inputKind() != InputKind::None;
-                folder_drag = !stickers_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 38 && touch_start_y < 82;
+                touch_blocked = kb.active() || (!circle_recorder.active() && !settings_open && tg.inputKind() != InputKind::None);
+                folder_drag = !circle_recorder.active() && !stickers_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 38 && touch_start_y < 82;
                 folder_touch_x = touch_x;
             }
             if (std::abs(touch_y - touch_start_y) > 14 || std::abs(touch_x - touch_start_x) > 14) touch_dragged = true;
@@ -507,16 +539,21 @@ int main() {
         touch_down = touching;
         if (touching || pressed) decode_cooldown = 8;
         else if (decode_cooldown) --decode_cooldown;
-        textures.beginFrame(decode_cooldown != 0 || kb.active());
+        textures.beginFrame(decode_cooldown != 0 || kb.active() || circle_recorder.active());
 
-        if (tap && !kb.active() && tg.inputKind() == InputKind::None) {
-            if (tg.topicsOpen()) {
+        if (tap && !kb.active() && (circle_recorder.active() || settings_open || tg.inputKind() == InputKind::None)) {
+            if (circle_recorder.active()) {
+                if (touch_y >= 500) pressed |= touch_x >= 760 ? SCE_CTRL_CIRCLE :
+                    touch_x >= 470 ? (circle_recorder.state() == VideoNoteRecorder::State::Review ? SCE_CTRL_SQUARE : SCE_CTRL_TRIANGLE) : SCE_CTRL_CROSS;
+            } else if (qr_scanner.active()) {
+                if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
+            } else if (!settings_open && tg.topicsOpen()) {
                 if (touch_y >= 500) pressed |= touch_x >= 650 ? SCE_CTRL_CIRCLE : SCE_CTRL_TRIANGLE;
                 else if (touch_y >= 70 && touch_y < 470) {
                     int index = std::max(0, topic_index-7)+(touch_y-70)/50;
                     if (index < (int)tg.topics().size()) { topic_index = index; pressed |= SCE_CTRL_CROSS; }
                 }
-            } else if (stickers_open) {
+            } else if (!settings_open && stickers_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
                 else if (sticker_pack_menu && touch_y >= 116 && touch_y < 494) {
                     int index = std::max(0, sticker_pack - 6) + (touch_y - 116) / 54;
@@ -525,7 +562,7 @@ int main() {
                     int index = (sticker_index/18)*18 + (touch_y-130)/110*6 + (touch_x-30)/150;
                     if (index < (int)tg.stickers().size()) { sticker_index = index; pressed |= SCE_CTRL_CROSS; }
                 }
-            } else if (reactions_open) {
+            } else if (!settings_open && reactions_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
                 else if (touch_x >= 32 && touch_x < 928 && touch_y >= 130 && touch_y < 418) {
                     int index = (reaction_index/32)*32 + (touch_y-130)/72*8 + (touch_x-32)/112;
@@ -533,8 +570,8 @@ int main() {
                 }
             } else if (settings_open) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (touch_y >= 104 && touch_y < 454) {
-                    settings_row = (touch_y - 104) / 50; pressed |= SCE_CTRL_CROSS;
+                else if (touch_y >= 104 && touch_y < (proxy_open ? 404 : 456)) {
+                    settings_row = (touch_y - 104) / (proxy_open ? 50 : 44); pressed |= SCE_CTRL_CROSS;
                 }
             } else if (!tg.currentChatId() && tg.canBrowse() && folder_tabs && touch_y >= 38 && touch_y < 82 && touch_x >= 20 && touch_x < 940) {
                 int index = (touch_x - 20 + folder_scroll) / 180;
@@ -564,7 +601,7 @@ int main() {
                             int relative = touch_y - (post_text_top(post)-19-post_text_scroll);
                             int line = relative / 24;
                             if (relative >= 0 && line < (int)lines.size() && !lines[line].url.empty())
-                                browser_error = open_web_link(lines[line].url);
+                                browser_error = open_link(lines[line].url);
                         }
                     }
                 } else {
@@ -583,7 +620,7 @@ int main() {
                     auto lines = post_lines(font, tg.messages()[message_index]);
                     int line = post_text_scroll + (touch_y - (text_y - 19)) / 24;
                     if (line >= 0 && line < (int)lines.size() && !lines[line].url.empty())
-                        browser_error = open_web_link(lines[line].url);
+                        browser_error = open_link(lines[line].url);
                 }
                 if (touch_x >= x0 && touch_x < (columns == 2 ? 912 : 800) && touch_y >= 90 && touch_y < text_y - 19 &&
                     row >= 0 && row < (count > 2 ? 3 : 1) && col < columns && index < count) {
@@ -602,26 +639,60 @@ int main() {
             photo_index = std::max(0, std::min(photo_index, (int)tg.messages()[message_index].photos.size() - 1));
         }
 
-        if (tg.inputKind() != InputKind::None && !kb.active() && !kb.submitted() && !kb.cancelled()) {
+        if (!circle_recorder.active() && !settings_open && !(pressed & SCE_CTRL_START) && tg.inputKind() != InputKind::None && !kb.active() && !kb.submitted() && !kb.cancelled()) {
             kb.open(tg.inputPrompt(), tg.inputSecret());
         }
 
         bool toggle_voice = false;
         bool toggle_video = false;
         bool record_toggle = false;
-        if ((pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT) && !kb.active() && !tg.currentChatId()) {
-            settings_open = !settings_open; confirm_logout = false; pressed = 0;
+        if ((pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT) && !kb.active() && !qr_scanner.active() && !circle_recorder.active() && !tg.currentChatId()) {
+            proxy_return_to_chat = proxy_imported = false;
+            settings_open = !settings_open; proxy_open = false; settings_row = 0; confirm_logout = false; pressed = 0;
         }
         if (kb.active()) {
             kb.handle(pressed);
         } else if (kb.submitted()) {
             std::string v = kb.text();
             kb.close();
-            tg.submitInput(v);
+            if (proxy_input >= 0) {
+                if (proxy_input == 1) proxy_draft.proxy_server = v;
+                else if (proxy_input == 3) proxy_draft.proxy_secret = v;
+                else {
+                    int port = 0;
+                    bool valid = !v.empty() && v.size() <= 5;
+                    for (char c : v) { if (!valid || c < '0' || c > '9') { valid = false; break; } port = port * 10 + c - '0'; }
+                    if (valid && port > 0 && port <= 65535) proxy_draft.proxy_port = port;
+                    else settings_error = "Порт должен быть от 1 до 65535";
+                }
+                proxy_input = -1;
+            } else tg.submitInput(v);
         } else if (kb.cancelled()) {
             kb.close();
-            tg.cancelInput();
-        } else if (tg.topicsOpen()) {
+            if (proxy_input >= 0) proxy_input = -1; else tg.cancelInput();
+        } else if (circle_recorder.active()) {
+            using RecordingState = VideoNoteRecorder::State;
+            auto state = circle_recorder.state();
+            if (pressed & SCE_CTRL_CIRCLE) {
+                circle_playback.reset(); circle_recorder.cancel(); circle_error.clear();
+            } else {
+                if (pressed & SCE_CTRL_TRIANGLE) circle_recorder.switchCamera();
+                if ((pressed & SCE_CTRL_SQUARE) && state == RecordingState::Review && circle_playback) circle_playback->toggle();
+                if (pressed & SCE_CTRL_CROSS) {
+                    if (state == RecordingState::Preview) circle_recorder.record();
+                    else if (state == RecordingState::Recording) circle_recorder.finish();
+                    else if (state == RecordingState::Review) {
+                        if (tg.sendVideoNoteFile(circle_recorder.path(), circle_recorder.seconds(), circle_chat, circle_topic)) {
+                            circle_playback.reset(); circle_recorder.releaseFile(); circle_error.clear();
+                        } else circle_error = tg.videoNoteStatus();
+                    } else if (state == RecordingState::Error) {
+                        circle_playback.reset(); circle_recorder.cancel(); open_circle();
+                    }
+                }
+            }
+        } else if (qr_scanner.active()) {
+            if (pressed & SCE_CTRL_CIRCLE) { qr_scanner.stop(); settings_row = 5; }
+        } else if (!settings_open && tg.topicsOpen()) {
             if (pressed & SCE_CTRL_CIRCLE) tg.leaveChat();
             else {
                 if (pressed & SCE_CTRL_UP) --topic_index;
@@ -633,7 +704,7 @@ int main() {
                 topic_index = std::max(0, std::min(std::max(0, (int)tg.topics().size()-1), topic_index));
                 if (pressed & SCE_CTRL_CROSS) { tg.openTopic(topic_index); message_index = -1; }
             }
-        } else if (stickers_open) {
+        } else if (!settings_open && stickers_open) {
             if (sticker_pack_menu) {
                 if (pressed & SCE_CTRL_CIRCLE) stickers_open = false;
                 int count = (int)tg.stickerPacks().size();
@@ -654,7 +725,7 @@ int main() {
                 sticker_index = std::max(0, std::min(std::max(0, count-1), sticker_index));
                 if ((pressed & SCE_CTRL_CROSS) && tg.sendSticker(sticker_index)) stickers_open = false;
             }
-        } else if (reactions_open) {
+        } else if (!settings_open && reactions_open) {
             int count = (int)tg.reactionChoices().size();
             if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SQUARE)) reactions_open = false;
             if (count) {
@@ -666,10 +737,38 @@ int main() {
                 if ((pressed & SCE_CTRL_CROSS) && message_index >= 0 && message_index < (int)tg.messages().size())
                     tg.toggleReaction(tg.messages()[message_index].id, tg.reactionChoices()[reaction_index]);
             }
+        } else if (settings_open && proxy_open) {
+            if (pressed & SCE_CTRL_CIRCLE) {
+                proxy_open = false; settings_row = 6; settings_error.clear(); proxy_imported = false;
+                if (proxy_return_to_chat) { settings_open = false; proxy_return_to_chat = false; }
+            }
+            else {
+                if (pressed & SCE_CTRL_UP) settings_row = (settings_row + 5) % 6;
+                if (pressed & SCE_CTRL_DOWN) settings_row = (settings_row + 1) % 6;
+                if (pressed & SCE_CTRL_CROSS) {
+                    settings_error.clear();
+                    if (settings_row == 0) proxy_draft.proxy_enabled = !proxy_draft.proxy_enabled;
+                    else if (settings_row < 4) {
+                        proxy_input = settings_row;
+                        kb.open(settings_row == 1 ? "MTProxy server" : settings_row == 2 ? "MTProxy port" : "MTProxy secret",
+                            settings_row == 3, settings_row == 1 ? proxy_draft.proxy_server : settings_row == 2 ?
+                            std::to_string(proxy_draft.proxy_port) : proxy_draft.proxy_secret);
+                    } else if (settings_row == 5) {
+                        if (!qr_scanner.start()) settings_error = qr_scanner.status();
+                    } else if (proxy_draft.proxy_enabled && (proxy_draft.proxy_server.empty() || proxy_draft.proxy_secret.empty() || proxy_draft.proxy_port < 1)) {
+                        settings_error = "Укажите сервер, порт и secret";
+                    } else if (!proxy_draft.save()) settings_error = "Не удалось сохранить настройки";
+                    else {
+                        settings = proxy_draft;
+                        proxy_imported = false;
+                        tg.configureProxy(settings.proxy_enabled, settings.proxy_server, settings.proxy_port, settings.proxy_secret);
+                    }
+                }
+            }
         } else if (settings_open) {
             if (pressed & SCE_CTRL_CIRCLE) { if (confirm_logout) confirm_logout = false; else settings_open = false; }
-            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+6)%7; confirm_logout = false; }
-            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%7; confirm_logout = false; }
+            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+7)%8; confirm_logout = false; }
+            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%8; confirm_logout = false; }
             if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                 int direction = (pressed & SCE_CTRL_LEFT) ? -1 : 1;
                 if (settings_row < 4) {
@@ -688,6 +787,8 @@ int main() {
                     settings.request_batch_size = AppSettings::requestBatchSize(index);
                     tg.setRequestBatchSize(settings.request_batch_size);
                     settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
+                } else if (settings_row == 6) {
+                    if (pressed & SCE_CTRL_CROSS) { proxy_open = true; proxy_return_to_chat = proxy_imported = false; proxy_draft = settings; settings_row = 0; settings_error.clear(); confirm_logout = false; }
                 } else if (pressed & SCE_CTRL_CROSS) {
                     if (!tg.ready()) settings_error = "Для выхода дождитесь подключения";
                     else if (confirm_logout) { tg.logout(); confirm_logout = false; settings_open = false; }
@@ -748,7 +849,7 @@ int main() {
                     }
                     int link_line = scrollable_post(messages[message_index]) ? std::max(0, (post_text_scroll-post_text_top(messages[message_index])+62)/24) : post_text_scroll;
                     if ((pressed & SCE_CTRL_TRIANGLE) && link_line < (int)lines.size() && !lines[link_line].url.empty())
-                        browser_error = open_web_link(lines[link_line].url);
+                        browser_error = open_link(lines[link_line].url);
                     if ((pressed & SCE_CTRL_CROSS) && count) {
                         tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
                         photo_open = true;
@@ -758,7 +859,8 @@ int main() {
             } else {
                 if (pressed & SCE_CTRL_CIRCLE) { if (tg.inTopic()) tg.backToTopics(); else tg.leaveChat(); pressed = 0; }
                 if (pressed & SCE_CTRL_SQUARE) tg.requestCompose();
-                if (pressed & SCE_CTRL_RTRIGGER) record_toggle = true;
+                if (pressed & SCE_CTRL_LTRIGGER) open_circle();
+                else if (pressed & SCE_CTRL_RTRIGGER) record_toggle = true;
                 if (pressed & SCE_CTRL_TRIANGLE) tg.refreshHistory();
                 if (pressed & SCE_CTRL_UP) {
                     if (message_index > 0) message_index--;
@@ -799,21 +901,58 @@ int main() {
             if (pressed & SCE_CTRL_TRIANGLE) tg.refreshChats();
         }
 
-        if (record_toggle && tg.currentChatId() && !kb.active() && !post_open && !photo_open) {
+        if (record_toggle && !circle_recorder.active() && tg.currentChatId() && !kb.active() && !post_open && !photo_open) {
             if (recorder.recording()) {
-                std::string path = recorder.stop();
-                if (!path.empty()) tg.sendAudioFile(path, recorder.seconds());
+                recorder.stop();
             } else {
-                recorder.start("ux0:data/vitagram/voice-message-" + std::to_string(now) + ".ogg");
+                if (recorder.start("ux0:data/vitagram/voice-message-" + std::to_string(now) + ".ogg")) {
+                    audio_chat = tg.currentChatId(); audio_topic = tg.currentTopicId();
+                }
             }
         }
+        std::string completed_audio = recorder.takeCompleted();
+        if (!completed_audio.empty() && !tg.sendAudioFile(completed_audio, recorder.seconds(), audio_chat, audio_topic))
+            recorder.setStatus("Не удалось передать аудио в Telegram");
 
         if ((pressed & SCE_CTRL_START) && (pad.buttons & SCE_CTRL_SELECT) && !kb.active()) {
             tg.close();
             running = false;
         }
 
-        int animation_index = post_open && !photo_open && !kb.active() && running &&
+        if (qr_scanner.active()) {
+            std::string scanned = qr_scanner.takeLink();
+            if (!scanned.empty()) { pending_proxy_link = scanned; qr_scanner.stop(); }
+            else qr_scanner.upload();
+        }
+        if (!pending_proxy_link.empty()) {
+            ProxyLink proxy; std::string error;
+            auto parsed = parse_proxy_link(pending_proxy_link, proxy, error);
+            pending_proxy_link.clear();
+            if (parsed == ProxyLinkResult::Valid) {
+                proxy_return_to_chat = proxy_return_to_chat || !settings_open;
+                if (!settings_open || !proxy_open) proxy_draft = settings;
+                proxy_draft.proxy_server = proxy.server; proxy_draft.proxy_port = proxy.port;
+                proxy_draft.proxy_secret = proxy.secret; proxy_draft.proxy_enabled = true;
+                settings_open = proxy_open = proxy_imported = true;
+                settings_row = 4; settings_error.clear(); confirm_logout = false;
+            } else {
+                if (settings_open) settings_error = error;
+                else browser_error = error;
+            }
+        }
+
+        if (circle_recorder.active()) {
+            circle_recorder.upload();
+            if (circle_recorder.state() == VideoNoteRecorder::State::Review) {
+                if (!circle_playback) {
+                    circle_playback.reset(new AnimationPlayer());
+                    circle_playback->setSource(circle_recorder.path(), true, true);
+                }
+                circle_playback->upload();
+            }
+        }
+
+        int animation_index = !circle_recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running &&
             message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].animation ? message_index : -1;
         tg.setAnimationTarget(animation_index);
         const MessageItem* animation_message = animation_index >= 0 ? &tg.messages()[animation_index] : nullptr;
@@ -821,7 +960,7 @@ int main() {
             animation_message && animation_message->video, animation_message && animation_message->video_note);
         if (toggle_video && animation_message) animation.toggle();
         animation.upload();
-        int voice_index = post_open && !photo_open && !kb.active() && running && tg.currentChatId() &&
+        int voice_index = !circle_recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running && tg.currentChatId() &&
             message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].voice ? message_index : -1;
         tg.setVoiceTarget(voice_index);
         const MessageItem* voice_message = voice_index >= 0 ? &tg.messages()[voice_index] : nullptr;
@@ -859,7 +998,7 @@ int main() {
             title_x = 50;
         }
         const unsigned int header_text = RGBA8(240,247,255,255);
-        std::string heading = settings_open ? "Настройки" : tg.currentChatId() ? tg.currentChatTitle() : "VitaGram " VITAGRAM_VERSION;
+        std::string heading = settings_open ? (proxy_open ? "MTProxy" : "Настройки") : tg.currentChatId() ? tg.currentChatTitle() : "VitaGram " VITAGRAM_VERSION;
         std::string presence = settings_open ? "" : tg.currentUserStatus();
         int status_width = presence.empty() ? 280 : 390;
         draw_text(font, title_x, 25, fit_text(font, heading, 920-status_width-title_x, 0.65f), header_text, 0.65f);
@@ -870,17 +1009,34 @@ int main() {
         vita2d_draw_rectangle(0, 500, 960, 44, white);
         vita2d_draw_rectangle(0, 499, 960, 1, separator);
 
-        if (settings_open) {
-            const char* labels[] = {"Хранить кэш", "Объём кэша медиа", "Тема", "Размер шрифта", "Показывать потоки", "Пакет запросов", "Выйти из аккаунта"};
+        if (qr_scanner.active()) {
+            if (qr_scanner.preview()) draw_texture_fit(qr_scanner.preview(), 240, 60, 480, 360);
+            draw_text(font, 30, 462, fit_text(font, qr_scanner.status(), 900, 0.55f), ink, 0.55f);
+            draw_text(font, 28, 528, "Задняя камера: QR-код MTProxy    O Отмена", ink, 0.6f);
+        } else if (settings_open && proxy_open) {
+            const char* labels[] = {"Использовать MTProxy", "Сервер", "Порт", "Secret", "Сохранить и применить", "Сканировать QR-код"};
+            std::string values[] = {proxy_draft.proxy_enabled ? "Да" : "Нет", clip(proxy_draft.proxy_server, 30),
+                std::to_string(proxy_draft.proxy_port), proxy_draft.proxy_secret.empty() ? "Не задан" : "********", "", "Задняя камера"};
+            for (int row = 0; row < 6; ++row) {
+                rounded_rect(24, 104+row*50, 912, 44, row == settings_row ? selected : white);
+                draw_text(font, 40, 132+row*50, labels[row], ink, 0.65f);
+                draw_text(font, 520, 132+row*50, values[row], ink, 0.6f);
+            }
+            draw_text(font, 30, 438, proxy_imported ? "Настроить этот MTProxy? Проверьте поля и нажмите «Сохранить и применить»." : "", muted, 0.48f);
+            draw_text(font, 30, 462, tg.proxyStatus(), muted, 0.55f);
+            draw_text(font, 30, 484, settings_error, ink, 0.5f);
+            draw_text(font, 28, 528, "X Изменить / применить    O Назад без сохранения", ink, 0.6f);
+        } else if (settings_open) {
+            const char* labels[] = {"Хранить кэш", "Объём кэша медиа", "Тема", "Размер шрифта", "Показывать потоки", "Пакет запросов", "MTProxy", "Выйти из аккаунта"};
             std::string values[] = {
                 settings.retention == 4 ? "Всегда" : std::to_string(AppSettings::days(settings.retention)) + " дн.",
                 settings.capacity == 5 ? "Без лимита" : std::to_string(AppSettings::megabytes(settings.capacity)) + " МБ",
                 dark ? "Тёмная" : "Светлая", std::to_string(90+settings.font*10) + "%",
-                settings.show_threads ? "Да" : "Нет", std::to_string(settings.request_batch_size), confirm_logout ? "X: подтвердить выход" : ""};
-            for (int row=0; row<7; ++row) {
-                rounded_rect(24, 104+row*50, 912, 44, row == settings_row ? selected : white);
-                draw_text(font, 40, 132+row*50, labels[row], ink, 0.65f);
-                draw_text(font, 520, 132+row*50, values[row], ink, 0.6f);
+                settings.show_threads ? "Да" : "Нет", std::to_string(settings.request_batch_size), settings.proxy_enabled ? "Включён" : "Выключен", confirm_logout ? "X: подтвердить выход" : ""};
+            for (int row=0; row<8; ++row) {
+                rounded_rect(24, 104+row*44, 912, 40, row == settings_row ? selected : white);
+                draw_text(font, 40, 130+row*44, labels[row], ink, 0.65f);
+                draw_text(font, 520, 130+row*44, values[row], ink, 0.6f);
             }
             draw_text(font, 30, 466, "Кэш медиа очищается в главном меню. Сообщения сохраняются.", muted, 0.46f);
             draw_text(font, 30, 484, settings_error, ink, 0.5f);
@@ -1106,7 +1262,7 @@ int main() {
                 vita2d_disable_clipping();
                 if (msgs.empty()) draw_text(font, 38, 150, "No messages", muted, 0.75f);
                 draw_text(font, 28, 528, "X  Open post", ink, 0.65f);
-                draw_text(font, 275, 528, "Square: текст / держать: стикеры", ink, 0.5f);
+                draw_text(font, 275, 528, "Square: текст   L: кружок   R: аудио", ink, 0.5f);
                 draw_text(font, 700, 528, "O  Back", ink, 0.65f);
             }
         } else if (tg.canBrowse()) {
@@ -1185,29 +1341,52 @@ int main() {
             std::string thread_info = settings.show_threads ? " | " + cpu_scheduler::threadStatus() : "";
             std::snprintf(loading, sizeof(loading), "History block: %d%%%s%s", progress,
                 tg.historyLoading() ? " - loading..." : " - ready", thread_info.c_str());
-            draw_text(font, 28, 494, !browser_error.empty() ? browser_error :
-                (tg.historyError().empty() ? fit_text(font, loading, 904, 0.48f) : "History: " + tg.historyError()), ink, 0.48f);
+            std::string audio_status;
+            if (recorder.processing()) {
+                audio_status = "Audio: " + recorder.status();
+            } else if (!recorder.recording() && !tg.uploadStatus().empty()) {
+                audio_status = tg.uploadStatus();
+            } else if (!recorder.status().empty() && recorder.status() != "Запись...") {
+                audio_status = "Audio: " + recorder.status();
+            } else if (recorder.recording()) {
+                audio_status = recorder.peak() ? "Микрофон активен" : "Нет сигнала микрофона";
+            }
+            std::string info = !browser_error.empty() ? browser_error :
+                (!audio_status.empty() ? audio_status :
+                (tg.historyError().empty() ? loading : "History: " + tg.historyError()));
+            draw_text(font, 28, 494, fit_text(font, info, recorder.recording() ? 650 : 904, 0.48f), ink, 0.48f);
             if (recorder.recording()) {
-                draw_text(font, 515, 494, recorder.peak() ? "Микрофон активен" : "Нет сигнала микрофона", ink, 0.45f);
                 vita2d_draw_rectangle(690, 484, 235, 8, separator);
                 vita2d_draw_rectangle(690, 484, 2.35f * recorder.peak(), 8, accent);
                 vita2d_draw_rectangle(690, 494, 235, 3, muted);
                 vita2d_draw_rectangle(690, 494, 2.35f * recorder.level(), 3, accent);
-                draw_text(font, 28, 528, "R: остановить и отправить", accent, 0.55f);
             }
         }
+        if (!settings_open && !tg.currentChatId() && !tg.uploadStatus().empty()) {
+            vita2d_draw_rectangle(0, 481, 960, 18, selected);
+            draw_text(font, 28, 494, fit_text(font, tg.uploadStatus(), 900, 0.48f), ink, 0.48f);
+        }
         if (!settings_open && (pad.buttons & SCE_CTRL_SELECT) && !kb.active()) {
-            vita2d_draw_rectangle(0, 78, 960, 52, RGBA8(20,35,50,240));
+            auto transfers = tg.uploadDetails();
+            size_t count = std::min<size_t>(8, transfers.size());
+            size_t pages = (transfers.size() + 7) / 8;
+            size_t first = pages ? ((now / 8000000) % pages) * 8 : 0;
+            vita2d_draw_rectangle(0, 78, 960, 52 + (transfers.empty() ? 0 : 24 * (count + 1)), RGBA8(20,35,50,240));
             draw_text(font, 20, 99, cpu_scheduler::status(), header_text, 0.6f);
             draw_text(font, 20, 123, tg.mediaCacheStatus(), header_text, 0.6f);
+            if (!transfers.empty()) {
+                draw_text(font, 20, 147, "Отправки — страницы меняются каждые 8 с", header_text, 0.55f);
+                for (size_t i = first; i < transfers.size() && i < first + 8; ++i)
+                    draw_text(font, 20, 171 + (i-first)*24, fit_text(font, transfers[i], 920, 0.53f), header_text, 0.53f);
+            }
         }
         if (!settings_open && !tg.ready() && tg.canBrowse() && !kb.active()) {
             vita2d_draw_rectangle(0, 78, 960, 26, RGBA8(20,35,50,240));
             draw_text(font, 20, 98, "Cached data - waiting for Telegram", header_text, 0.55f);
         }
-        if (post_open && !photo_open && !reactions_open && !kb.active())
+        if (!settings_open && post_open && !photo_open && !reactions_open && !kb.active())
             draw_text(font, 750, 472, "Square: реакции", muted, 0.45f);
-        if (reactions_open) {
+        if (!settings_open && reactions_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
             draw_text(font, 32, 80, "Реакции", ink, 0.85f);
             draw_text(font, 32, 112, fit_text(font, tg.reactionStatus(), 880, 0.6f), muted, 0.6f);
@@ -1220,7 +1399,7 @@ int main() {
             }
             draw_text(font, 28, 528, "D-pad: выбор   X: поставить / убрать   O: назад", ink, 0.6f);
         }
-        if (tg.topicsOpen()) {
+        if (!settings_open && tg.topicsOpen()) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
             draw_text(font, 30, 61, "Темы группы", ink, 0.7f);
             const auto& topics = tg.topics();
@@ -1235,7 +1414,7 @@ int main() {
             draw_text(font, 30, 492, fit_text(font, tg.topicsStatus(), 900, 0.55f), muted, 0.55f);
             draw_text(font, 30, 528, "X: открыть   Triangle: ещё темы   O: назад", ink, 0.6f);
         }
-        if (stickers_open) {
+        if (!settings_open && stickers_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
             const auto& packs = tg.stickerPacks();
             if (sticker_pack_menu) {
@@ -1273,17 +1452,50 @@ int main() {
                 draw_text(font, 30, 528, "D-pad: выбор   X: отправить   O: наборы   Square: закрыть", ink, 0.6f);
             }
         }
+        if (circle_recorder.active()) {
+            using RecordingState = VideoNoteRecorder::State;
+            auto state = circle_recorder.state();
+            vita2d_draw_rectangle(0, 0, 960, 544, white);
+            draw_text(font, 28, 34, "Видеокружок", ink, 0.85f);
+            draw_text(font, 590, 34, circle_recorder.rearCamera() ? "Задняя камера" : "Фронтальная камера", muted, 0.6f);
+            auto* preview = circle_playback && circle_playback->texture() ? circle_playback->texture() : circle_recorder.preview();
+            if (preview) draw_texture_fit(preview, 320, 66, 320, 320);
+            std::string timer = std::to_string(circle_recorder.seconds()) + " / 60 сек.";
+            if (state == RecordingState::Encoding) timer = "Подготовка MP4: " + std::to_string(circle_recorder.percent()) + "%";
+            draw_text(font, 350, 416, timer, state == RecordingState::Recording ? RGBA8(210,45,45,255) : ink, 0.7f);
+            if (state == RecordingState::Recording) {
+                vita2d_draw_rectangle(320, 432, 320, 6, separator);
+                vita2d_draw_rectangle(320, 432, 3.2f * circle_recorder.level(), 6, accent);
+            }
+            draw_text(font, 28, 464, fit_text(font, circle_error.empty() ? circle_recorder.status() : circle_error, 900, 0.55f), ink, 0.55f);
+            const char* action = state == RecordingState::Review ? "X Отправить" : state == RecordingState::Recording ? "X Остановить" :
+                state == RecordingState::Preview ? "X Записать" : state == RecordingState::Error ? "X Повторить" : "";
+            draw_text(font, 28, 528, action, ink, 0.65f);
+            if (state == RecordingState::Review) draw_text(font, 480, 528, "Square Просмотр", ink, 0.6f);
+            else if (state == RecordingState::Preview || state == RecordingState::Recording)
+                draw_text(font, 480, 528, "Triangle Камера", ink, 0.6f);
+            draw_text(font, 785, 528, "O Отмена", ink, 0.6f);
+        }
         if (kb.active()) kb.draw(font);
 
         vita2d_end_drawing();
+        // vita2d reuses one vertex pool on the next frame. Finish this scene
+        // before the IME renders into the same surfaces or that pool is reset.
+        vita2d_wait_rendering_done();
         if (kb.active()) vita2d_common_dialog_update();
         vita2d_swap_buffers();
+        // CommonDialog submits through its own context; waiting only for the
+        // vita2d context doesn't cover the keyboard's GPU work.
+        if (kb.active()) sceGxmDisplayQueueFinish();
         textures.loadOne();
         if (!decode_cooldown) emoji_load_one();
     }
 
     vita2d_wait_rendering_done();
     photo_view.updateMotion(false, 0, false);
+    qr_scanner.stop();
+    circle_playback.reset();
+    circle_recorder.cancel();
     animation.shutdown();
     voice.shutdown();
     textures.clear();

@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "27.00")
-set(VITAGRAM_VERSION "0.27.0")
+set(VITA_VERSION  "31.02")
+set(VITAGRAM_VERSION "0.31.2")
 
 set(ANIMATION_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-animation/install" CACHE PATH "Minimal Vita FFmpeg prefix")
 foreach(ANIMATION_LIB avformat avcodec swscale swresample avutil)
@@ -59,6 +59,20 @@ set(TD_ENABLE_TESTS OFF CACHE BOOL "Build TDLib tests" FORCE)
 include_directories(BEFORE "${CMAKE_SOURCE_DIR}/src/vita_compat")
 add_subdirectory("${TDLIB_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tdlib" EXCLUDE_FROM_ALL)
 
+add_library(vitagram_h264 STATIC src/minih264.c)
+target_include_directories(vitagram_h264 PUBLIC external/minih264)
+target_compile_definitions(vitagram_h264 PUBLIC H264E_MAX_THREADS=0 H264E_SVC_API=0)
+target_compile_options(vitagram_h264 PRIVATE -O2 -mfpu=neon -mfloat-abi=hard)
+
+add_library(vitagram_quirc STATIC
+  external/quirc/lib/quirc.c
+  external/quirc/lib/identify.c
+  external/quirc/lib/decode.c
+  external/quirc/lib/version_db.c
+)
+target_include_directories(vitagram_quirc PUBLIC external/quirc/lib)
+target_compile_definitions(vitagram_quirc PRIVATE QUIRC_FLOAT_TYPE=float QUIRC_USE_TGMATH)
+
 add_executable(${PROJECT_NAME}
   src/main.cpp
   src/cpu_scheduler.cpp
@@ -70,6 +84,10 @@ add_executable(${PROJECT_NAME}
   src/audio_recorder.cpp
   src/telegram_client.cpp
   src/keyboard.cpp
+  src/proxy_link.cpp
+  src/qr_scanner.cpp
+  src/video_note_encoder.cpp
+  src/video_note_recorder.cpp
   src/vita_net.cpp
   ${CMAKE_SOURCE_DIR}/external/tdlib-vita/vitaports/td_missing_func_placeholder.cpp
 )
@@ -107,6 +125,8 @@ endif()
 
 target_link_libraries(${PROJECT_NAME}
   Td::TdJsonStatic
+  vitagram_quirc
+  vitagram_h264
   jansson
   ${ANIMATION_FFMPEG_ROOT}/lib/libavformat.a
   ${ANIMATION_FFMPEG_ROOT}/lib/libavcodec.a
@@ -127,6 +147,7 @@ target_link_libraries(${PROJECT_NAME}
   SceDisplay_stub
   SceAudio_stub
   SceAudioIn_stub
+  SceCamera_stub
   SceRtc_stub
   SceGxm_stub
   SceSysmodule_stub
@@ -147,6 +168,8 @@ vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
+  FILE external/minih264/LICENSE assets/minih264-LICENSE.txt
+  FILE external/quirc/LICENSE assets/quirc-LICENSE.txt
   FILE assets/icon0.png sce_sys/icon0.png
   FILE assets/NotoColorEmoji.ttf assets/NotoColorEmoji.ttf
   FILE assets/Emoji-LICENSE.txt assets/Emoji-LICENSE.txt

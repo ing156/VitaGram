@@ -30,6 +30,8 @@ cd "build-$version"
   --disable-everything --disable-network --disable-avdevice --disable-avfilter \
   --enable-avformat --enable-avcodec --enable-avutil --enable-swscale --enable-swresample \
   --enable-decoder=gif,h264,vp8,vp9,opus,aac,mp3,flac,vorbis,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
+  --enable-encoder=opus,aac \
+  --enable-muxer=ogg,mp4 \
   --enable-demuxer=gif,mov,matroska,ogg,mp3,aac,flac,wav --enable-parser=h264,vp8,vp9,opus,aac,mpegaudio,flac,vorbis --enable-protocol=file \
   --disable-bzlib --disable-iconv --disable-lzma --disable-zlib \
   --enable-pthreads \

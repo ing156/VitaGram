@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+build_dir=$(mktemp -d "${TMPDIR:-/tmp}/vitagram-transfer-tests.XXXXXX")
+trap 'rm -rf -- "$build_dir"' EXIT
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -pthread -DVITAGRAM_VERSION='"test"' \
+  -I "$root/tests/stubs" -I "$root/src" -I "$root/external/tdlib-upstream" -I "$root/build-modern/tdlib" \
+  -I "$root/build-modern/external/jansson/include" \
+  "$root/src/telegram_client.cpp" "$root/src/media_cache.cpp" "$root/src/ui_cache.cpp" \
+  "$root/src/proxy_link.cpp" "$root/tests/transfers_test.cpp" -l:libjansson.so.4 -o "$build_dir/transfers"
+(cd "$build_dir" && ./transfers)
+if [[ -n "${FFMPEG_AUDIO_BUILD:-}" ]]; then
+  "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -pthread \
+    -I "$root/tests/stubs" -I "$root/src" -I "$FFMPEG_AUDIO_BUILD" -I "$FFMPEG_AUDIO_BUILD/src" \
+    "$root/src/audio_recorder.cpp" "$root/tests/audio_recorder_test.cpp" \
+    "$FFMPEG_AUDIO_BUILD/libavformat/libavformat.a" "$FFMPEG_AUDIO_BUILD/libavcodec/libavcodec.a" \
+    "$FFMPEG_AUDIO_BUILD/libswresample/libswresample.a" "$FFMPEG_AUDIO_BUILD/libavutil/libavutil.a" \
+    -lm -o "$build_dir/audio"
+  (cd "$build_dir" && ./audio)
+fi

@@ -12,7 +12,7 @@ namespace cpu_scheduler {
 namespace {
 struct Entry { int id = -1; Role role = Role::Parser; int core = -1; int64_t moved = 0; };
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-std::array<Entry, 8> threads;
+std::array<Entry, 16> threads;
 int base_priority = 0x10000100;
 int audio_active = 0, video_active = 0;
 enum ProbeState { Checking = -1, Timeout = -2, CreateFailed = -3,
@@ -104,7 +104,7 @@ void init() {
 }
 Thread::Thread(Role role) : id_(sceKernelGetThreadId()) {
     pthread_mutex_lock(&mutex);
-    int offset = role == Role::Audio ? -8 : role == Role::Ui ? 0 : role == Role::Video ? 4 : role == Role::Network ? 24 : 32;
+    int offset = role == Role::Audio ? -8 : role == Role::Ui ? 0 : role == Role::Video ? 12 : 4;
     check("priority", sceKernelChangeThreadPriority(id_, std::max(32, base_priority + offset)));
     for (auto& thread : threads) if (thread.id < 0) {
         thread = Entry{id_, role, -1, 0};
@@ -129,7 +129,8 @@ Media::Media(Role role) : role_(role) {
 Media::~Media() {
     pthread_mutex_lock(&mutex);
     if (role_ == Role::Audio) --audio_active; else --video_active;
-    // tick() reuses idle capacity later; avoid migration churn between clips.
+    // Restore capacity immediately when capture/playback releases a core.
+    balance(true);
     pthread_mutex_unlock(&mutex);
 }
 void tick() {

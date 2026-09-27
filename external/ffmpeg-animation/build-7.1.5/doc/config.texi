@@ -653,20 +653,20 @@
 @c @set config-xmm-clobber-test no
 @c @set config-bsfs no
 @set config-decoders yes
-@c @set config-encoders no
+@set config-encoders yes
 @c @set config-hwaccels no
 @set config-parsers yes
 @c @set config-indevs no
 @c @set config-outdevs no
 @c @set config-filters no
 @set config-demuxers yes
-@c @set config-muxers no
+@set config-muxers yes
 @set config-protocols yes
 @c @set config-aandcttables no
 @c @set config-ac3dsp no
 @set config-adts-header yes
 @set config-atsc-a53 yes
-@c @set config-audio-frame-queue no
+@set config-audio-frame-queue yes
 @c @set config-audiodsp no
 @c @set config-blockdsp no
 @c @set config-bswapdsp no
@@ -693,7 +693,7 @@
 @set config-faanidct yes
 @set config-fdctdsp yes
 @c @set config-fmtconvert no
-@c @set config-frame-thread-encoder no
+@set config-frame-thread-encoder yes
 @c @set config-g722dsp no
 @set config-golomb yes
 @c @set config-gplv3 no
@@ -711,13 +711,13 @@
 @c @set config-huffyuvdsp no
 @c @set config-huffyuvencdsp no
 @set config-iamfdec yes
-@c @set config-iamfenc no
+@set config-iamfenc yes
 @set config-idctdsp yes
-@c @set config-iirfilter no
+@set config-iirfilter yes
 @c @set config-inflate-wrapper no
 @c @set config-intrax8 no
 @set config-iso-media yes
-@c @set config-iso-writer no
+@set config-iso-writer yes
 @c @set config-ividsp no
 @c @set config-jpegtables no
 @c @set config-lgplv3 no
@@ -726,7 +726,7 @@
 @c @set config-llauddsp no
 @c @set config-llviddsp no
 @c @set config-llvidencdsp no
-@c @set config-lpc no
+@set config-lpc yes
 @c @set config-lzf no
 @set config-me-cmp yes
 @c @set config-mpeg-er no
@@ -748,9 +748,9 @@
 @c @set config-qsvvpp no
 @c @set config-rangecoder no
 @set config-riffdec yes
-@c @set config-riffenc no
+@set config-riffenc yes
 @c @set config-rtpdec no
-@c @set config-rtpenc-chain no
+@set config-rtpenc-chain yes
 @c @set config-rv34dsp no
 @c @set config-scene-sad no
 @set config-sinewin yes
@@ -770,7 +770,7 @@
 @c @set config-vulkan-encode no
 @c @set config-wma-freqs no
 @c @set config-wmv2dsp no
-@c @set config-aac-adtstoasc-bsf no
+@set config-aac-adtstoasc-bsf yes
 @c @set config-av1-frame-merge-bsf no
 @c @set config-av1-frame-split-bsf no
 @c @set config-av1-metadata-bsf no
@@ -811,7 +811,7 @@
 @c @set config-truehd-core-bsf no
 @c @set config-vp9-metadata-bsf no
 @c @set config-vp9-raw-reorder-bsf no
-@c @set config-vp9-superframe-bsf no
+@set config-vp9-superframe-bsf yes
 @set config-vp9-superframe-split-bsf yes
 @c @set config-vvc-metadata-bsf no
 @c @set config-vvc-mp4toannexb-bsf no
@@ -1491,7 +1491,7 @@
 @c @set config-yuv4-encoder no
 @c @set config-zlib-encoder no
 @c @set config-zmbv-encoder no
-@c @set config-aac-encoder no
+@set config-aac-encoder yes
 @c @set config-ac3-encoder no
 @c @set config-ac3-fixed-encoder no
 @c @set config-alac-encoder no
@@ -1507,7 +1507,7 @@
 @c @set config-mp2-encoder no
 @c @set config-mp2fixed-encoder no
 @c @set config-nellymoser-encoder no
-@c @set config-opus-encoder no
+@set config-opus-encoder yes
 @c @set config-ra-144-encoder no
 @c @set config-sbc-encoder no
 @c @set config-sonic-encoder no
@@ -1732,7 +1732,7 @@
 @c @set config-wmv3-vdpau-hwaccel no
 @set config-aac-parser yes
 @c @set config-aac-latm-parser no
-@c @set config-ac3-parser no
+@set config-ac3-parser yes
 @c @set config-adx-parser no
 @c @set config-amr-parser no
 @c @set config-av1-parser no
@@ -2850,10 +2850,10 @@
 @c @set config-mjpeg-muxer no
 @c @set config-mlp-muxer no
 @c @set config-mmf-muxer no
-@c @set config-mov-muxer no
+@set config-mov-muxer yes
 @c @set config-mp2-muxer no
 @c @set config-mp3-muxer no
-@c @set config-mp4-muxer no
+@set config-mp4-muxer yes
 @c @set config-mpeg1system-muxer no
 @c @set config-mpeg1vcd-muxer no
 @c @set config-mpeg1video-muxer no
@@ -2870,7 +2870,7 @@
 @c @set config-nut-muxer no
 @c @set config-obu-muxer no
 @c @set config-oga-muxer no
-@c @set config-ogg-muxer no
+@set config-ogg-muxer yes
 @c @set config-ogv-muxer no
 @c @set config-oma-muxer no
 @c @set config-opus-muxer no

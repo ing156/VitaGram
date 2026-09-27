@@ -1,6 +1,7 @@
 #include "keyboard.h"
 #include <algorithm>
 #include <iterator>
+#include <vita2d.h>
 
 namespace {
 void utf8_to_utf16(const std::string& s, unsigned short* d, size_t cap) {
@@ -35,6 +36,11 @@ std::string utf16_to_utf8(const unsigned short* s) {
 Keyboard::Keyboard() = default;
 
 void Keyboard::open(const std::string& title, bool secret, const std::string& initial) {
+    if (active_) return;
+    // IME owns GPU resources too. Drain both rendering and presentation before
+    // creating a dialog or reusing the buffers from the previous dialog.
+    vita2d_wait_rendering_done();
+    sceGxmDisplayQueueFinish();
     submitted_ = cancelled_ = false; text_ = initial;
     std::fill(std::begin(title_), std::end(title_), 0); std::fill(std::begin(initial_), std::end(initial_), 0); std::fill(std::begin(input_), std::end(input_), 0);
     utf8_to_utf16(title, title_, std::size(title_)); utf8_to_utf16(initial, initial_, std::size(initial_));
@@ -51,13 +57,23 @@ void Keyboard::open(const std::string& title, bool secret, const std::string& in
     if (!active_) cancelled_ = true;
 }
 
-void Keyboard::close() { if (active_) sceImeDialogTerm(); active_ = submitted_ = cancelled_ = false; }
+void Keyboard::close() {
+    if (active_) {
+        vita2d_wait_rendering_done();
+        sceGxmDisplayQueueFinish();
+        sceImeDialogTerm();
+    }
+    active_ = submitted_ = cancelled_ = false;
+}
 
 void Keyboard::handle(unsigned int) {
     if (!active_ || sceImeDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED) return;
     SceImeDialogResult result{}; sceImeDialogGetResult(&result);
     if (result.button == SCE_IME_DIALOG_BUTTON_ENTER) { text_ = utf16_to_utf8(input_); submitted_ = true; }
     else cancelled_ = true;
+    // A finished dialog may still have a submitted frame in the display queue.
+    vita2d_wait_rendering_done();
+    sceGxmDisplayQueueFinish();
     sceImeDialogTerm(); active_ = false;
 }
 
