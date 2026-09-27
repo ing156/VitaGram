@@ -1,6 +1,7 @@
 # build directories and generated artifacts
 build/
 build-*/
+build-modern/
 install/
 external/tdlib-vita/
 external/ffmpeg-animation/install/

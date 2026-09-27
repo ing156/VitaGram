@@ -1,6 +1,0 @@
-Name: rlottie
-Description: A rlottie library
-Version: 0.2
-Requires:
-Libs: -L/home/ing156/projects/vitagram/external/rlottie-vita/install/lib -lrlottie
-Cflags: -I/home/ing156/projects/vitagram/external/rlottie-vita/install/include
