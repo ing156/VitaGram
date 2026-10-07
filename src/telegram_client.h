@@ -1,4 +1,5 @@
 #pragma once
+#include "proxy_config.h"
 #include "media_uploads.h"
 #include "td_event_queue.h"
 #include "poll.h"
@@ -105,9 +106,17 @@ public:
 
     bool start(bool defer_cache_worker = false);
     bool startCacheWorker(); // UI; also supports offline background restoration.
-    void configureProxy(bool enabled, const std::string& server, int port, const std::string& secret);
+    void configureProxy(bool enabled, const ProxyConfig& proxy);
+    void configureProxy(bool enabled, const std::string& server, int port, const std::string& secret) {
+        ProxyConfig proxy; proxy.server = server; proxy.port = port; proxy.secret = secret;
+        configureProxy(enabled, proxy);
+    }
     const std::string& proxyStatus() const { return proxy_status_; }
-    void checkProxy(const std::string& server, int port, const std::string& secret);
+    void checkProxy(const ProxyConfig& proxy);
+    void checkProxy(const std::string& server, int port, const std::string& secret) {
+        ProxyConfig proxy; proxy.server = server; proxy.port = port; proxy.secret = secret;
+        checkProxy(proxy);
+    }
     void cancelProxyCheck();
     const std::string& proxyCheckStatus() const { return proxy_check_status_; }
     void setRequestBatchSize(int size) { request_batch_size_.store(std::max(1, std::min(64, size))); }
@@ -224,8 +233,9 @@ private:
     std::string video_note_status_;
 
     bool proxy_enabled_ = false;
-    std::string proxy_server_, proxy_secret_, proxy_status_;
-    int proxy_port_ = 443, proxy_generation_ = 0;
+    ProxyConfig proxy_;
+    std::string proxy_status_;
+    int proxy_generation_ = 0;
     int proxy_check_generation_ = 0;
     int64_t proxy_check_deadline_ = 0;
     std::string proxy_check_status_;

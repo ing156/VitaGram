@@ -1,4 +1,5 @@
 #include "performance_log.h"
+#include "i18n.h"
 #include "exit_gesture.h"
 #include "telegram_client.h"
 #include "history_selection.h"
@@ -234,22 +235,23 @@ static std::string message_time(const MessageItem& message, bool full = false) {
     if (sceRtcSetTime_t(&date, static_cast<time_t>(message.date)) < 0 || sceRtcGetTick(&date, &utc) < 0)
         return "--:--";
     bool local_ok = sceRtcConvertUtcToLocalTime(&utc, &local) >= 0 && sceRtcSetTick(&date, &local) >= 0;
-    char text[64];
+    char text[96];
+    const std::string edited = message.edit_date ? " " + tr("message.edited") : "";
     if (full) std::snprintf(text, sizeof(text), "%02u.%02u.%04u  %02u:%02u%s%s",
         (unsigned)date.day, (unsigned)date.month, (unsigned)date.year, (unsigned)date.hour, (unsigned)date.minute,
-        local_ok ? "" : " UTC", message.edit_date ? " (edited)" : "");
+        local_ok ? "" : " UTC", edited.c_str());
     else std::snprintf(text, sizeof(text), "%02u:%02u%s", (unsigned)date.hour, (unsigned)date.minute, local_ok ? "" : " UTC");
     return text;
 }
 
 static std::string message_day(const MessageItem& message) {
-    if (message.date <= 0) return "Дата неизвестна";
+    if (message.date <= 0) return tr("date.unknown");
     SceDateTime date{}; SceRtcTick utc{}, local{};
-    if (sceRtcSetTime_t(&date, static_cast<time_t>(message.date)) < 0 || sceRtcGetTick(&date, &utc) < 0) return "Дата неизвестна";
+    if (sceRtcSetTime_t(&date, static_cast<time_t>(message.date)) < 0 || sceRtcGetTick(&date, &utc) < 0) return tr("date.unknown");
     bool local_ok = sceRtcConvertUtcToLocalTime(&utc, &local) >= 0 && sceRtcSetTick(&date, &local) >= 0;
-    static const char* months[] = {"января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"};
-    if (date.month < 1 || date.month > 12) return "Дата неизвестна";
-    return std::to_string(date.day) + " " + months[date.month-1] + " " + std::to_string(date.year) + (local_ok ? "" : " UTC");
+    if (date.month < 1 || date.month > 12) return tr("date.unknown");
+    return tr("date.format", {std::to_string(date.day), tr(("month." + std::to_string(date.month)).c_str()),
+        std::to_string(date.year)}) + (local_ok ? "" : " UTC");
 }
 
 struct HistoryRow { int index, top, height, day_top; std::string day; };
@@ -280,12 +282,12 @@ static std::vector<HistoryRow> history_layout(const std::vector<MessageItem>& me
     }
 }
 
-static const char* delivery_label(DeliveryState state) {
+static std::string delivery_label(DeliveryState state) {
     switch (state) {
-        case DeliveryState::Pending: return "Sending...";
-        case DeliveryState::Read: return "Read";
-        case DeliveryState::Failed: return "Send failed";
-        default: return "Sent to Telegram";
+        case DeliveryState::Pending: return tr("delivery.sending");
+        case DeliveryState::Read: return tr("delivery.read");
+        case DeliveryState::Failed: return tr("delivery.failed");
+        default: return tr("delivery.sent");
     }
 }
 
@@ -315,7 +317,7 @@ static void draw_delivery(float x, float y, DeliveryState state, unsigned int ba
 
 static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& message) {
     std::vector<PostLine> result;
-    if (message.document) result.push_back({"\uE002: Загрузить", ""});
+    if (message.document) result.push_back({tr("hint.download"), ""});
     std::string reactions;
     for (const auto& reaction : message.reactions) {
         if (!reactions.empty()) reactions += "   ";
@@ -325,7 +327,7 @@ static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& mes
     if (message.delivery == DeliveryState::Failed && !message.send_error.empty())
         for (const auto& line : wrap_text(font, message.send_error, 840)) result.push_back({line, ""});
     if (!message.transcription.empty()) {
-        result.push_back({message.transcription_pending ? "Расшифровка (в процессе):" : "Расшифровка:", ""});
+        result.push_back({message.transcription_pending ? tr("post.transcription_pending") : tr("post.transcription"), ""});
         for (const auto& line : wrap_text(font, message.transcription, 840)) result.push_back({line, ""});
     }
     for (const auto& line : wrap_text(font, message.text, 840)) {
@@ -335,7 +337,7 @@ static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& mes
         result.push_back({line, matches == 1 ? target : ""});
     }
     // Separate rows keep multiple and hidden-text links individually tappable.
-    for (const auto& url : message.links) result.push_back({fit_text(font, "Open: " + url, 840, 0.68f), url});
+    for (const auto& url : message.links) result.push_back({fit_text(font, tr("hint.open") + url, 840, 0.68f), url});
     return result;
 }
 
@@ -379,12 +381,12 @@ static std::string open_web_link(const std::string& url) {
     std::string lower = url.substr(0, 8);
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if ((lower.compare(0, 7, "http://") && lower != "https://") || url.find_first_of("\r\n\t ") != std::string::npos)
-        return "Invalid web link";
+        return tr("link.invalid");
     int rc = sceAppMgrLaunchAppByUri(0x20000, ("webmodal: " + url).c_str());
     if (rc >= 0) return "";
-    char message[80];
-    std::snprintf(message, sizeof(message), "Browser error: 0x%08X", rc);
-    return message;
+    char code[16];
+    std::snprintf(code, sizeof(code), "0x%08X", (unsigned)rc);
+    return tr("link.browser_error", {code});
 }
 
 static void startup_screen(vita2d_pgf* font, const char* stage, int step) {
@@ -403,6 +405,18 @@ static void startup_screen(vita2d_pgf* font, const char* stage, int step) {
     vita2d_wait_rendering_done();
 }
 
+enum ProxyRow { PROXY_ROW_USE, PROXY_ROW_TYPE, PROXY_ROW_SERVER, PROXY_ROW_PORT, PROXY_ROW_SECRET,
+                PROXY_ROW_USER, PROXY_ROW_PASS, PROXY_ROW_SAVE, PROXY_ROW_SCAN, PROXY_ROW_CHECK };
+
+// Rows shown on the proxy screen: MTProxy has a secret, SOCKS5/HTTPS have optional credentials.
+static std::vector<int> proxy_rows(int type) {
+    std::vector<int> rows{PROXY_ROW_USE, PROXY_ROW_TYPE, PROXY_ROW_SERVER, PROXY_ROW_PORT};
+    if (type == 0) rows.push_back(PROXY_ROW_SECRET);
+    else { rows.push_back(PROXY_ROW_USER); rows.push_back(PROXY_ROW_PASS); }
+    rows.insert(rows.end(), {PROXY_ROW_SAVE, PROXY_ROW_SCAN, PROXY_ROW_CHECK});
+    return rows;
+}
+
 int main() {
     pthread_init();
     const int64_t startup_time = performance::now();
@@ -415,6 +429,12 @@ int main() {
     SceCommonDialogConfigParam dialog_config{};
     sceCommonDialogConfigParamInit(&dialog_config);
     sceCommonDialogSetConfigParam(&dialog_config);
+
+    // Settings come first: the saved language ("" = follow the console language) must be known
+    // before the first text is drawn.
+    AppSettings settings;
+    settings.load();
+    i18n::init("app0:lang", settings.language);
 
     vita2d_init();
     vita2d_set_vblank_wait(1);
@@ -435,11 +455,9 @@ int main() {
     SceCtrlData pad{};
     unsigned int old_buttons = 0;
 
-    AppSettings settings;
-    settings.load();
     ensure_download_directory("ux0:downloads/vitagram");
     TelegramClient tg;
-    tg.configureProxy(settings.proxy_enabled, settings.proxy_server, settings.proxy_port, settings.proxy_secret);
+    tg.configureProxy(settings.proxy_enabled, settings.proxyConfig());
     tg.setRequestBatchSize(settings.request_batch_size);
     startup_screen(font, "3/5  Starting Telegram transport", 3);
     if (net_ok) tg.start(true);
@@ -468,6 +486,13 @@ int main() {
         return open_web_link(url);
     };
     std::string settings_error;
+    auto language_label = [&]() {
+        auto name_of = [](const std::string& code) {
+            for (const auto& language : i18n::languages()) if (language.code == code) return language.name;
+            return code;
+        };
+        return settings.language.empty() ? tr("settings.language_auto", {name_of(i18n::current())}) : name_of(settings.language);
+    };
     int64_t next_cache_cleanup = sceKernelGetSystemTimeWide() + 300000000;
     TextureCache textures;
     AnimationPlayer animation;
@@ -519,9 +544,9 @@ int main() {
 
     auto open_circle = [&]() {
         if (recorder.recording() || recorder.processing()) {
-            browser_error = "Сначала завершите запись голосового сообщения"; return;
+            browser_error = tr("rec.finish_first"); return;
         }
-        if (!tg.ready() || !tg.currentChatId()) { browser_error = "Для записи дождитесь подключения"; return; }
+        if (!tg.ready() || !tg.currentChatId()) { browser_error = tr("rec.wait_connect"); return; }
         circle_chat = tg.currentChatId(); circle_topic = tg.currentTopicId(); circle_error.clear();
         circle_playback.reset();
         animation.setSource(""); voice.setSource("");
@@ -530,7 +555,7 @@ int main() {
     };
 
     bool startup_ready_measured = false;
-    std::string performance_status = performance::enabled ? "Performance: collecting..." : "Performance: disabled";
+    std::string performance_status = performance::enabled ? tr("diag.performance_collecting") : tr("diag.performance_disabled");
     int64_t next_performance_display = 0;
     performance::observe(performance::Metric::StartupUi, performance::now()-startup_time);
     while (running) {
@@ -707,8 +732,8 @@ int main() {
                         }
                     }
                 } else if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (touch_y >= (proxy_open ? 104 : 88) && touch_y < (proxy_open ? 412 : 466)) {
-                    settings_row = proxy_open ? (touch_y - 104) / 44 : (touch_y - 88) / 42;
+                else if (touch_y >= (proxy_open ? 104 : 88) && touch_y < (proxy_open ? 104 + 36 * (int)proxy_rows(proxy_draft.proxy_type).size() : 468)) {
+                    settings_row = proxy_open ? (touch_y - 104) / 36 : (touch_y - 88) / 38;
                     pressed |= SCE_CTRL_CROSS;
                 }
             } else if (!tg.currentChatId() && !tg.canBrowse()) {
@@ -822,14 +847,16 @@ int main() {
                 folder_name_input = false;
                 folder_picker.create(v);
             } else if (proxy_input >= 0) {
-                if (proxy_input == 1) proxy_draft.proxy_server = v;
-                else if (proxy_input == 3) proxy_draft.proxy_secret = v;
+                if (proxy_input == PROXY_ROW_SERVER) proxy_draft.proxy_server = v;
+                else if (proxy_input == PROXY_ROW_SECRET) proxy_draft.proxy_secret = v;
+                else if (proxy_input == PROXY_ROW_USER) proxy_draft.proxy_username = v.substr(0, 255);
+                else if (proxy_input == PROXY_ROW_PASS) proxy_draft.proxy_password = v.substr(0, 255);
                 else {
                     int port = 0;
                     bool valid = !v.empty() && v.size() <= 5;
                     for (char c : v) { if (!valid || c < '0' || c > '9') { valid = false; break; } port = port * 10 + c - '0'; }
                     if (valid && port > 0 && port <= 65535) proxy_draft.proxy_port = port;
-                    else settings_error = "Порт должен быть от 1 до 65535";
+                    else settings_error = tr("proxy.err.port_range");
                 }
                 proxy_input = -1;
             } else tg.submitInput(v);
@@ -860,7 +887,7 @@ int main() {
         } else if ((recorder.recording() || recorder.processing()) &&
                    (pressed & (SCE_CTRL_SQUARE | SCE_CTRL_CIRCLE))) {
             recorder.cancel();
-            recorder.setStatus("Отменено");
+            recorder.setStatus(tr("common.cancelled"));
             audio_chat = 0; audio_topic = 0;
             pressed &= ~(SCE_CTRL_SQUARE | SCE_CTRL_CIRCLE);
         } else if (qr_scanner.active()) {
@@ -913,7 +940,7 @@ int main() {
         } else if (settings_open && folder_picker.active) {
             if ((pressed & SCE_CTRL_TRIANGLE) && !folder_picker.path.empty()) {
                 folder_name_input = true;
-                kb.open("Новая папка");
+                kb.open(tr("picker.new_folder_title"));
             }
             if (pressed & SCE_CTRL_CIRCLE) folder_picker.up();
             if (pressed & SCE_CTRL_UP && !folder_picker.folders.empty())
@@ -923,68 +950,93 @@ int main() {
             if (pressed & SCE_CTRL_CROSS) folder_picker.enter();
             if ((pressed & SCE_CTRL_SQUARE) && !folder_picker.path.empty()) {
                 settings.download_dir = folder_picker.path;
-                settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
+                settings_error = settings.save() ? "" : tr("settings.save_failed");
                 folder_picker.active = false;
             }
         } else if (settings_open && proxy_open) {
             if (pressed & SCE_CTRL_CIRCLE) {
-                tg.cancelProxyCheck(); proxy_open = false; settings_row = 6; settings_error.clear(); proxy_imported = false;
+                tg.cancelProxyCheck(); proxy_open = false; settings_row = 8; settings_error.clear(); proxy_imported = false;
                 if (proxy_return_to_screen) { settings_open = false; proxy_return_to_screen = false; }
             }
             else {
-                if (pressed & SCE_CTRL_UP) settings_row = (settings_row + 6) % 7;
-                if (pressed & SCE_CTRL_DOWN) settings_row = (settings_row + 1) % 7;
+                const std::vector<int> rows = proxy_rows(proxy_draft.proxy_type);
+                const int count = (int)rows.size();
+                if (settings_row >= count) settings_row = count - 1;
+                const int row = rows[settings_row];
+                if (pressed & SCE_CTRL_UP) settings_row = (settings_row + count - 1) % count;
+                if (pressed & SCE_CTRL_DOWN) settings_row = (settings_row + 1) % count;
+                if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT) && row == PROXY_ROW_TYPE) {
+                    proxy_draft.proxy_type = (proxy_draft.proxy_type + 3 + ((pressed & SCE_CTRL_LEFT) ? -1 : 1)) % 3;
+                    settings_error.clear(); tg.cancelProxyCheck();
+                }
                 if (pressed & SCE_CTRL_CROSS) {
                     settings_error.clear();
-                    if (settings_row == 0) proxy_draft.proxy_enabled = !proxy_draft.proxy_enabled;
-                    else if (settings_row < 4) {
-                        tg.cancelProxyCheck(); proxy_input = settings_row;
-                        kb.open(settings_row == 1 ? "MTProxy server" : settings_row == 2 ? "MTProxy port" : "MTProxy secret",
-                            settings_row == 3, settings_row == 1 ? proxy_draft.proxy_server : settings_row == 2 ?
-                            std::to_string(proxy_draft.proxy_port) : proxy_draft.proxy_secret);
-                    } else if (settings_row == 6) {
-                        tg.checkProxy(proxy_draft.proxy_server, proxy_draft.proxy_port, proxy_draft.proxy_secret);
-                    } else if (settings_row == 5) {
+                    if (row == PROXY_ROW_USE) proxy_draft.proxy_enabled = !proxy_draft.proxy_enabled;
+                    else if (row == PROXY_ROW_TYPE) {
+                        proxy_draft.proxy_type = (proxy_draft.proxy_type + 1) % 3; tg.cancelProxyCheck();
+                    } else if (row >= PROXY_ROW_SERVER && row <= PROXY_ROW_PASS) {
+                        tg.cancelProxyCheck(); proxy_input = row;
+                        const bool secret = row == PROXY_ROW_SECRET || row == PROXY_ROW_PASS;
+                        const char* title = row == PROXY_ROW_SERVER ? "proxy.kb.server" : row == PROXY_ROW_PORT ? "proxy.kb.port" :
+                            row == PROXY_ROW_SECRET ? "proxy.kb.secret" : row == PROXY_ROW_USER ? "proxy.kb.username" : "proxy.kb.password";
+                        kb.open(tr(title), secret, row == PROXY_ROW_SERVER ? proxy_draft.proxy_server : row == PROXY_ROW_PORT ?
+                            std::to_string(proxy_draft.proxy_port) : row == PROXY_ROW_SECRET ? proxy_draft.proxy_secret :
+                            row == PROXY_ROW_USER ? proxy_draft.proxy_username : proxy_draft.proxy_password);
+                    } else if (row == PROXY_ROW_CHECK) {
+                        tg.checkProxy(proxy_draft.proxyConfig());
+                    } else if (row == PROXY_ROW_SCAN) {
                         tg.cancelProxyCheck();
                         if (!qr_scanner.start()) settings_error = qr_scanner.status();
-                    } else if (proxy_draft.proxy_enabled && (proxy_draft.proxy_server.empty() || proxy_draft.proxy_secret.empty() || proxy_draft.proxy_port < 1)) {
-                        settings_error = "Укажите сервер, порт и secret";
-                    } else if (!proxy_draft.save()) settings_error = "Не удалось сохранить настройки";
+                    } else if (proxy_draft.proxy_enabled && !proxy_draft.proxyConfig().complete()) {
+                        settings_error = tr("proxy.need_fields");
+                    } else if (!proxy_draft.save()) settings_error = tr("settings.save_failed");
                     else {
                         settings = proxy_draft;
                         proxy_imported = false;
-                        tg.configureProxy(settings.proxy_enabled, settings.proxy_server, settings.proxy_port, settings.proxy_secret);
+                        tg.configureProxy(settings.proxy_enabled, settings.proxyConfig());
                     }
                 }
             }
         } else if (settings_open) {
             if (pressed & SCE_CTRL_CIRCLE) { if (confirm_logout) confirm_logout = false; else settings_open = false; }
-            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+8)%9; confirm_logout = false; }
-            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%9; confirm_logout = false; }
+            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+9)%10; confirm_logout = false; }
+            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%10; confirm_logout = false; }
             if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                 int direction = (pressed & SCE_CTRL_LEFT) ? -1 : 1;
-                if (settings_row < 4) {
+                // Row 0 is the language; the remaining rows keep their original order.
+                const int row = settings_row - 1;
+                if (settings_row == 0) {
+                    confirm_logout = false;
+                    // Automatic first, then every language file found in app0:lang.
+                    std::vector<std::string> choices{""};
+                    for (const auto& language : i18n::languages()) choices.push_back(language.code);
+                    size_t at = std::find(choices.begin(), choices.end(), settings.language) - choices.begin();
+                    if (at >= choices.size()) at = 0;
+                    settings.language = choices[(at + choices.size() + direction) % choices.size()];
+                    i18n::select(settings.language);
+                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                } else if (row < 4) {
                     confirm_logout = false;
                     int* values[] = {&settings.retention, &settings.capacity, &settings.theme, &settings.font};
                     const int counts[] = {5, 6, 2, 3};
-                    *values[settings_row] = (*values[settings_row] + counts[settings_row] + direction) % counts[settings_row];
+                    *values[row] = (*values[row] + counts[row] + direction) % counts[row];
                     rich_text_set_scale(settings.fontScale());
-                    settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
+                    settings_error = settings.save() ? "" : tr("settings.save_failed");
                     next_cache_cleanup = now + 300000000;
-                } else if (settings_row == 4) {
+                } else if (row == 4) {
                     settings.show_threads = !settings.show_threads;
-                    settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
-                } else if (settings_row == 5) {
+                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                } else if (row == 5) {
                     int index = (AppSettings::requestBatchIndex(settings.request_batch_size) + direction + 5) % 5;
                     settings.request_batch_size = AppSettings::requestBatchSize(index);
                     tg.setRequestBatchSize(settings.request_batch_size);
-                    settings_error = settings.save() ? "" : "Не удалось сохранить настройки";
-                } else if (settings_row == 6) {
+                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                } else if (row == 6) {
                     if (pressed & SCE_CTRL_CROSS) folder_picker.open(settings.download_dir);
-                } else if (settings_row == 7) {
+                } else if (row == 7) {
                     if (pressed & SCE_CTRL_CROSS) { proxy_open = true; proxy_return_to_screen = proxy_imported = false; proxy_draft = settings; settings_row = 0; settings_error.clear(); confirm_logout = false; }
                 } else if (pressed & SCE_CTRL_CROSS) {
-                    if (!tg.ready()) settings_error = "Для выхода дождитесь подключения";
+                    if (!tg.ready()) settings_error = tr("settings.logout_wait");
                     else if (confirm_logout) { tg.logout(); confirm_logout = false; settings_open = false; }
                     else confirm_logout = true;
                 }
@@ -1141,7 +1193,7 @@ int main() {
         if (!completed_audio.empty()) {
             const bool sent = tg.sendAudioFile(completed_audio, recorder.seconds(), audio_chat, audio_topic);
             // Upload tracking now owns the progress/result, not the recorder.
-            recorder.setStatus(sent ? "" : "Не удалось передать аудио в Telegram");
+            recorder.setStatus(sent ? "" : tr("rec.send_failed"));
         }
 
         if (exit_gesture.update(pad.buttons & SCE_CTRL_START, pad.buttons & SCE_CTRL_SELECT,
@@ -1166,8 +1218,13 @@ int main() {
                 if (!settings_open || !proxy_open) proxy_draft = settings;
                 proxy_draft.proxy_server = proxy.server; proxy_draft.proxy_port = proxy.port;
                 proxy_draft.proxy_secret = proxy.secret; proxy_draft.proxy_enabled = true;
+                proxy_draft.proxy_type = (int)proxy.kind;
+                proxy_draft.proxy_username = proxy.username; proxy_draft.proxy_password = proxy.password;
                 settings_open = proxy_open = proxy_imported = true;
-                settings_row = 4; settings_error.clear(); confirm_logout = false;
+                {
+                    const auto rows = proxy_rows(proxy_draft.proxy_type);
+                    settings_row = (int)(std::find(rows.begin(), rows.end(), (int)PROXY_ROW_SAVE) - rows.begin());
+                } settings_error.clear(); confirm_logout = false;
             } else {
                 if (settings_open) settings_error = error;
                 else browser_error = error;
@@ -1264,7 +1321,7 @@ int main() {
             title_x = 50;
         }
         const unsigned int header_text = RGBA8(240,247,255,255);
-        std::string heading = settings_open ? (proxy_open ? "MTProxy" : "Настройки") : tg.currentChatId() ? tg.currentChatTitle() : "VitaGram " VITAGRAM_VERSION;
+        std::string heading = settings_open ? (proxy_open ? tr("proxy.title") : tr("settings.title")) : tg.currentChatId() ? tg.currentChatTitle() : "VitaGram " VITAGRAM_VERSION;
         std::string presence = settings_open ? "" : tg.currentUserStatus();
         int status_width = presence.empty() ? 280 : 390;
         draw_text(font, title_x, 25, fit_text(font, heading, 920-status_width-title_x, 0.65f), header_text, 0.65f);
@@ -1278,10 +1335,10 @@ int main() {
         if (qr_scanner.active()) {
             if (qr_scanner.preview()) draw_texture_fit(qr_scanner.preview(), 240, 60, 480, 360);
             draw_text(font, 30, 462, fit_text(font, qr_scanner.status(), 900, 0.55f), ink, 0.55f);
-            draw_text(font, 28, 528, "Задняя камера: QR-код MTProxy    \uE003 Отмена", ink, 0.6f);
+            draw_text(font, 28, 528, tr("qr.footer"), ink, 0.6f);
         } else if (settings_open && folder_picker.active) {
-            draw_text(font, 30, 68, fit_text(font, folder_picker.path.empty() ? "Накопители" : folder_picker.path, 900, 0.64f), ink, 0.64f);
-            draw_text(font, 32, 97, "содержание папки", muted, 0.48f);
+            draw_text(font, 30, 68, fit_text(font, folder_picker.path.empty() ? tr("picker.drives") : folder_picker.path, 900, 0.64f), ink, 0.64f);
+            draw_text(font, 32, 97, tr("picker.subtitle"), muted, 0.48f);
             rounded_rect(24, 109, 912, 356, separator);
             rounded_rect(26, 111, 908, 352, white);
             int first = (folder_picker.selected / 8) * 8;
@@ -1291,39 +1348,68 @@ int main() {
                 draw_text(font, 42, 144 + row * 43, fit_text(font, folder_picker.folders[index], 850, 0.65f), ink, 0.65f);
             }
             if (folder_picker.folders.empty() && folder_picker.error.empty())
-                draw_text(font, 42, 144, "Папка пуста", muted, 0.55f);
+                draw_text(font, 42, 144, tr("picker.empty"), muted, 0.55f);
             if (!folder_picker.error.empty()) draw_text(font, 30, 484, folder_picker.error, ink, 0.55f);
-            draw_text(font, 28, 528, "\uE002 Открыть    \uE001 Выбрать    \uE000 Создать папку    \uE003 Назад", ink, 0.6f);
+            draw_text(font, 28, 528, tr("picker.footer"), ink, 0.6f);
         } else if (settings_open && proxy_open) {
-            const char* labels[] = {"Использовать MTProxy", "Сервер", "Порт", "Secret", "Сохранить и применить", "Сканировать QR-код", "Проверить подключение"};
-            std::string values[] = {proxy_draft.proxy_enabled ? "Да" : "Нет", clip(proxy_draft.proxy_server, 30),
-                std::to_string(proxy_draft.proxy_port), proxy_draft.proxy_secret.empty() ? "Не задан" : "********", "", "Задняя камера", ""};
-            for (int row = 0; row < 7; ++row) {
-                rounded_rect(24, 104+row*44, 912, 40, row == settings_row ? selected : white);
-                draw_text(font, 40, 132+row*44, labels[row], ink, 0.65f);
-                draw_text(font, 520, 132+row*44, values[row], ink, 0.6f);
+            const std::vector<int> rows = proxy_rows(proxy_draft.proxy_type);
+            auto label = [&](int row) -> std::string {
+                switch (row) {
+                    case PROXY_ROW_USE: return tr("proxy.use");
+                    case PROXY_ROW_TYPE: return tr("proxy.type");
+                    case PROXY_ROW_SERVER: return tr("proxy.server");
+                    case PROXY_ROW_PORT: return tr("proxy.port");
+                    case PROXY_ROW_SECRET: return "Secret";
+                    case PROXY_ROW_USER: return tr("proxy.username");
+                    case PROXY_ROW_PASS: return tr("proxy.password");
+                    case PROXY_ROW_SAVE: return tr("proxy.save_apply");
+                    case PROXY_ROW_SCAN: return tr("proxy.scan_qr");
+                    default: return tr("proxy.check");
+                }
+            };
+            auto value = [&](int row) -> std::string {
+                switch (row) {
+                    case PROXY_ROW_USE: return proxy_draft.proxy_enabled ? tr("common.yes") : tr("common.no");
+                    case PROXY_ROW_TYPE: return tr(proxy_draft.proxy_type == 1 ? "proxy.type.socks5" :
+                        proxy_draft.proxy_type == 2 ? "proxy.type.https" : "proxy.type.mtproto");
+                    case PROXY_ROW_SERVER: return clip(proxy_draft.proxy_server, 30);
+                    case PROXY_ROW_PORT: return std::to_string(proxy_draft.proxy_port);
+                    case PROXY_ROW_SECRET: return proxy_draft.proxy_secret.empty() ? tr("common.not_set") : std::string("********");
+                    case PROXY_ROW_USER: return proxy_draft.proxy_username.empty() ? tr("common.not_set") : clip(proxy_draft.proxy_username, 30);
+                    case PROXY_ROW_PASS: return proxy_draft.proxy_password.empty() ? tr("common.not_set") : std::string("********");
+                    case PROXY_ROW_SCAN: return tr("vnr.rear_camera");
+                    default: return "";
+                }
+            };
+            for (int i = 0; i < (int)rows.size(); ++i) {
+                rounded_rect(24, 104+i*36, 912, 32, i == settings_row ? selected : white);
+                draw_text(font, 40, 128+i*36, label(rows[i]), ink, 0.62f);
+                draw_text(font, 520, 128+i*36, value(rows[i]), ink, 0.58f);
             }
-            draw_text(font, 30, 438, proxy_imported ? "Настроить этот MTProxy? Проверьте поля и нажмите «Сохранить и применить»." : "", muted, 0.48f);
+            draw_text(font, 30, 438, proxy_imported ? tr("proxy.import_confirm") : "", muted, 0.48f);
             draw_text(font, 30, 462, fit_text(font, tg.proxyCheckStatus().empty() ? tg.proxyStatus() : tg.proxyCheckStatus(), 900, 0.55f), muted, 0.55f);
             draw_text(font, 30, 484, settings_error, ink, 0.5f);
-            draw_text(font, 28, 528, "\uE002 Изменить / применить    \uE003 Назад без сохранения", ink, 0.6f);
+            draw_text(font, 28, 528, tr("proxy.footer"), ink, 0.6f);
         } else if (settings_open) {
-            const char* labels[] = {"Хранить кэш", "Объём кэша медиа", "Тема", "Размер шрифта", "Показывать потоки", "Пакет запросов", "Папка загрузок", "MTProxy", "Выйти из аккаунта"};
+            const std::string labels[] = {tr("settings.language"), tr("settings.retention"), tr("settings.cache_size"), tr("settings.theme"),
+                tr("settings.font_size"), tr("settings.show_threads"), tr("settings.batch"), tr("settings.download_dir"), tr("proxy.title"), tr("settings.logout")};
             std::string values[] = {
-                settings.retention == 4 ? "Всегда" : std::to_string(AppSettings::days(settings.retention)) + " дн.",
-                settings.capacity == 5 ? "Без лимита" : std::to_string(AppSettings::megabytes(settings.capacity)) + " МБ",
-                dark ? "Тёмная" : "Светлая", std::to_string(90+settings.font*10) + "%",
-                settings.show_threads ? "Да" : "Нет", std::to_string(settings.request_batch_size),
-                settings.download_dir, settings.proxy_enabled ? "Включён" : "Выключен", confirm_logout ? "\uE002: подтвердить выход" : ""};
-            for (int row=0; row<9; ++row) {
-                rounded_rect(24, 88+row*42, 912, 39, row == settings_row ? selected : white);
-                draw_text(font, 40, 114+row*42, labels[row], ink, 0.65f);
-                draw_text(font, 520, 114+row*42, fit_text(font, values[row], 400, 0.6f), ink, 0.6f);
+                language_label(),
+                settings.retention == 4 ? tr("settings.always") : tr("settings.days", {std::to_string(AppSettings::days(settings.retention))}),
+                settings.capacity == 5 ? tr("settings.no_limit") : tr("unit.mb", {std::to_string(AppSettings::megabytes(settings.capacity))}),
+                dark ? tr("settings.theme_dark") : tr("settings.theme_light"), std::to_string(90+settings.font*10) + "%",
+                settings.show_threads ? tr("common.yes") : tr("common.no"), std::to_string(settings.request_batch_size),
+                settings.download_dir, settings.proxy_enabled ? tr("common.enabled") : tr("common.disabled"),
+                confirm_logout ? tr("settings.confirm_logout") : ""};
+            for (int row=0; row<10; ++row) {
+                rounded_rect(24, 88+row*38, 912, 35, row == settings_row ? selected : white);
+                draw_text(font, 40, 112+row*38, labels[row], ink, 0.65f);
+                draw_text(font, 520, 112+row*38, fit_text(font, values[row], 400, 0.6f), ink, 0.6f);
             }
             draw_text(font, 30, 484, settings_error, ink, 0.5f);
-            draw_text(font, 28, 528, "\uE004: выбор / изменение    \uE002 Изменить    \uE003 Назад", ink, 0.6f);
+            draw_text(font, 28, 528, tr("settings.footer"), ink, 0.6f);
         } else if (!net_ok) {
-            draw_text(font, 30, 115, "Network initialization failed.", ink, 0.85f);
+            draw_text(font, 30, 115, tr("net.init_failed"), ink, 0.85f);
         } else if (!tg.lastError().empty() && !tg.ready()) {
             draw_text(font, 30, 115, clip(tg.lastError(), 100), ink, 0.75f);
         }
@@ -1342,29 +1428,29 @@ int main() {
                     float w = vita2d_texture_get_width(picture), h = vita2d_texture_get_height(picture);
                     float scale = std::min(960.0f/w, 544.0f/h);
                     draw_texture_fit(picture, (960-w*scale)/2, (544-h*scale)/2, 960, 544);
-                } else draw_text(font, 360, 275, "Loading video...", ink, 0.7f);
-                draw_text(font, 20, 528, "\uE000: обычный вид   \uE002: воспроизвести / пауза   \uE003: назад", ink, 0.55f);
+                } else draw_text(font, 360, 275, tr("video.loading"), ink, 0.7f);
+                draw_text(font, 20, 528, tr("hint.video_fullscreen"), ink, 0.55f);
             } else if (photo_open && message_index >= 0 && message_index < (int)msgs.size() &&
                 photo_index < (int)msgs[message_index].photos.size()) {
                 const PhotoItem& photo = msgs[message_index].photos[photo_index];
                 vita2d_draw_rectangle(0, 38, 960, 468, dark ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
                 vita2d_texture* image = textures.get(photo.full_path.empty() ? photo.thumbnail_path : photo.full_path);
                 if (image) photo_view.draw(image);
-                else draw_text(font, 390, 290, "Loading full image...", ink, 0.75f);
-                if (photo.full_path.empty() && image) draw_text(font, 30, 480, "Loading larger photo...", ink, 0.65f);
+                else draw_text(font, 390, 290, tr("photo.loading_full"), ink, 0.75f);
+                if (photo.full_path.empty() && image) draw_text(font, 30, 480, tr("photo.loading_larger"), ink, 0.65f);
                 char counter[32];
                 std::snprintf(counter, sizeof(counter), "%d / %d", photo_index + 1, (int)msgs[message_index].photos.size());
                 draw_text(font, 440, 60, counter, ink, 0.65f);
-                draw_text(font, 28, 528, "\uE004: фото   Pinch: zoom   \uE000: сброс", ink, 0.55f);
-                draw_text(font, 700, 528, "\uE003  Back", ink, 0.65f);
+                draw_text(font, 28, 528, tr("hint.photo_view"), ink, 0.55f);
+                draw_text(font, 700, 528, tr("hint.back"), ink, 0.65f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size() && msgs[message_index].poll.id) {
                 const auto& m = msgs[message_index]; const auto& poll = m.poll;
                 draw_post_date(font, m, 0, selected, muted);
                 auto question = wrap_text(font, poll.question, 880);
                 for (size_t i=0; i<question.size() && i<2; ++i) draw_text(font, 32, 92+i*26, question[i], ink, 0.7f);
-                std::string kind = poll.quiz ? "Викторина" : "Опрос";
-                kind += poll.anonymous ? " • анонимный" : " • публичный";
-                kind += poll.multiple ? " • несколько ответов" : " • один ответ";
+                std::string kind = poll.quiz ? tr("poll.kind.quiz") : tr("poll.kind.poll");
+                kind += poll.anonymous ? tr("poll.anonymous") : tr("poll.public");
+                kind += poll.multiple ? tr("poll.multiple") : tr("poll.single");
                 draw_text(font, 32, 148, kind, muted, 0.52f);
                 int first = poll_index / 5 * 5;
                 for (int row=first; row<(int)poll.order.size() && row<first+5; ++row) {
@@ -1373,21 +1459,21 @@ int main() {
                     rounded_rect(26, y, 908, 50, row==poll_index ? selected : separator);
                     bool checked = std::find(poll_choices.begin(), poll_choices.end(), index)!=poll_choices.end();
                     std::string label = std::string(checked ? "[x] " : "[ ] ") + option.text;
-                    if (option.chosen) label += " (ваш ответ)";
-                    if (option.correct) label += " (верно)";
+                    if (option.chosen) label += tr("poll.your_answer");
+                    if (option.correct) label += tr("poll.correct");
                     draw_text(font, 38, y+21, fit_text(font, label, 870, 0.57f), ink, 0.57f);
                     if (poll.results || poll.closed || poll.answered()) {
                         vita2d_draw_rectangle(38, y+39, 650.0f*option.percent/100, 4, accent);
                         draw_text(font, 710, y+43, std::to_string(option.percent)+"% • "+std::to_string(option.votes), muted, 0.48f);
                     }
                 }
-                std::string state = poll.closed ? "Опрос завершён" : poll.restricted ? "Голосование недоступно" :
-                    (!poll.canVote() && poll.answered()) ? "Ответ изменить нельзя" : "Выберите ответ и подтвердите";
+                std::string state = poll.closed ? tr("poll.state.closed") : poll.restricted ? tr("poll.state.restricted") :
+                    (!poll.canVote() && poll.answered()) ? tr("poll.state.locked") : tr("poll.state.choose");
                 std::string request = tg.pollStatus(m.id);
                 if (!request.empty()) state = request;
-                draw_text(font, 32, 457, fit_text(font, state+" • Участников: "+std::to_string(poll.voters), 890, 0.53f), ink, 0.53f);
+                draw_text(font, 32, 457, fit_text(font, state+tr("poll.voters", {std::to_string(poll.voters)}), 890, 0.53f), ink, 0.53f);
                 if (!poll.explanation.empty()) draw_text(font, 32, 478, fit_text(font, poll.explanation, 890, 0.5f), muted, 0.5f);
-                draw_text(font, 24, 525, "\uE004 ↑/↓: вариант   \uE002: выбрать   \uE000: голос   \uE001: отозвать   \uE003: назад", ink, 0.48f);
+                draw_text(font, 24, 525, tr("poll.footer"), ink, 0.48f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size() && scrollable_post(msgs[message_index])) {
                 const auto& message = msgs[message_index];
                 auto lines = post_lines(font, message);
@@ -1436,15 +1522,15 @@ int main() {
                     }
                     std::string state = message.animation_error;
                     if (state.empty() && message.animation_path.empty() && message.animation) {
-                        if (message.animation_file_id <= 0) state = "Media file unavailable";
+                        if (message.animation_file_id <= 0) state = tr("media.unavailable");
                         else if (message.animation_size > 0)
-                            state = "Loading media: " + std::to_string(std::min<int64_t>(99,
-                                message.animation_downloaded * 100 / message.animation_size)) + "%";
-                        else state = "Loading media: " + std::to_string(message.animation_downloaded / 1024) + " KiB";
+                            state = tr("media.loading", {std::to_string(std::min<int64_t>(99,
+                                message.animation_downloaded * 100 / message.animation_size)) + "%"});
+                        else state = tr("media.loading", {tr("unit.kib", {std::to_string(message.animation_downloaded / 1024)})});
                     } else if (state.empty() && message.animation) state =
                         message.video && !message.video_note && message.video_width > 0 && message.video_height > 0 &&
                         !VideoQuality::hardwareRasterSupported(message.video_width, message.video_height)
-                        ? (prepare_video ? animation.status() : "Видео не поддерживается; X: подготовить копию") : animation.status();
+                        ? (prepare_video ? animation.status() : tr("video.unsupported_hint")) : animation.status();
                     if (message.video && !message.animation_path.empty()) {
                         int elapsed = animation.seconds(), duration = message.video_duration;
                         char timer[64]; std::snprintf(timer, sizeof(timer), "%d:%02d / %d:%02d  ", elapsed/60, elapsed%60, duration/60, duration%60);
@@ -1468,11 +1554,11 @@ int main() {
                     float thumb = std::max(28.0f, 443.0f*443/(443+maximum));
                     vita2d_draw_rectangle(953, 38+(443-thumb)*post_text_scroll/maximum, 3, thumb, accent);
                 }
-                draw_text(font, 28, 528, "\uE004: пост   L/R: фото", ink, 0.6f);
+                draw_text(font, 28, 528, tr("hint.post_photo"), ink, 0.6f);
                 draw_text(font, 390, 528, message.video && unsupported_video && !prepare_video ?
-                    "\uE002 Подготовить видео" : message.video ? "\uE002 Пауза   \uE000: весь экран" :
-                    message.photos.empty() ? "" : "\uE002 Открыть фото", ink, 0.58f);
-                draw_text(font, 750, 528, "\uE003 Назад", ink, 0.65f);
+                    tr("hint.prepare_video") : message.video ? tr("hint.pause_fullscreen") :
+                    message.photos.empty() ? "" : tr("hint.open_photo"), ink, 0.58f);
+                draw_text(font, 750, 528, tr("hint.back"), ink, 0.65f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size()) {
                 const MessageItem& message = msgs[message_index];
                 draw_post_date(font, message, 0, selected, muted);
@@ -1496,11 +1582,11 @@ int main() {
                     vita2d_draw_rectangle(160, 90, 640, 210, selected);
                     std::string state = message.voice_error;
                     if (state.empty() && message.voice_path.empty()) {
-                        if (!message.voice_file_id) state = "Audio file unavailable";
-                        else if (message.voice_size > 0) state = "Loading audio: " + std::to_string(std::min<int64_t>(99, message.voice_downloaded * 100 / message.voice_size)) + "%";
-                        else state = "Loading audio: " + std::to_string(message.voice_downloaded / 1024) + " KiB";
+                        if (!message.voice_file_id) state = tr("audio.unavailable");
+                        else if (message.voice_size > 0) state = tr("audio.loading", {std::to_string(std::min<int64_t>(99, message.voice_downloaded * 100 / message.voice_size)) + "%"});
+                        else state = tr("audio.loading", {tr("unit.kib", {std::to_string(message.voice_downloaded / 1024)})});
                     } else if (state.empty()) state = voice.status();
-                    draw_text(font, 184, 130, fit_text(font, message.audio ? message.audio_title : "Voice message", 590, 0.8f), ink, 0.8f);
+                    draw_text(font, 184, 130, fit_text(font, message.audio ? message.audio_title : tr("audio.voice_message"), 590, 0.8f), ink, 0.8f);
                     if (message.audio) draw_text(font, 184, 157, fit_text(font, message.audio_performer, 590, 0.6f), muted, 0.6f);
                     draw_text(font, 184, 190, fit_text(font, state, 590, 0.7f), accent, 0.7f);
                     int elapsed = voice.seconds(), duration = message.voice_duration;
@@ -1510,8 +1596,7 @@ int main() {
                     if (duration > 0) vita2d_draw_rectangle(184, 263, 592.0f * std::min(elapsed, duration) / duration, 6, accent);
                 }
                 if (count > 6) {
-                    char more[32]; std::snprintf(more, sizeof(more), "+%d photos", count - 6);
-                    draw_text(font, 785, 480, more, muted, 0.65f);
+                    draw_text(font, 785, 480, tr("photo.more", {std::to_string(count - 6)}), muted, 0.65f);
                 }
                 auto text_lines = post_lines(font, message);
                 int available_lines = std::max(1, (490 - text_y) / 24);
@@ -1520,10 +1605,10 @@ int main() {
                 for (int line = 0; line < available_lines && post_text_scroll + line < (int)text_lines.size(); ++line)
                     draw_text(font, 38, text_y + line * 24, text_lines[post_text_scroll + line].text,
                         text_lines[post_text_scroll + line].url.empty() ? (message.outgoing ? outgoing : ink) : accent, 0.68f);
-                draw_text(font, 28, 528, "\uE004: пост   L/R: фото", ink, 0.6f);
-                draw_text(font, 390, 528, message.document ? "\uE002 Скачать файл" :
-                    (message.voice || message.video) ? "\uE002 Play / Pause" : "Tap link / \uE002 photo", ink, 0.65f);
-                draw_text(font, 750, 528, "\uE003  Back", ink, 0.65f);
+                draw_text(font, 28, 528, tr("hint.post_photo"), ink, 0.6f);
+                draw_text(font, 390, 528, message.document ? tr("hint.download_file") :
+                    (message.voice || message.video) ? tr("hint.play_pause") : tr("hint.link_photo"), ink, 0.65f);
+                draw_text(font, 750, 528, tr("hint.back"), ink, 0.65f);
             } else {
                 auto history_rows = history_layout(msgs, message_index, tg.currentChatIsGroup());
                 vita2d_enable_clipping();
@@ -1579,7 +1664,7 @@ int main() {
                     const int footer_offset = m.media_label.empty() ? 0 : 22;
                     vita2d_draw_rectangle(m.outgoing ? bubble_x+bubble_width-8 : bubble_x, y+54+footer_offset, 8, 14, bubble_color);
                     if (media) draw_texture_fit(media, (float)bubble_x+10, (float)y+4, 96, 56);
-                    else if (has_media) draw_text(font, bubble_x+12, y+32, m.video_note ? "Round" : m.video ? "Video" : m.animation ? "GIF" : "...", muted, 0.68f);
+                    else if (has_media) draw_text(font, bubble_x+12, y+32, m.video_note ? tr("chat.thumb.round") : m.video ? tr("chat.thumb.video") : m.animation ? "GIF" : "...", muted, 0.68f);
                     int text_x = bubble_x + 16 + media_width;
                     for (size_t row = 0; row < lines.size(); ++row)
                         draw_text(font, text_x, y+20+(int)row*22, lines[row], ink, 0.68f);
@@ -1599,10 +1684,10 @@ int main() {
                                                   m.delivery, bubble_color, now);
                 }
                 vita2d_disable_clipping();
-                if (msgs.empty()) draw_text(font, 38, 150, "No messages", muted, 0.75f);
-                draw_text(font, 28, 528, "\uE002  Open post", ink, 0.65f);
-                draw_text(font, 275, 528, "\uE001: текст   L: кружок   R: аудио", ink, 0.5f);
-                draw_text(font, 700, 528, "\uE003  Back", ink, 0.65f);
+                if (msgs.empty()) draw_text(font, 38, 150, tr("chat.no_messages"), muted, 0.75f);
+                draw_text(font, 28, 528, tr("hint.open_post"), ink, 0.65f);
+                draw_text(font, 275, 528, tr("hint.chat_compose"), ink, 0.5f);
+                draw_text(font, 700, 528, tr("hint.back"), ink, 0.65f);
             }
         } else if (tg.canBrowse()) {
             const auto& chats = tg.chats();
@@ -1642,36 +1727,34 @@ int main() {
                 draw_text(font, 88, y + 3, clip(chats[i].title, 70), ink, 0.72f);
                 y += chat_row_height;
             }
-            if (chats.empty()) draw_text(font, 38, chat_top+51, tg.chatsLoading() ? "Loading first chats..." :
-                (tg.chatsEnd() ? "No chats in this list" : "Unable to load chats. \uE000 = retry"), muted, 0.75f);
+            if (chats.empty()) draw_text(font, 38, chat_top+51, tg.chatsLoading() ? tr("chats.loading_first") :
+                (tg.chatsEnd() ? tr("chats.none") : tr("chats.load_failed")), muted, 0.75f);
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
-            char progress[140];
-            std::snprintf(progress, sizeof(progress), "%s  |  Loaded %u chats%s",
-                tg.chatsLoading() ? "Loading" : "Ready", (unsigned int)chats.size(),
-                tg.chatsEnd() ? "  |  All chats loaded" : "  |  Tap here for more");
+            const std::string progress = tr("chats.status", {tg.chatsLoading() ? tr("chats.state_loading") : tr("chats.state_ready"),
+                std::to_string(chats.size()), tg.chatsEnd() ? tr("chats.all_loaded") : tr("chats.tap_more")});
             draw_text(font, 28, 494, !update_notice.empty() ? fit_text(font, update_notice, 900, 0.48f) :
-                tg.chatsError().empty() ? std::string(progress) : "Retry: " + tg.chatsError(), ink, 0.48f);
+                tg.chatsError().empty() ? progress : tr("chats.retry", {tg.chatsError()}), ink, 0.48f);
             if (tg.chatsLoading()) {
                 float position = (float)((now / 2000) % 840);
                 vita2d_draw_rectangle(position, 497, 120, 2, accent);
             }
-            draw_text(font, 28, 528, "\uE004  Выбор", ink, 0.65f);
-            draw_text(font, 300, 528, "\uE002 Open / \uE005 Settings", ink, 0.6f);
-            draw_text(font, 680, 528, "\uE000  Refresh", ink, 0.65f);
+            draw_text(font, 28, 528, tr("hint.select"), ink, 0.65f);
+            draw_text(font, 300, 528, tr("hint.open_settings"), ink, 0.6f);
+            draw_text(font, 680, 528, tr("hint.refresh"), ink, 0.65f);
         } else {
             bool starting = tg.inputKind() == InputKind::None;
-            draw_text(font, 30, 145, starting ? "Connecting to Telegram..." : "Telegram authorization", ink, 0.9f);
+            draw_text(font, 30, 145, starting ? tr("auth.connecting") : tr("auth.title"), ink, 0.9f);
             draw_text(font, 30, 180, clip(tg.status(), 100), muted, 0.7f);
             vita2d_draw_rectangle(30, 280, 440, 60, selected);
-            draw_text(font, 48, 318, "\uE005  Настроить MTProxy", ink, 0.7f);
-            draw_text(font, 30, 375, "Прокси можно настроить до входа в Telegram.", muted, 0.6f);
-            draw_text(font, 30, 528, starting ? "Ожидание подключения" : "\uE002  Продолжить вход", ink, 0.6f);
-            draw_text(font, 510, 528, "\uE005  MTProxy", ink, 0.6f);
+            draw_text(font, 48, 318, tr("auth.setup_proxy"), ink, 0.7f);
+            draw_text(font, 30, 375, tr("auth.proxy_hint"), muted, 0.6f);
+            draw_text(font, 30, 528, starting ? tr("auth.waiting_connection") : tr("auth.continue"), ink, 0.6f);
+            draw_text(font, 510, 528, tr("hint.mtproxy"), ink, 0.6f);
             if (starting && net_ok && tg.lastError().empty()) {
                 int phase = (int)((now / 100000) % 8);
                 for (int dot = 0; dot < 8; ++dot)
                     vita2d_draw_rectangle(32 + dot * 24, 205, 14, 14, dot == phase ? accent : separator);
-                draw_text(font, 30, 490, "Waiting for Telegram | Loaded 0 chats", muted, 0.65f);
+                draw_text(font, 30, 490, tr("auth.waiting_status"), muted, 0.65f);
             }
         }
 
@@ -1683,23 +1766,22 @@ int main() {
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
             int progress = tg.historyPercent();
             vita2d_draw_rectangle(0, 497, 960.0f * progress / 100, 2, accent);
-            char loading[96];
             std::string thread_info = settings.show_threads ? " | " + cpu_scheduler::threadStatus() : "";
-            std::snprintf(loading, sizeof(loading), "History block: %d%%%s%s", progress,
-                tg.historyLoading() ? " - loading..." : " - ready", thread_info.c_str());
+            const std::string loading = tr(tg.historyLoading() ? "history.block_loading" : "history.block_ready",
+                {std::to_string(progress)}) + thread_info;
             std::string audio_status;
             if (recorder.processing() && audio_context) {
-                audio_status = "Audio: " + recorder.status();
+                audio_status = tr("audio.status", {recorder.status()});
             } else if (recorder.recording() && audio_context) {
-                audio_status = recorder.peak() ? "Микрофон активен" : "Нет сигнала микрофона";
+                audio_status = recorder.peak() ? tr("audio.mic_active") : tr("audio.no_signal");
             } else if (!tg.uploadStatus().empty()) {
                 audio_status = tg.uploadStatus();
-            } else if (!recorder_status.empty() && recorder_status != "Запись...") {
-                audio_status = "Audio: " + recorder_status;
+            } else if (!recorder_status.empty() && recorder_status != tr("rec.recording")) {
+                audio_status = tr("audio.status", {recorder_status});
             }
             std::string info = !tg.documentStatus().empty() ? tg.documentStatus() : !browser_status.empty() ? browser_status :
                 (!audio_status.empty() ? audio_status :
-                (tg.historyError().empty() ? loading : "History: " + tg.historyError()));
+                (tg.historyError().empty() ? loading : tr("history.error", {tg.historyError()})));
             draw_text(font, 28, 494, fit_text(font, info, recorder.recording() ? 650 : 904, 0.48f), ink, 0.48f);
             if (recorder.recording()) {
                 vita2d_draw_rectangle(690, 484, 235, 8, separator);
@@ -1725,21 +1807,21 @@ int main() {
             draw_text(font, 20, 123, tg.mediaCacheStatus(), header_text, 0.6f);
             draw_text(font, 20, 147, performance_status, header_text, 0.48f);
             if (!transfers.empty()) {
-                draw_text(font, 20, 171, "Отправки — страницы меняются каждые 8 с", header_text, 0.55f);
+                draw_text(font, 20, 171, tr("diag.transfers"), header_text, 0.55f);
                 for (size_t i = first; i < transfers.size() && i < first + 8; ++i)
                     draw_text(font, 20, 195 + (i-first)*24, fit_text(font, transfers[i], 920, 0.53f), header_text, 0.53f);
             }
         }
         if (!settings_open && !tg.ready() && tg.canBrowse() && !kb.active()) {
             vita2d_draw_rectangle(0, 78, 960, 26, RGBA8(20,35,50,240));
-            draw_text(font, 20, 98, "Cached data - waiting for Telegram", header_text, 0.55f);
+            draw_text(font, 20, 98, tr("diag.cached_waiting"), header_text, 0.55f);
         }
         if (!settings_open && post_open && !photo_open && !video_fullscreen && !reactions_open && !kb.active() &&
             message_index >= 0 && message_index < (int)tg.messages().size() && !tg.messages()[message_index].poll.id)
-            draw_text(font, 750, 472, "\uE001: реакции", muted, 0.45f);
+            draw_text(font, 750, 472, tr("hint.reactions"), muted, 0.45f);
         if (!settings_open && reactions_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
-            draw_text(font, 32, 80, "Реакции", ink, 0.85f);
+            draw_text(font, 32, 80, tr("reaction.title"), ink, 0.85f);
             draw_text(font, 32, 112, fit_text(font, tg.reactionStatus(), 880, 0.6f), muted, 0.6f);
             const auto& choices = tg.reactionChoices();
             int begin = reaction_index/32*32;
@@ -1751,28 +1833,28 @@ int main() {
                 if (icon) draw_texture_fit(icon,x+28,y+8,48,48);
                 else draw_text(font, x+8, y+43, fit_text(font,choices[i],88,0.7f), ink, 0.7f);
             }
-            draw_text(font, 28, 528, "\uE004: выбор   \uE002: поставить / убрать   \uE003: назад", ink, 0.6f);
+            draw_text(font, 28, 528, tr("hint.reaction_footer"), ink, 0.6f);
         }
         if (!settings_open && tg.topicsOpen()) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
-            draw_text(font, 30, 61, "Темы группы", ink, 0.7f);
+            draw_text(font, 30, 61, tr("topics.title"), ink, 0.7f);
             const auto& topics = tg.topics();
             int first = std::max(0, topic_index-7);
             for (int i = first; i < std::min(first+8, (int)topics.size()); ++i) {
                 int y = 70+(i-first)*50;
                 vita2d_draw_rectangle(20, y, 920, 48, i == topic_index ? selected : white);
-                std::string title = topics[i].title + (topics[i].closed ? " [закрыта]" : "");
+                std::string title = topics[i].title + (topics[i].closed ? tr("topics.closed") : "");
                 draw_text(font, 34, y+32, fit_text(font, title, 740, 0.75f), ink, 0.75f);
                 if (topics[i].unread) draw_text(font, 830, y+32, std::to_string(topics[i].unread), accent, 0.7f);
             }
             draw_text(font, 30, 492, fit_text(font, tg.topicsStatus(), 900, 0.55f), muted, 0.55f);
-            draw_text(font, 30, 528, "\uE002: открыть   \uE000: ещё темы   \uE003: назад", ink, 0.6f);
+            draw_text(font, 30, 528, tr("topics.footer"), ink, 0.6f);
         }
         if (!settings_open && stickers_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
             const auto& packs = tg.stickerPacks();
             if (sticker_pack_menu) {
-                draw_text(font, 30, 76, "Наборы стикеров", ink, 0.8f);
+                draw_text(font, 30, 76, tr("sticker.sets_title"), ink, 0.8f);
                 draw_text(font, 30, 108, fit_text(font, tg.stickerStatus(), 900, 0.55f), muted, 0.55f);
                 int first = std::max(0, sticker_pack - 6);
                 for (int i = first; i < std::min(first + 7, (int)packs.size()); ++i) {
@@ -1784,9 +1866,9 @@ int main() {
                     else { vita2d_draw_rectangle(30, y+6, 36, 36, separator); draw_text(font, 40, y+32, "S", ink, 0.6f); }
                     draw_text(font, 82, y+31, fit_text(font, packs[i].title, 820, 0.65f), ink, 0.65f);
                 }
-                draw_text(font, 30, 528, "\uE004: выбор   \uE002: открыть набор   \uE003: назад", ink, 0.6f);
+                draw_text(font, 30, 528, tr("sticker.sets_footer"), ink, 0.6f);
             } else {
-                std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : "Стикеры";
+                std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : tr("sticker.title");
                 draw_text(font, 30, 76, fit_text(font, title, 900, 0.8f), ink, 0.8f);
                 draw_text(font, 30, 112, fit_text(font, tg.stickerStatus(), 900, 0.6f), muted, 0.6f);
                 const auto& items = tg.stickers();
@@ -1802,8 +1884,8 @@ int main() {
                         draw_texture_fit(texture, x+(144-w*scale)/2, y+(104-h*scale)/2, 130, 90);
                     } else draw_text(font, x+45, y+60, items[i].emoji.empty() ? "..." : items[i].emoji, ink, 0.85f);
                 }
-                draw_text(font, 30, 490, "Страница " + std::to_string(first/18+1) + " / " + std::to_string(std::max(1, ((int)items.size()+17)/18)), muted, 0.6f);
-                draw_text(font, 30, 528, "\uE004: выбор   \uE003: наборы   \uE001: закрыть", ink, 0.6f);
+                draw_text(font, 30, 490, tr("sticker.page", {std::to_string(first/18+1), std::to_string(std::max(1, ((int)items.size()+17)/18))}), muted, 0.6f);
+                draw_text(font, 30, 528, tr("sticker.footer"), ink, 0.6f);
             }
         }
         draw_overlays.finish();
@@ -1811,35 +1893,35 @@ int main() {
             using RecordingState = VideoNoteRecorder::State;
             auto state = circle_recorder.state();
             vita2d_draw_rectangle(0, 0, 960, 544, white);
-            draw_text(font, 28, 34, "Видеокружок", ink, 0.85f);
-            draw_text(font, 590, 34, circle_recorder.rearCamera() ? "Задняя камера" : "Фронтальная камера", muted, 0.6f);
+            draw_text(font, 28, 34, tr("vnr.title"), ink, 0.85f);
+            draw_text(font, 590, 34, circle_recorder.rearCamera() ? tr("vnr.rear_camera") : tr("vnr.front_camera"), muted, 0.6f);
             auto* preview = circle_playback && circle_playback->texture() ? circle_playback->texture() : circle_recorder.preview();
             if (preview) draw_texture_fit(preview, 320, 66, 320, 320);
-            std::string timer = std::to_string(circle_recorder.seconds()) + " / 60 сек.";
-            if (state == RecordingState::Encoding) timer = "Подготовка MP4: " + std::to_string(circle_recorder.percent()) + "%";
+            std::string timer = tr("vnr.timer", {std::to_string(circle_recorder.seconds())});
+            if (state == RecordingState::Encoding) timer = tr("vnr.encoding_percent", {std::to_string(circle_recorder.percent())});
             draw_text(font, 350, 416, timer, state == RecordingState::Recording ? RGBA8(210,45,45,255) : ink, 0.7f);
             if (state == RecordingState::Recording) {
                 vita2d_draw_rectangle(320, 432, 320, 6, separator);
                 vita2d_draw_rectangle(320, 432, 3.2f * circle_recorder.level(), 6, accent);
             }
             draw_text(font, 28, 464, fit_text(font, circle_error.empty() ? circle_recorder.status() : circle_error, 900, 0.55f), ink, 0.55f);
-            const char* action = state == RecordingState::Review ? "\uE002 Отправить" : state == RecordingState::Recording ? "\uE002 Остановить" :
-                state == RecordingState::Preview ? "\uE002 Записать" : state == RecordingState::Error ? "\uE002 Повторить" : "";
+            const std::string action = state == RecordingState::Review ? tr("vnr.action.send") : state == RecordingState::Recording ? tr("vnr.action.stop") :
+                state == RecordingState::Preview ? tr("vnr.action.record") : state == RecordingState::Error ? tr("vnr.action.retry") : "";
             draw_text(font, 28, 528, action, ink, 0.65f);
-            if (state == RecordingState::Review) draw_text(font, 480, 528, "\uE001 Просмотр", ink, 0.6f);
+            if (state == RecordingState::Review) draw_text(font, 480, 528, tr("vnr.review"), ink, 0.6f);
             else if (state == RecordingState::Preview || state == RecordingState::Recording)
-                draw_text(font, 480, 528, "\uE000 Камера", ink, 0.6f);
-            draw_text(font, 785, 528, "\uE003 Отмена", ink, 0.6f);
+                draw_text(font, 480, 528, tr("vnr.camera"), ink, 0.6f);
+            draw_text(font, 785, 528, tr("vnr.cancel"), ink, 0.6f);
         }
         if (kb.active()) kb.draw(font);
         if (unsupported_video_prompt) {
             vita2d_draw_rectangle(95, 145, 770, 255, white);
             vita2d_draw_rectangle(95, 145, 770, 4, accent);
-            draw_text(font, 125, 195, "Видео не поддерживается", ink, 0.8f);
-            draw_text(font, 125, 242, "Аппаратный декодер Vita не принимает этот размер кадра.", ink, 0.6f);
-            draw_text(font, 125, 286, "Создать копию H.264 MP4 размером 432×768 на Vita?", ink, 0.6f);
-            draw_text(font, 125, 318, "Это может занять время и дополнительное место.", ink, 0.6f);
-            draw_text(font, 125, 368, "\uE002 Подготовить    \uE003 Отмена", muted, 0.6f);
+            draw_text(font, 125, 195, tr("unsupported.title"), ink, 0.8f);
+            draw_text(font, 125, 242, tr("unsupported.reason"), ink, 0.6f);
+            draw_text(font, 125, 286, tr("unsupported.question"), ink, 0.6f);
+            draw_text(font, 125, 318, tr("unsupported.warning"), ink, 0.6f);
+            draw_text(font, 125, 368, tr("unsupported.footer"), muted, 0.6f);
         }
 
         performance::SlowScope draw_end(performance::SlowPhase::Ui,"draw_end");

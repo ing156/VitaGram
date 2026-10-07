@@ -1,4 +1,5 @@
 #pragma once
+#include "proxy_config.h"
 #include <jansson.h>
 #include <cstdio>
 #include <algorithm>
@@ -10,8 +11,17 @@ struct AppSettings {
     bool proxy_enabled = false;
     std::string proxy_server, proxy_secret;
     int proxy_port = 443;
+    int proxy_type = 0; // ProxyKind: 0 MTProto, 1 SOCKS5, 2 HTTPS
+    std::string proxy_username, proxy_password;
+    ProxyConfig proxyConfig() const {
+        ProxyConfig c;
+        c.kind = proxy_kind_from_int(proxy_type); c.server = proxy_server; c.port = proxy_port;
+        c.secret = proxy_secret; c.username = proxy_username; c.password = proxy_password;
+        return c;
+    }
     int cache_storage = 0;
     std::string download_dir = "ux0:downloads/vitagram";
+    std::string language; // "" = follow the console language, otherwise a code from app0:lang/*.lang
     static int days(int i) { const int values[] = {1, 7, 30, 90, 0}; return values[i]; }
     static int megabytes(int i) { const int values[] = {128, 256, 512, 1024, 2048, 0}; return values[i]; }
     static int requestBatchSize(int i) { const int values[] = {4, 8, 16, 32, 64}; return values[std::max(0, std::min(4, i))]; } // Оптимизация: сдвинул значения вправо (прежн. индекс 1→теперь значение 32)
@@ -37,12 +47,16 @@ struct AppSettings {
         show_threads = json_is_true(json_object_get(root, "show_threads"));
         proxy_enabled = json_is_true(json_object_get(root, "proxy_enabled"));
         proxy_port = value("proxy_port", 443, 65535);
+        proxy_type = value("proxy_type", 0, 2);
         auto string_value = [&](const char* key) {
             const char* v = json_string_value(json_object_get(root, key));
             return std::string(v ? v : "");
         };
         proxy_server = string_value("proxy_server");
         proxy_secret = string_value("proxy_secret");
+        proxy_username = string_value("proxy_username");
+        proxy_password = string_value("proxy_password");
+        language = string_value("language");
         std::string saved_download_dir = string_value("download_dir");
         if (!saved_download_dir.empty() && saved_download_dir != "ux0:download/vitagram" &&
             saved_download_dir != "ux0:/download/vitagram") download_dir = saved_download_dir;
@@ -55,8 +69,12 @@ struct AppSettings {
         json_object_set_new(root, "proxy_server", json_string(proxy_server.c_str()));
         json_object_set_new(root, "proxy_port", json_integer(proxy_port));
         json_object_set_new(root, "proxy_secret", json_string(proxy_secret.c_str()));
+        json_object_set_new(root, "proxy_type", json_integer(proxy_type));
+        json_object_set_new(root, "proxy_username", json_string(proxy_username.c_str()));
+        json_object_set_new(root, "proxy_password", json_string(proxy_password.c_str()));
         json_object_set_new(root, "cache_storage", json_integer(cache_storage));
         json_object_set_new(root, "download_dir", json_string(download_dir.c_str()));
+        json_object_set_new(root, "language", json_string(language.c_str()));
         bool ok = json_dump_file(root, "ux0:data/vitagram/settings.json.tmp", JSON_COMPACT) == 0;
         json_decref(root);
         return ok && std::rename("ux0:data/vitagram/settings.json.tmp", "ux0:data/vitagram/settings.json") == 0;

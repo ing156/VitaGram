@@ -1,3 +1,4 @@
+#include "test_language.h"
 #include "video_note_encoder.h"
 #include "video_note_frame.h"
 #include <atomic>
@@ -13,6 +14,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 int main(int argc,char** argv) {
+    use_test_language();
     assert(argc==2);
     using namespace video_note;
     std::string base=std::string(argv[1])+"/note", raw=base+".frames", pcm=base+".pcm", mp4=base+".mp4", error;

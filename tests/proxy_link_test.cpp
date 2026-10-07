@@ -1,8 +1,10 @@
+#include "test_language.h"
 #include "proxy_link.h"
 #include <cassert>
 #include <iostream>
 
 int main() {
+    use_test_language();
     ProxyLink proxy; std::string error;
     const std::string secret = "0123456789abcdef0123456789abcdef";
     auto valid = [&](const std::string& url, const std::string& server, int port, const std::string& value) {
@@ -32,8 +34,19 @@ int main() {
         assert(proxy.server == unchanged.server && proxy.port == unchanged.port && proxy.secret == unchanged.secret);
     }
     for (const char* url : {"https://t.me.evil/proxy?server=host", "https://t.me@evil/proxy?server=host",
-                           "tg://socks?server=host", "tg://proxy.evil?server=host", "https://example.org/"})
+                           "tg://proxy.evil?server=host", "https://example.org/"})
         assert(parse_proxy_link(url, proxy, error) == ProxyLinkResult::NotProxy);
+    // SOCKS5 links: credentials optional, no secret.
+    assert(parse_proxy_link("tg://socks?server=s.example&port=1080&user=bob&pass=p%40ss", proxy, error) == ProxyLinkResult::Valid);
+    assert(proxy.kind == ProxyKind::Socks5 && proxy.server == "s.example" && proxy.port == 1080 &&
+           proxy.username == "bob" && proxy.password == "p@ss" && proxy.secret.empty());
+    assert(parse_proxy_link("https://t.me/socks?server=h&port=1", proxy, error) == ProxyLinkResult::Valid);
+    assert(proxy.kind == ProxyKind::Socks5 && proxy.username.empty());
+    assert(parse_proxy_link("tg://proxy?server=h&port=1&secret=ab", proxy, error) == ProxyLinkResult::Valid);
+    assert(proxy.kind == ProxyKind::MTProto);
+    for (const char* url : {"tg://socks?server=host", "tg://socks?server=h&port=1&user=a&user=b",
+                            "tg://socks?server=h&port=0", "tg://socks"})
+        assert(parse_proxy_link(url, proxy, error) == ProxyLinkResult::Invalid);
     assert(parse_proxy_link("tg://proxy?server=host&port=1&secret=" + std::string(5000, 'a'), proxy, error) == ProxyLinkResult::Invalid);
     std::cout << "Proxy links: PASS\n";
 }

@@ -1,3 +1,4 @@
+#include "test_language.h"
 #include "audio_recorder.h"
 #include "cpu_scheduler.h"
 #include "config.h"
@@ -31,6 +32,7 @@ static void waitFor(const std::function<bool()>& condition) {
     while (!condition()) { assert(std::chrono::steady_clock::now()<end); std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
 }
 int main() {
+    use_test_language();
     std::filesystem::create_directories(VITAGRAM_FILES_DIR);
     std::string owned;
     {

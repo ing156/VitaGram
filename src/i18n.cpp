@@ -105,7 +105,10 @@ void parse(const std::string& data, Fn&& fn) {
         if (line.empty() || line[0] == '#') continue;
         size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
-        if (!fn(trim(line.substr(0, eq)), trim(line.substr(eq + 1)))) return;
+        std::string value = trim(line.substr(eq + 1));
+        // "…" keeps leading/trailing spaces: key = " text "
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"') value = value.substr(1, value.size() - 2);
+        if (!fn(trim(line.substr(0, eq)), value)) return;
     }
 }
 
@@ -149,11 +152,10 @@ std::vector<std::string> list_lang_files(const std::string& directory) {
 const Language* find_language(const std::vector<Language>& languages, const std::string& code) {
     std::string wanted = lower(code);
     for (const auto& l : languages) if (lower(l.code) == wanted) return &l;
-    size_t dash = wanted.find_first_of("-_");
-    if (dash != std::string::npos) {
-        std::string base = wanted.substr(0, dash);
-        for (const auto& l : languages) if (lower(l.code) == base) return &l;
-    }
+    auto base_of = [](const std::string& code) { return code.substr(0, code.find_first_of("-_")); };
+    // "pt-BR" -> "pt", and "pt" -> the first "pt-*" language (so a console language still finds a regional file).
+    for (const auto& l : languages) if (lower(l.code) == base_of(wanted)) return &l;
+    for (const auto& l : languages) if (base_of(lower(l.code)) == base_of(wanted)) return &l;
     return nullptr;
 }
 

@@ -1,4 +1,5 @@
 #include "performance.h"
+#include "i18n.h"
 #include "animation_player.h"
 #include "media_decode_policy.h"
 #include "portrait_video.h"
@@ -199,7 +200,7 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
     pending_direct_ = false;
     yuv_logged_ = false;
     uploaded_frames_ = 0;
-    status_ = path.empty() ? "" : prepare ? "Подготовка видео: 0%" : video ? "X Play" : "Preparing GIF...";
+    status_ = path.empty() ? "" : prepare ? tr("anim.preparing_video",{"0"}) : video ? tr("anim.play") : tr("anim.preparing_gif");
     pthread_mutex_unlock(&mutex_);
     audio_.setSource(video && !prepare ? path : "", video && !prepare);
     if (yuv_valid_) { vita2d_wait_rendering_done(); releaseYuvTexture(); }
@@ -211,7 +212,7 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
         int rc = pthread_create(&thread_, &attr, entry, this);
         pthread_attr_destroy(&attr);
         if (!rc) started_ = true;
-        else setStatus(generation_, "Unable to start animation decoder");
+        else setStatus(generation_, tr("anim.decoder_start_failed"));
     }
 }
 
@@ -255,7 +256,7 @@ void AnimationPlayer::upload() {
                     vita2d_texture_set_filters(&yuv_texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
                     ++uploaded_frames_;
                 } else {
-                    status_ = "NV12 texture init failed";
+                    status_ = tr("anim.nv12_failed");
                     av_frame_free(&displayed_yuv_frame_);
                 }
                 ready_ = false;
@@ -286,7 +287,7 @@ void AnimationPlayer::upload() {
                         SCE_GXM_TEXTURE_FORMAT_YVU420P2_CSC1, pitch, aligned_height, 0);
                     if (rc >= 0) { yuv_valid_ = true; yuv_pitch_ = pitch; yuv_height_ = aligned_height; }
                 }
-                if (!yuv_valid_) { releaseYuvTexture(); status_ = "Not enough GPU memory for video"; }
+                if (!yuv_valid_) { releaseYuvTexture(); status_ = tr("anim.gpu_video"); }
             }
             if (yuv_valid_) {
                 auto* dest = static_cast<unsigned char*>(yuv_pixels_);
@@ -315,7 +316,7 @@ void AnimationPlayer::upload() {
                 std::memcpy(dest + y * stride, pixels_.data() + y * width_ * 4, width_ * 4);
             vita2d_texture_set_filters(texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
             ++uploaded_frames_;
-        } else status_ = "Not enough GPU memory for GIF";
+        } else status_ = tr("anim.gpu_gif");
         ready_ = false;
     }
     pthread_mutex_unlock(&mutex_);
@@ -324,8 +325,8 @@ void AnimationPlayer::upload() {
 std::string AnimationPlayer::status() {
     pthread_mutex_lock(&mutex_);
     std::string result = status_;
-    if (video_ && (result.empty() || result == "X Play" || result == "Video - playing"))
-        result = finished_ ? "Finished - X replay" : paused_ ? "X Play / Pause" : "Video - playing / X pause";
+    if (video_ && (result.empty() || result == tr("anim.play") || result == tr("anim.video_playing")))
+        result = tr(finished_ ? "anim.finished_replay" : paused_ ? "anim.play_pause" : "anim.video_playing_hint");
     pthread_mutex_unlock(&mutex_);
     if (video_ && !audio_.error().empty()) result += " | " + audio_.error();
     return result;
@@ -376,7 +377,7 @@ void AnimationPlayer::run() {
 void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
 #ifdef VITAGRAM_RLOTTIE
     gzFile input = gzopen(path.c_str(), "rb");
-    if (!input) { setStatus(generation, "Cannot open TGS"); return; }
+    if (!input) { setStatus(generation, tr("anim.tgs_open")); return; }
     std::string data;
     char block[8192]; int bytes = 0;
     while (!stopping_ && generation == generation_ && (bytes = gzread(input, block, sizeof(block))) > 0) {
@@ -386,17 +387,17 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
     int closed = gzclose(input);
     if (stopping_ || generation != generation_) return;
     if (bytes < 0 || closed != Z_OK || data.empty() || data.size() > 2*1024*1024) {
-        setStatus(generation, "Invalid or oversized TGS"); return;
+        setStatus(generation, tr("anim.tgs_invalid")); return;
     }
     Lottie_Animation* animation = lottie_animation_from_data(data.c_str(), path.c_str(), "");
-    if (!animation) { setStatus(generation, "TGS parsing failed"); return; }
+    if (!animation) { setStatus(generation, tr("anim.tgs_parse")); return; }
     size_t frames = lottie_animation_get_totalframe(animation);
     double fps = lottie_animation_get_framerate(animation);
     size_t source_w = 0, source_h = 0;
     lottie_animation_get_size(animation, &source_w, &source_h);
     if (!frames || frames > 1800 || !std::isfinite(fps) || fps <= 0 || fps > 120 ||
         !source_w || !source_h || source_w > 4096 || source_h > 4096) {
-        lottie_animation_destroy(animation); setStatus(generation, "Unsupported TGS dimensions/timing"); return;
+        lottie_animation_destroy(animation); setStatus(generation, tr("anim.tgs_unsupported")); return;
     }
     double scale = 256.0/std::max(source_w, source_h);
     int w = std::max(1, (int)(source_w*scale)), h = std::max(1, (int)(source_h*scale));
@@ -427,7 +428,7 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
             rgba[i*4+3] = alpha;
         }
         pthread_mutex_lock(&mutex_);
-        if (generation == generation_) { pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = "TGS - playing"; }
+        if (generation == generation_) { pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = tr("anim.tgs_playing"); }
         pthread_mutex_unlock(&mutex_);
         rgba.resize(w*h*4);
         int64_t wait = 33333-(sceKernelGetSystemTimeWide()-tick);
@@ -435,7 +436,7 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
     }
     lottie_animation_destroy(animation);
 #else
-    setStatus(generation, "TGS needs rlottie: run build-sticker-renderer.sh");
+    setStatus(generation, tr("anim.tgs_needs_rlottie"));
 #endif
 }
 
@@ -458,7 +459,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         std::string error;
         if (!prepare_portrait_video(source_path,path,
                 [&] { return interrupted(&job)!=0; },
-                [&](int percent) { setStatus(generation,"Подготовка видео: "+std::to_string(percent)+"%"); },
+                [&](int percent) { setStatus(generation,tr("anim.preparing_video",{std::to_string(percent)})); },
                 error)) {
             if (!interrupted(&job)) early_error(error);
             return;
@@ -466,10 +467,10 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         if (interrupted(&job)) return;
         audio_.setSource(path,true);
         audio_.setPlaying(!paused_);
-        setStatus(generation,"X Play");
+        setStatus(generation,tr("anim.play"));
     }
     FILE* file = std::fopen(path.c_str(), "rb");
-    if (!file) { early_error("Cannot open media file"); return; }
+    if (!file) { early_error(tr("anim.media_open")); return; }
     unsigned char signature[2]{};
     size_t signature_size = std::fread(signature, 1, 2, file);
     if (!video && signature_size == 2 && signature[0] == 0x1f && signature[1] == 0x8b) {
@@ -496,7 +497,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     }
     std::fclose(file);
     if (seek_rc || file_size <= 0 || file_size > (video ? 128 : 20) * 1024 * 1024) {
-        early_error(video ? "Video limit: 128 MiB" : "GIF limit: 20 MiB"); return;
+        early_error(video ? tr("anim.limit_video") : tr("anim.limit_gif")); return;
     }
     AVFormatContext* format = avformat_alloc_context();
     AVCodecContext* codec = nullptr;
@@ -531,7 +532,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         }
         cleanup();
     };
-    if (!format) { fail("Not enough memory for animation"); return; }
+    if (!format) { fail(tr("anim.memory")); return; }
     format->interrupt_callback = {interrupted, &job};
     format->probesize = 256 * 1024;
     format->max_analyze_duration = 2 * AV_TIME_BASE;
@@ -549,10 +550,10 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     AVStream* stream = format->streams[stream_index];
     auto* parameters = stream->codecpar;
     if (!media_decode::video_codec(parameters->codec_id, video)) {
-        fail(video ? "Supported video: H.264, VP8, VP9 (MP4/WebM)" : "Supported animations: GIF, H.264, VP8, VP9"); return;
+        fail(video ? tr("anim.supported_video") : tr("anim.supported_anim")); return;
     }
     auto dimensions_ok = [](int w, int h) { return w > 0 && h > 0 && w <= 1280 && h <= 1280 && (int64_t)w * h <= 1280 * 720; };
-    if (!dimensions_ok(parameters->width, parameters->height)) { fail("Animation exceeds 720p pixel limit"); return; }
+    if (!dimensions_ok(parameters->width, parameters->height)) { fail(tr("anim.limit_720p")); return; }
     if (parameters->codec_id == AV_CODEC_ID_H264) {
         int module_rc = sceSysmoduleLoadModule(SCE_SYSMODULE_AVCDEC);
         // Some retail Vitas report INVALID_VALUE while the codec engine is
@@ -572,7 +573,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     const AVCodec* decoder = parameters->codec_id == AV_CODEC_ID_H264
         ? avcodec_find_decoder_by_name("h264_vita") : avcodec_find_decoder(parameters->codec_id);
     codec = decoder ? avcodec_alloc_context3(decoder) : nullptr;
-    if (!codec) { fail("Animation decoder unavailable"); return; }
+    if (!codec) { fail(tr("anim.decoder_missing")); return; }
     logged_codec = codec;
     rc = avcodec_parameters_to_context(codec, parameters);
     if (rc < 0) { fail(decoder_error("Parameters", rc)); return; }
@@ -596,7 +597,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         std::fflush(hardware_log);
     }
     packet = av_packet_alloc(); frame = av_frame_alloc();
-    if (!packet || !frame) { fail("Not enough memory for GIF frames"); return; }
+    if (!packet || !frame) { fail(tr("anim.gif_memory")); return; }
     AVRational rate = av_guess_frame_rate(format, stream, nullptr);
     int64_t fallback_delay = rate.num > 0 && rate.den > 0 ? av_rescale_q(1, av_inv_q(rate), AVRational{1,1000000}) : 100000;
     fallback_delay = std::max<int64_t>(10000, std::min<int64_t>(1000000, fallback_delay));
@@ -718,7 +719,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                     !(frame->width & 1) && !(frame->height & 1)) {
                     if (!frame->data[0] || !frame->data[1] ||
                         frame->linesize[0] < frame->width || frame->linesize[1] < frame->width) {
-                        frame_error = "Invalid NV12 frame layout";
+                        frame_error = tr("anim.nv12_layout");
                         return false;
                     }
                     pthread_mutex_lock(&mutex_);
@@ -726,18 +727,18 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                         if (!pending_yuv_frame_) pending_yuv_frame_ = av_frame_alloc();
                         if (!pending_yuv_frame_) {
                             pthread_mutex_unlock(&mutex_);
-                            frame_error = "Not enough memory for video frame";
+                            frame_error = tr("anim.frame_memory");
                             return false;
                         }
                         av_frame_unref(pending_yuv_frame_);
                         if (av_frame_ref(pending_yuv_frame_, frame) < 0) {
                             pthread_mutex_unlock(&mutex_);
-                            frame_error = "Cannot retain video frame";
+                            frame_error = tr("anim.frame_retain");
                             return false;
                         }
                         width_ = frame->width; height_ = frame->height;
                         pending_direct_ = direct_video;
-                        ready_ = true; status_ = "Video - playing";
+                        ready_ = true; status_ = tr("anim.video_playing");
                     }
                     pthread_mutex_unlock(&mutex_);
                     last_output = now;
@@ -777,7 +778,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 }
                 pthread_mutex_lock(&mutex_);
                 if (generation == generation_) {
-                    pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = video ? "Video - playing" : "GIF - playing";
+                    pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = video ? tr("anim.video_playing") : "GIF - playing";
                 }
                 pthread_mutex_unlock(&mutex_);
                 last_output = now;

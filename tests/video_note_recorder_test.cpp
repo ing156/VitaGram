@@ -1,3 +1,4 @@
+#include "test_language.h"
 #include "video_note_recorder.h"
 #include "video_note_encoder.h"
 #include "video_note_frame.h"
@@ -75,6 +76,7 @@ void clean(VideoNoteRecorder& r,const std::string& path,bool keep=false) {
     assert(!exists(path+".pcm") && !exists(path+".frames") && exists(path)==keep);
 }
 int main(int argc,char** argv) {
+    use_test_language();
     assert(argc==2); const std::string path=std::string(argv[1])+"/capture.mp4";
     VideoNoteRecorder r;
     auto preview=[&] { assert(r.open(path)); until([&]{return r.state()==State::Preview;}); assert(!r.rearCamera()); };

@@ -37,6 +37,10 @@ navigation in both directions, prepended history pages, photo-album merges and d
 It uses the application message type and selection code; a configured build-modern
 Jansson include directory is required.
 
+`bash tests/run-i18n-tests.sh` checks that every language catalog has the same keys, placeholders and icon tokens, language selection and
+English fallback, the `.lang` file format, and that all `tr("key")` keys used in `src/` exist. Tests that compare Russian texts
+select it explicitly through `tests/test_language.h`.
+
 `bash tests/run-proxy-tests.sh` checks proxy URLs, real QR decoding and mocked Vita camera lifecycle.
 
 `bash tests/run-video-tests.sh` checks circular YUV cropping, the current TDLib

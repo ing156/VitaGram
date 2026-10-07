@@ -1,4 +1,5 @@
 #include "vita_net.h"
+#include "i18n.h"
 #include <psp2/sysmodule.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
@@ -66,9 +67,9 @@ void VitaNet::poll() {
     if (sceRegMgrGetKeyInt("/CONFIG/SYSTEM/", "flight_mode", &flight) < 0) flight = -1;
     if (sceRegMgrGetKeyInt("/CONFIG/NET/", "wifi_flag", &wifi) < 0) wifi = -1;
     if (ctl_ready_ && sceNetCtlInetGetState(&state) < 0) state = -1;
-    const char* connection = state == SCE_NETCTL_STATE_CONNECTED ? "Online" :
-        state == SCE_NETCTL_STATE_CONNECTING || state == SCE_NETCTL_STATE_FINALIZING ? "Connecting" :
-        state == SCE_NETCTL_STATE_DISCONNECTED ? "Disconnected" : "Connection unknown";
-    const char* indicator = flight > 0 ? "Airplane mode" : wifi == 0 ? "Wi-Fi off" : connection;
-    std::snprintf(status_, sizeof(status_), "%s", indicator);
+    std::string connection = state == SCE_NETCTL_STATE_CONNECTED ? tr("net.online") :
+        state == SCE_NETCTL_STATE_CONNECTING || state == SCE_NETCTL_STATE_FINALIZING ? tr("net.connecting") :
+        state == SCE_NETCTL_STATE_DISCONNECTED ? tr("net.disconnected") : tr("net.unknown");
+    std::string indicator = flight > 0 ? tr("net.airplane") : wifi == 0 ? tr("net.wifi_off") : connection;
+    std::snprintf(status_, sizeof(status_), "%s", indicator.c_str());
 }

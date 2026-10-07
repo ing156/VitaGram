@@ -1,5 +1,6 @@
 #pragma once
 #include <jansson.h>
+#include "i18n.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -96,7 +97,7 @@ public:
                     if (!json_is_object(state)) finish(i, "", now);
                     else if (string(state, "@type") == "messageSendingStateFailed") {
                         auto error = string(json_object_get(state, "error"), "message");
-                        finish(i, error.empty() ? "неизвестная ошибка" : error, now);
+                        finish(i, error.empty() ? tr("up.unknown_error") : error, now);
                     }
                     for (const auto& ended : ended_) if (!i.terminal && ended.chat == i.chat && ended.message == i.message)
                         finish(i, ended.error, ended.time);
@@ -119,7 +120,7 @@ public:
             json_t* m = json_object_get(root, "message");
             const int64_t chat = number(m, "chat_id"), old = number(root, "old_message_id");
             auto error = type == "updateMessageSendFailed" ? string(json_object_get(root, "error"), "message") : "";
-            if (type == "updateMessageSendFailed" && error.empty()) error = "неизвестная ошибка";
+            if (type == "updateMessageSendFailed" && error.empty()) error = tr("up.unknown_error");
             file(messageFile(m), now);
             if (chat && old) {
                 if (ended_.size() >= 64) ended_.erase(ended_.begin());
@@ -140,8 +141,8 @@ public:
                 (now - i.ended < (diagnostic ? 15000000 : 3000000) && (diagnostic || !i.dismissed)))) {
                 result.push_back(describe(i, now));
                 if (i.reused) continue;
-                result.push_back("Данных: " + std::to_string(i.done) + "/" + std::to_string(i.size) +
-                    " Б; осталось: " + std::to_string(std::max<int64_t>(0, i.size-i.done)) + " Б");
+                result.push_back(tr("up.data_line", {std::to_string(i.done), std::to_string(i.size),
+                    std::to_string(std::max<int64_t>(0, i.size-i.done))}));
             }
         }
         return result;
@@ -158,7 +159,7 @@ public:
             if ((!chat || i->chat == chat) && i->terminal && !i->dismissed && now - i->ended < 3000000) {
                 selected = &*i; break;
             }
-        return selected ? describe(*selected, now) + (active > 1 ? " | ещё: " + std::to_string(active - 1) : "") : "";
+        return selected ? describe(*selected, now) + (active > 1 ? tr("up.more", {std::to_string(active - 1)}) : "") : "";
     }
     const std::vector<Item>& items() const { return items_; }
 private:
@@ -172,26 +173,27 @@ private:
     }
     static std::string bytes(int64_t n) {
         char b[48];
-        if (n >= 1048576) std::snprintf(b, sizeof(b), "%.2f МиБ", n / 1048576.0);
-        else std::snprintf(b, sizeof(b), "%.1f КиБ", n / 1024.0);
-        return b;
+        if (n >= 1048576) { std::snprintf(b, sizeof(b), "%.2f", n / 1048576.0); return tr("unit.mib", {b}); }
+        std::snprintf(b, sizeof(b), "%.1f", n / 1024.0);
+        return tr("unit.kib", {b});
     }
+    static std::string seconds(int64_t micros) { return tr("unit.sec", {std::to_string(micros / 1000000)}); }
     static std::string describe(const Item& i, int64_t now) {
-        std::string s = i.kind == Kind::Sticker ? "Стикер" : i.video ? "Кружок" : "Аудио";
-        if (i.terminal && i.reused && i.error.empty()) return s + ": отправлено";
-        if (i.terminal) return s + (i.error.empty() ? ": отправлено (" + bytes(i.size) + ", " +
-            std::to_string((i.ended-i.started)/1000000) + " с)" : ": ошибка — " + i.error);
-        if (i.reused) return s + ": подтверждение Telegram | прошло " + std::to_string((now-i.started)/1000000) + " с";
-        if (!i.file) return s + ": ожидание ответа Telegram | прошло " + std::to_string((now-i.started)/1000000) + " с";
-        s += ": " + bytes(i.done) + "/" + bytes(i.size) + " (" +
-            std::to_string(i.size ? std::min<int64_t>(100, i.done * 100 / i.size) : 0) + "%)";
+        std::string s = tr(i.kind == Kind::Sticker ? "up.kind.sticker" : i.video ? "up.kind.video_note" : "up.kind.audio");
+        if (i.terminal && i.reused && i.error.empty()) return tr("up.sent", {s});
+        if (i.terminal) return i.error.empty() ? tr("up.sent_info", {s, bytes(i.size), seconds(i.ended-i.started)})
+                                               : tr("up.failed", {s, i.error});
+        if (i.reused) return tr("up.confirming", {s, seconds(now-i.started)});
+        if (!i.file) return tr("up.awaiting", {s, seconds(now-i.started)});
+        s = tr("up.progress", {s, bytes(i.done), bytes(i.size),
+            std::to_string(i.size ? std::min<int64_t>(100, i.done * 100 / i.size) : 0)});
         int64_t idle = std::max<int64_t>(0, now-i.changed)/1000000;
-        if (i.uploaded) s += " — подтверждение Telegram";
-        else if (i.size > 0 && i.done >= i.size) s += " — ожидание завершения загрузки Telegram";
-        else if (idle >= 5) s += " — нет прогресса " + std::to_string(idle) + " с";
-        else if (i.active && i.speed > 0) s += " | " + bytes((int64_t)i.speed) + "/с | ~" +
-            std::to_string((int64_t)(std::max<int64_t>(0, i.size-i.done)/i.speed) + 1) + " с";
-        else s += i.active ? " — загрузка" : " — ожидание загрузки";
-        return s + " | прошло " + std::to_string((now-i.started)/1000000) + " с";
+        if (i.uploaded) s += tr("up.s.confirm");
+        else if (i.size > 0 && i.done >= i.size) s += tr("up.s.finishing");
+        else if (idle >= 5) s += tr("up.s.stalled", {tr("unit.sec", {std::to_string(idle)})});
+        else if (i.active && i.speed > 0) s += tr("up.s.speed", {tr("unit.per_sec", {bytes((int64_t)i.speed)}),
+            tr("unit.sec", {std::to_string((int64_t)(std::max<int64_t>(0, i.size-i.done)/i.speed) + 1)})});
+        else s += tr(i.active ? "up.s.uploading" : "up.s.queued");
+        return s + tr("up.elapsed", {seconds(now-i.started)});
     }
 };

@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "34.60")
-set(VITAGRAM_VERSION "0.34.60")
+set(VITA_VERSION  "35.01")
+set(VITAGRAM_VERSION "0.35.1")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 
@@ -87,8 +87,17 @@ add_library(vitagram_quirc STATIC
 target_include_directories(vitagram_quirc PUBLIC external/quirc/lib)
 target_compile_definitions(vitagram_quirc PRIVATE QUIRC_FLOAT_TYPE=float QUIRC_USE_TGMATH)
 
+# Every assets/lang/<code>.lang is packaged as app0:lang/<code>.lang; a new language needs no code changes.
+file(GLOB LANGUAGE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/lang/*.lang")
+set(LANGUAGE_VPK_FILES)
+foreach(LANGUAGE_PATH ${LANGUAGE_FILES})
+  get_filename_component(LANGUAGE_NAME "${LANGUAGE_PATH}" NAME)
+  list(APPEND LANGUAGE_VPK_FILES FILE "${LANGUAGE_PATH}" "lang/${LANGUAGE_NAME}")
+endforeach()
+
 add_executable(${PROJECT_NAME}
   src/main.cpp
+  src/i18n.cpp
   src/download_folder_picker.cpp
   src/utf8_decode.cpp
   src/cpu_scheduler.cpp
@@ -223,5 +232,6 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE assets/NotoSansSymbols2-Regular.ttf assets/NotoSansSymbols2-Regular.ttf
   FILE assets/NotoSansSymbols2-LICENSE.txt assets/NotoSansSymbols2-LICENSE.txt
   FILE ${ANIMATION_FFMPEG_ROOT}/share/COPYING.LGPLv2.1 assets/FFmpeg-LICENSE.txt
+  ${LANGUAGE_VPK_FILES}
   ${RLOTTIE_VPK_FILES}
 )

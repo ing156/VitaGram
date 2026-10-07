@@ -1,0 +1,591 @@
+# VitaGram language file. Copy this file to <code>.lang and translate the values after "=".
+# Keys must stay unchanged; a missing key falls back to English.
+#   {0} {1} ...   arguments inserted by the program (keep them, the order may change)
+#   {cross} {circle} {square} {triangle} {dpad} {start} {select}
+#                 controller button icons - keep these tokens, never type the glyphs
+#   \n            line break;  "text" in quotes keeps leading/trailing spaces
+
+@code = en
+@name = English
+
+# --- account ---
+account.cleanup_blocked = Could not delete the previous account's data. Free access to the memory card and restart the app.
+account.delete_incomplete = Could not delete all data. Cleanup will repeat at the next launch.
+account.deleted = Account data deleted. Restart VitaGram to sign in.
+account.deleting = Deleting account data...
+account.logging_out = Logging out...
+account.mark_failed = Could not save the account cleanup marker
+
+# --- anim ---
+anim.decoder_missing = Animation decoder unavailable
+anim.decoder_start_failed = Unable to start animation decoder
+anim.finished_replay = Finished - X replay
+anim.frame_memory = Not enough memory for video frame
+anim.frame_retain = Cannot retain video frame
+anim.gif_memory = Not enough memory for GIF frames
+anim.gpu_gif = Not enough GPU memory for GIF
+anim.gpu_video = Not enough GPU memory for video
+anim.limit_720p = Animation exceeds 720p pixel limit
+anim.limit_720p_media = Video/animation exceeds 720p pixel limit
+anim.limit_gif = GIF limit: 20 MiB
+anim.limit_video = Video limit: 128 MiB
+anim.media_open = Cannot open media file
+anim.memory = Not enough memory for animation
+anim.nv12_failed = NV12 texture init failed
+anim.nv12_layout = Invalid NV12 frame layout
+anim.play = X Play
+anim.play_pause = X Play / Pause
+anim.preparing_gif = Preparing the GIF...
+anim.preparing_video = Preparing the video: {0}%
+anim.self_destructing = Self-destructing media is not supported
+anim.supported_anim = Supported animations: GIF, H.264, VP8, VP9
+anim.supported_video = Supported video: H.264, VP8, VP9 (MP4/WebM)
+anim.tgs_invalid = Invalid or oversized TGS
+anim.tgs_needs_rlottie = TGS needs rlottie: run build-sticker-renderer.sh
+anim.tgs_open = Cannot open TGS
+anim.tgs_parse = TGS parsing failed
+anim.tgs_playing = TGS - playing
+anim.tgs_unsupported = Unsupported TGS dimensions/timing
+anim.video_playing = Video - playing
+anim.video_playing_hint = Video - playing / X pause
+
+# --- audio ---
+audio.loading = Loading audio: {0}
+audio.mic_active = Microphone active
+audio.no_signal = No microphone signal
+audio.status = Audio: {0}
+audio.unavailable = Audio file unavailable
+audio.voice_message = Voice message
+
+# --- auth ---
+auth.checking_code = Checking code...
+auth.checking_password = Checking password...
+auth.connecting = Connecting to Telegram...
+auth.continue = {cross}  Continue sign-in
+auth.prompt.code = Enter the login code sent by Telegram
+auth.prompt.first_name = Telegram needs a first name to finish registration
+auth.prompt.password = Two-step verification is enabled
+auth.prompt.phone = Enter your phone number
+auth.proxy_hint = You can set up a proxy before signing in to Telegram.
+auth.registering = Registering...
+auth.sending_code = Sending login code...
+auth.setup_proxy = {start}  Set up proxy
+auth.title = Telegram authorization
+auth.waiting_connection = Waiting for the connection
+auth.waiting_status = Waiting for Telegram | Loaded 0 chats
+
+# --- cache ---
+cache.worker_failed = Cache worker creation failed
+
+# --- cam ---
+cam.buffer = Camera buffer
+cam.error = Camera error
+cam.memory = Camera memory
+cam.open_failed = Could not open the camera
+cam.start_failed = Could not start the camera
+
+# --- cfg ---
+cfg.edit = Edit src/config.h and set your Telegram api_id/api_hash
+cfg.required = Configuration required
+
+# --- chat ---
+chat.no_messages = No messages
+chat.thumb.round = Round
+chat.thumb.video = Video
+
+# --- chats ---
+chats.all_loaded = "  |  All chats loaded"
+chats.load_failed = Unable to load chats. {triangle} = retry
+chats.loading = Loading chats...
+chats.loading_first = Loading first chats...
+chats.none = No chats in this list
+chats.retry = Retry: {0}
+chats.state_loading = Loading
+chats.state_ready = Ready
+chats.status = {0}  |  Loaded {1} chats{2}
+chats.tap_more = "  |  Tap here for more"
+
+# --- common ---
+common.cancelled = Cancelled
+common.disabled = Disabled
+common.enabled = Enabled
+common.no = No
+common.not_set = Not set
+common.sending = Sending...
+common.yes = Yes
+
+# --- conn ---
+conn.cached_connecting = Cached chats - connecting...
+
+# --- date ---
+date.format = {1} {0}, {2}
+date.unknown = Date unknown
+
+# --- delivery ---
+delivery.failed = Send failed
+delivery.read = Read
+delivery.sending = Sending...
+delivery.sent = Sent to Telegram
+
+# --- diag ---
+diag.cached_waiting = Cached data - waiting for Telegram
+diag.performance_collecting = Performance: collecting...
+diag.performance_disabled = Performance: disabled
+diag.transfers = Transfers — pages change every 8 s
+
+# --- doc ---
+doc.already = The file is already downloading
+doc.downloading = Downloading: {0}
+doc.invalid_path = Invalid download path
+doc.save_failed = Could not save the file
+doc.saved = Saved: {0}
+
+# --- folder ---
+folder.all = All chats
+folder.default = Folder
+
+# --- hint ---
+hint.back = {circle}  Back
+hint.chat_compose = {square}: text   L: video note   R: audio
+hint.download = {cross}: Download
+hint.download_file = {cross} Download file
+hint.link_photo = Tap link / {cross} photo
+hint.mtproxy = {start}  Proxy
+hint.open = "Open: "
+hint.open_photo = {cross} Open photo
+hint.open_post = {cross}  Open post
+hint.open_settings = {cross} Open / {start} Settings
+hint.pause_fullscreen = {cross} Pause   {triangle}: fullscreen
+hint.photo_view = {dpad}: photo   Pinch: zoom   {triangle}: reset
+hint.play_pause = {cross} Play / Pause
+hint.post_photo = {dpad}: post   L/R: photo
+hint.prepare_video = {cross} Prepare video
+hint.reaction_footer = {dpad}: select   {cross}: add / remove   {circle}: back
+hint.reactions = {square}: reactions
+hint.refresh = {triangle}  Refresh
+hint.select = {dpad}  Select
+hint.video_fullscreen = {triangle}: normal view   {cross}: play / pause   {circle}: back
+
+# --- history ---
+history.block_loading = History block: {0}% - loading...
+history.block_ready = History block: {0}% - ready
+history.error = History: {0}
+history.loading = Loading messages...
+history.loading_older = Loading older messages...
+history.no_older = No older messages returned. Swipe up to retry.
+
+# --- input ---
+input.code = Telegram login code:
+input.compose = Compose message
+input.first_name = First name:
+input.message = Message:
+input.password = 2FA password:
+input.phone = Phone (+country...):
+
+# --- link ---
+link.browser_error = Browser error: {0}
+link.chat_unavailable = chat unavailable
+link.invalid = Invalid web link
+link.open_failed = Could not open the link: {0}
+
+# --- media ---
+media.audio = Audio
+media.file = File
+media.loading = Loading media: {0}
+media.message = message
+media.no_name = Unnamed
+media.photo = Photo
+media.photos_count = {0} photos
+media.poll = Poll
+media.quiz = Quiz
+media.sticker = Sticker
+media.sticker_animated = Animated sticker
+media.unavailable = Media file unavailable
+media.video = Video
+media.video_note = Video message
+media.voice = Voice message
+
+# --- message ---
+message.edited = (edited)
+
+# --- month ---
+month.1 = January
+month.10 = October
+month.11 = November
+month.12 = December
+month.2 = February
+month.3 = March
+month.4 = April
+month.5 = May
+month.6 = June
+month.7 = July
+month.8 = August
+month.9 = September
+
+# --- net ---
+net.airplane = Airplane mode
+net.connecting = Connecting
+net.disconnected = Disconnected
+net.init_failed = Network initialization failed.
+net.no_telegram = Not connected to Telegram
+net.none = Not connected
+net.online = Online
+net.unknown = Connection unknown
+net.wifi_off = Wi-Fi off
+
+# --- notice ---
+notice.chats_updated = Chat list updated
+notice.new_message = New message: {0}
+notice.refresh_failed = Refresh failed
+notice.refreshing_chats = Refreshing chats...
+notice.send_failed = Message failed to send
+
+# --- photo ---
+photo.loading_full = Loading full image...
+photo.loading_larger = Loading larger photo...
+photo.more = +{0} photos
+
+# --- picker ---
+picker.create_failed = Could not create the folder
+picker.drives = Storage devices
+picker.empty = The folder is empty
+picker.footer = {cross} Open    {square} Select    {triangle} New folder    {circle} Back
+picker.invalid_name = Invalid folder name
+picker.new_folder_title = New folder
+picker.no_drives = No storage devices found
+picker.open_failed = Could not open the folder
+picker.subtitle = folder contents
+
+# --- poll ---
+poll.anonymous = " • anonymous"
+poll.correct = " (correct)"
+poll.error = Error: {0}
+poll.footer = {dpad} ↑/↓: option   {cross}: select   {triangle}: vote   {square}: retract   {circle}: back
+poll.kind.poll = Poll
+poll.kind.quiz = Quiz
+poll.multiple = " • multiple answers"
+poll.public = " • public"
+poll.sending_vote = Sending the vote...
+poll.single = " • single answer"
+poll.state.choose = Choose an answer and confirm
+poll.state.closed = The poll is closed
+poll.state.locked = The answer cannot be changed
+poll.state.restricted = Voting is unavailable
+poll.updated = Results updated
+poll.vote_accepted = Vote accepted, refreshing...
+poll.voters = " • Voters: {0}"
+poll.your_answer = " (your answer)"
+
+# --- post ---
+post.transcription = Transcription:
+post.transcription_pending = Transcription (in progress):
+
+# --- presence ---
+presence.bot = bot
+presence.last_month = last seen this month
+presence.last_seen_at = last seen {0}
+presence.last_week = last seen this week
+presence.loading = Loading status
+presence.online = online
+presence.recently = last seen recently
+presence.refining = updating status
+presence.unavailable = status unavailable
+
+# --- proxy ---
+proxy.applying = Applying...
+proxy.check = Check connection
+proxy.check.fail = Proxy unreachable: check the network, server, port and credentials
+proxy.check.ok = Proxy reachable: {0} ms
+proxy.check.starting = Telegram is still starting; repeat the check later
+proxy.check.timeout = The proxy did not respond within 15 seconds
+proxy.checking = Checking proxy...
+proxy.err.bad_encoding = The MTProxy link is incorrectly encoded
+proxy.err.bad_secret = Invalid MTProxy secret
+proxy.err.bad_server = Invalid MTProxy server address
+proxy.err.missing_fields = The link needs server, port and secret
+proxy.err.no_params = The link has no MTProxy parameters
+proxy.err.port_range = The port must be between 1 and 65535
+proxy.err.port_twice = The port parameter is given twice
+proxy.err.secret_twice = The secret parameter is given twice
+proxy.err.server_twice = The server parameter is given twice
+proxy.err.too_long = The MTProxy link is too long
+proxy.err.bad_credentials = The proxy username or password is too long
+proxy.err.credentials_twice = The user or pass parameter is given twice
+proxy.kb.password = Proxy password
+proxy.kb.username = Proxy username
+proxy.password = Password
+proxy.title = Proxy
+proxy.type = Type
+proxy.type.https = HTTPS
+proxy.type.mtproto = MTProxy
+proxy.type.socks5 = SOCKS5
+proxy.username = Username
+proxy.footer = {cross} Edit / apply    {circle} Back without saving
+proxy.import_confirm = Set up this MTProxy? Check the fields and choose "Save and apply".
+proxy.kb.port = MTProxy port
+proxy.kb.secret = MTProxy secret
+proxy.kb.server = MTProxy server
+proxy.need_fields = Enter the server and port (and secret for MTProxy)
+proxy.port = Port
+proxy.save_apply = Save and apply
+proxy.scan_qr = Scan QR code
+proxy.server = Server
+proxy.status.direct = Direct connection
+proxy.status.enabled = Proxy enabled
+proxy.status.error = Proxy error: check the server, port and credentials
+proxy.use = Use proxy
+
+# --- pv ---
+pv.aac_copy = Could not copy AAC
+pv.aac_memory = Not enough memory for AAC
+pv.aac_needed = Preparation requires AAC audio
+pv.aac_write = AAC write error
+pv.cancelled = Preparation cancelled
+pv.decode_error = Decoding error
+pv.empty = The video file is empty
+pv.frame_alloc = Could not allocate a frame
+pv.frames_memory = Not enough memory for frames
+pv.h264_error = H.264 error
+pv.h264_finish = H.264 finalization error
+pv.h264_memory = Not enough memory for H.264
+pv.h264_only = Preparation is available for H.264 MP4 only
+pv.h264_open = Could not open H.264
+pv.h264_size = Invalid size for H.264
+pv.limit = The prepared video exceeds 120 MiB
+pv.mp4_finish = Could not finalize the MP4
+pv.mp4_memory = Not enough memory for the MP4
+pv.mp4_save = Could not save the MP4
+pv.mp4_streams = Could not create MP4 streams
+pv.mp4_write = MP4 write error
+pv.no_h264_params = No H.264 parameters
+pv.open_failed = Could not open the video
+pv.prep_memory = Not enough memory for preparation
+pv.read_error = Video read error
+pv.read_failed = Could not read the video
+pv.scale_error = Frame downscale error
+pv.scale_failed = Could not downscale a frame
+pv.streams_failed = Could not read the streams
+pv.sw_decoder_missing = The software H.264 decoder is unavailable
+
+# --- qr ---
+qr.err.camera_read = Camera read error: {0}
+qr.err.memory = Not enough memory for the QR scanner
+qr.err.open_rear = Could not open the rear camera
+qr.err.preview_memory = Not enough memory for the preview
+qr.err.start = Could not start the QR scanner
+qr.footer = Rear camera: MTProxy QR code    {circle} Cancel
+qr.hint = Point the rear camera at the MTProxy QR code
+qr.no_link = The QR code does not contain an MTProxy link
+
+# --- reaction ---
+reaction.anon_admin = Reactions are unavailable for an anonymous administrator
+reaction.emoji_n = Emoji {0}
+reaction.guest = Join the chat to react
+reaction.hint = {cross}: add / remove
+reaction.loading = Loading reactions...
+reaction.none = No reactions available
+reaction.paid = Paid reactions are available; Stars are not supported yet
+reaction.premium = Telegram Premium is required for the available reactions
+reaction.restricted = Reactions are restricted in this chat
+reaction.title = Reactions
+reaction.updated = Reaction updated
+
+# --- rec ---
+rec.convert_start_failed = Could not start conversion
+rec.converting = Converting to Ogg/Opus: {0}%
+rec.empty = Empty recording
+rec.err.cancelled = conversion cancelled
+rec.err.encoder_buffer = could not allocate the encoder buffer
+rec.err.encoder_memory = could not allocate encoder memory
+rec.err.no_packets = Opus produced no audio packets
+rec.err.ogg_close = Ogg close failed
+rec.err.ogg_header = Ogg header error
+rec.err.ogg_missing = Ogg muxer is unavailable
+rec.err.ogg_open = could not open the Ogg file: {0}
+rec.err.ogg_stream = could not create the Ogg stream
+rec.err.opus_missing = Opus encoder is unavailable
+rec.err.pcm_open = could not open the PCM file
+rec.err.pcm_read = PCM read failed
+rec.err.resampler_create = could not create the resampler
+rec.err.resampler_init = PCM resampler error
+rec.file_create_failed = Could not create the recording file
+rec.file_error = Recording file error
+rec.finish_first = Finish recording the voice message first
+rec.mic_read_error = Microphone read error
+rec.mic_unavailable = Microphone unavailable
+rec.no_space = Not enough space to record audio
+rec.opus_failed = Ogg/Opus error: {0}
+rec.ready = Ogg/Opus is ready, sending...
+rec.recording = Recording...
+rec.save_error = Audio save error
+rec.send_failed = Could not hand the audio over to Telegram
+rec.start_failed = Could not start recording
+rec.wait_connect = Wait for the connection before recording
+
+# --- settings ---
+settings.always = Always
+settings.batch = Request batch
+settings.cache_size = Media cache size
+settings.confirm_logout = {cross}: confirm logout
+settings.days = {0} d.
+settings.download_dir = Download folder
+settings.font_size = Font size
+settings.footer = {dpad}: select / change    {cross} Change    {circle} Back
+settings.language = Language
+settings.language_auto = Automatic ({0})
+settings.logout = Log out
+settings.logout_wait = Wait for the connection before logging out
+settings.no_limit = No limit
+settings.retention = Keep cache
+settings.save_failed = Could not save the settings
+settings.show_threads = Show threads
+settings.theme = Theme
+settings.theme_dark = Dark
+settings.theme_light = Light
+settings.title = Settings
+
+# --- status ---
+status.online = Online
+
+# --- sticker ---
+sticker.choose_set = Choose a sticker set
+sticker.favorites = Favorites
+sticker.footer = {dpad}: select   {circle}: sets   {square}: close
+sticker.loading = Loading stickers...
+sticker.none_in_section = No stickers in this section
+sticker.page = Page {0} / {1}
+sticker.recent = Recent
+sticker.sending = Sending sticker...
+sticker.sets_footer = {dpad}: select   {cross}: open set   {circle}: back
+sticker.sets_title = Sticker sets
+sticker.title = Stickers
+
+# --- tg ---
+tg.closed = TDLib closed
+tg.created_waiting = TDLib created; waiting for response...
+tg.initializing = Initializing Telegram...
+tg.worker_failed = Telegram worker creation failed
+
+# --- topics ---
+topics.all_loaded = All topics loaded
+topics.checking = Checking the group topics...
+topics.closed = " [closed]"
+topics.footer = {cross}: open   {triangle}: more topics   {circle}: back
+topics.load_more = Down / {triangle}: load more topics
+topics.loading = Loading topics...
+topics.none = No topics available
+topics.title = Group topics
+
+# --- unit ---
+unit.kib = {0} KiB
+unit.mb = {0} MB
+unit.mib = {0} MiB
+unit.per_sec = {0}/s
+unit.sec = {0} s
+
+# --- unsupported ---
+unsupported.footer = {cross} Prepare    {circle} Cancel
+unsupported.question = Create a 432×768 H.264 MP4 copy on the Vita?
+unsupported.reason = The Vita hardware decoder does not accept this frame size.
+unsupported.title = Video is not supported
+unsupported.warning = This may take time and extra storage space.
+
+# --- up ---
+up.awaiting = {0}: waiting for Telegram response | elapsed {1}
+up.confirming = {0}: Telegram confirmation | elapsed {1}
+up.data_line = Data: {0}/{1} B; remaining: {2} B
+up.elapsed = " | elapsed {0}"
+up.failed = {0}: failed — {1}
+up.kind.audio = Audio
+up.kind.sticker = Sticker
+up.kind.video_note = Video note
+up.more = " | {0} more"
+up.progress = {0}: {1}/{2} ({3}%)
+up.s.confirm = " — Telegram confirmation"
+up.s.finishing = " — waiting for Telegram to finish the upload"
+up.s.queued = " — waiting to upload"
+up.s.speed = " | {0} | ~{1}"
+up.s.stalled = " — no progress for {0}"
+up.s.uploading = " — uploading"
+up.sent = {0}: sent
+up.sent_info = {0}: sent ({1}, {2})
+up.unknown_error = unknown error
+
+# --- user ---
+user.deleted = Deleted account
+user.participant = Member
+
+# --- video ---
+video.loading = Loading video...
+video.unsupported_hint = Video is not supported; X: prepare a copy
+
+# --- video_note ---
+video_note.file_missing = The video file is unavailable or empty
+video_note.send_failed = Could not send the video note: check the connection
+
+# --- vne ---
+vne.aac_missing = AAC encoder is unavailable; rebuild FFmpeg
+vne.audio_read = Audio read error
+vne.bad_duration = Invalid recording duration
+vne.cancelled = Recording cancelled
+vne.frame_corrupt = A recording frame is corrupted
+vne.h264_encode = H.264 encoding error
+vne.h264_memory = Not enough memory for H.264
+vne.h264_open = Could not open the H.264 encoder
+vne.h264_params = H.264 parameter error
+vne.mp4_create = Could not create the MP4
+vne.mp4_header_memory = Not enough memory for the MP4 header
+vne.mp4_memory = Could not allocate memory for the MP4
+vne.mp4_muxer_missing = MP4 muxer is unavailable; rebuild FFmpeg
+vne.mp4_muxer_missing_short = MP4 muxer is unavailable
+vne.no_first_frame = The recording has no first frame
+vne.no_sps_pps = H.264 has no SPS/PPS
+vne.open_failed = Could not open the recording
+vne.streams = Could not create MP4 streams
+vne.timestamps_corrupt = The recording timestamps are corrupted
+
+# --- vnr ---
+vnr.action.record = {cross} Record
+vnr.action.retry = {cross} Retry
+vnr.action.send = {cross} Send
+vnr.action.stop = {cross} Stop
+vnr.audio_file_failed = Could not create the audio file
+vnr.audio_save_error = Audio save error
+vnr.audio_save_space = Could not save the audio: check free space
+vnr.camera = {triangle} Camera
+vnr.cancel = {circle} Cancel
+vnr.encoding = Preparing the MP4...
+vnr.encoding_percent = Preparing the MP4: {0}%
+vnr.err.camera_memory = Not enough memory for the camera
+vnr.frame_save_space = Could not save a frame: check free space
+vnr.front_camera = Front camera
+vnr.hint_preview = {cross} Start recording   {triangle} Switch camera
+vnr.mic_start_failed = Could not start the microphone
+vnr.opening_front = Opening the front camera...
+vnr.other_camera_unavailable = The other camera is unavailable; keeping the current one
+vnr.ready = The video note is ready: preview it before sending
+vnr.rear_camera = Rear camera
+vnr.record_file_space = Could not create the recording: check free space
+vnr.review = {square} Preview
+vnr.start_failed = Could not start video recording
+vnr.timer = {0} / 60 s
+vnr.title = Video note
+vnr.too_short = Record a video note of at least 1 second
+vnr.video_error = Video error: {0}
+vnr.video_save_error = Video save error
+
+# --- voice ---
+voice.error = Voice: {0}
+voice.frame_size = Invalid audio frame size
+voice.limit_audio = Audio limit: 128 MiB
+voice.limit_voice = Voice limit: 20 MiB
+voice.memory = Not enough audio memory
+voice.no_stream = No supported audio stream
+voice.open_output = Cannot open Vita audio output
+voice.output_failed = Audio output failed
+voice.playing_pause = Playing - X pause
+voice.rebuild = Rebuild FFmpeg with audio support
+voice.start_failed = Cannot start audio worker
+voice.unavailable = Audio file unavailable or exceeds size limit
+voice.unsupported_codec = Unsupported audio codec: {0}
+voice.worker = Cannot start audio output worker

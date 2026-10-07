@@ -1,3 +1,4 @@
+#include "test_language.h"
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -89,6 +90,7 @@ void td_set_log_message_callback(int, td_log_message_callback_ptr) {}
 static json_t* parse(const char* text) { json_error_t e{}; auto* r=json_loads(text,0,&e); assert(r); return r; }
 static void event(MediaUploads& u, const char* text, int64_t now) { auto* r=parse(text); u.process(r,now); json_decref(r); }
 int main() {
+    use_test_language();
     {
         TelegramClient status_only;
         status_only.worker_started_ = true;
@@ -416,7 +418,7 @@ int main() {
         assert(MediaUploads::string(value, "server") == "test.example");
         assert(MediaUploads::number(value, "port") == 443);
         assert(MediaUploads::string(json_object_get(value, "type"), "secret") == "test-secret");
-        assert(!proxy.proxy_enabled_ && proxy.proxy_server_.empty()); // Draft check never applies settings.
+        assert(!proxy.proxy_enabled_ && proxy.proxy_.server.empty()); // Draft check never applies settings.
         proxy.checkProxy("test.example", 443, "test-secret");
         assert(proxy.outgoing_.size() == 1);
         auto* result = json_pack("{s:s,s:f}", "@type", "seconds", "seconds", 0.123);

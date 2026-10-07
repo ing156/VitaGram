@@ -1,9 +1,11 @@
 #pragma once
+#include "proxy_config.h"
 #include <string>
 
 struct ProxyLink {
-    std::string server, secret;
+    std::string server, secret, username, password;
     int port = 0;
+    ProxyKind kind = ProxyKind::MTProto; // tg://socks links give Socks5
 };
 
 enum class ProxyLinkResult { NotProxy, Invalid, Valid };

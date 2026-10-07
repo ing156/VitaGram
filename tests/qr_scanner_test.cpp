@@ -1,3 +1,4 @@
+#include "test_language.h"
 #include "qr_scanner.h"
 #include "cpu_scheduler.h"
 #include <psp2/camera.h>
@@ -54,6 +55,7 @@ unsigned vita2d_texture_get_stride(vita2d_texture*) { return 320 * 4; }
 void vita2d_free_texture(vita2d_texture* t) { assert(textures > 0); --textures; delete t; }
 void clean() { assert(!allocated && !opened && !streaming && textures == 0); }
 int main(int argc, char** argv) {
+    use_test_language();
     assert(argc == 2 || argc == 3);
     std::ifstream fixture(argv[1]); assert(fixture);
     std::string expected, line; std::getline(fixture, expected);

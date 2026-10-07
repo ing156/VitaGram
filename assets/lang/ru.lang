@@ -1,0 +1,591 @@
+# VitaGram language file. Copy this file to <code>.lang and translate the values after "=".
+# Keys must stay unchanged; a missing key falls back to English.
+#   {0} {1} ...   arguments inserted by the program (keep them, the order may change)
+#   {cross} {circle} {square} {triangle} {dpad} {start} {select}
+#                 controller button icons - keep these tokens, never type the glyphs
+#   \n            line break;  "text" in quotes keeps leading/trailing spaces
+
+@code = ru
+@name = Русский
+
+# --- account ---
+account.cleanup_blocked = Не удалось удалить данные прошлого аккаунта. Освободите доступ к карте и перезапустите приложение.
+account.delete_incomplete = Не удалось полностью удалить данные. Очистка повторится при запуске.
+account.deleted = Данные аккаунта удалены. Перезапустите VitaGram для входа.
+account.deleting = Удаление данных аккаунта...
+account.logging_out = Выход из аккаунта...
+account.mark_failed = Не удалось сохранить отметку очистки аккаунта
+
+# --- anim ---
+anim.decoder_missing = Декодер анимации недоступен
+anim.decoder_start_failed = Не удалось запустить декодер анимации
+anim.finished_replay = Завершено — X: повтор
+anim.frame_memory = Недостаточно памяти для кадра видео
+anim.frame_retain = Не удалось удержать кадр видео
+anim.gif_memory = Недостаточно памяти для кадров GIF
+anim.gpu_gif = Недостаточно видеопамяти для GIF
+anim.gpu_video = Недостаточно видеопамяти для видео
+anim.limit_720p = Анимация превышает лимит 720p по площади кадра
+anim.limit_720p_media = Видео/анимация превышает лимит 720p по площади кадра
+anim.limit_gif = Лимит GIF: 20 МиБ
+anim.limit_video = Лимит видео: 128 МиБ
+anim.media_open = Не удалось открыть медиафайл
+anim.memory = Недостаточно памяти для анимации
+anim.nv12_failed = Не удалось создать NV12-текстуру
+anim.nv12_layout = Неверная раскладка кадра NV12
+anim.play = X Воспроизвести
+anim.play_pause = X Воспроизвести / пауза
+anim.preparing_gif = Подготовка GIF...
+anim.preparing_video = Подготовка видео: {0}%
+anim.self_destructing = Самоуничтожающиеся медиа не поддерживаются
+anim.supported_anim = Поддерживаются анимации GIF, H.264, VP8, VP9
+anim.supported_video = Поддерживаются видео H.264, VP8, VP9 (MP4/WebM)
+anim.tgs_invalid = Некорректный или слишком большой TGS
+anim.tgs_needs_rlottie = Для TGS нужен rlottie: запустите build-sticker-renderer.sh
+anim.tgs_open = Не удалось открыть TGS
+anim.tgs_parse = Не удалось разобрать TGS
+anim.tgs_playing = TGS — воспроизведение
+anim.tgs_unsupported = Неподдерживаемые размеры или тайминг TGS
+anim.video_playing = Видео — воспроизведение
+anim.video_playing_hint = Видео — воспроизведение / X пауза
+
+# --- audio ---
+audio.loading = Загрузка аудио: {0}
+audio.mic_active = Микрофон активен
+audio.no_signal = Нет сигнала микрофона
+audio.status = Аудио: {0}
+audio.unavailable = Аудиофайл недоступен
+audio.voice_message = Голосовое сообщение
+
+# --- auth ---
+auth.checking_code = Проверка кода...
+auth.checking_password = Проверка пароля...
+auth.connecting = Подключение к Telegram...
+auth.continue = {cross}  Продолжить вход
+auth.prompt.code = Введите код входа от Telegram
+auth.prompt.first_name = Для завершения регистрации Telegram нужно имя
+auth.prompt.password = Включена двухэтапная проверка
+auth.prompt.phone = Введите номер телефона
+auth.proxy_hint = Прокси можно настроить до входа в Telegram.
+auth.registering = Регистрация...
+auth.sending_code = Отправка кода входа...
+auth.setup_proxy = {start}  Настроить прокси
+auth.title = Авторизация в Telegram
+auth.waiting_connection = Ожидание подключения
+auth.waiting_status = Ожидание Telegram | Загружено чатов: 0
+
+# --- cache ---
+cache.worker_failed = Не удалось создать поток кэша
+
+# --- cam ---
+cam.buffer = Буфер камеры
+cam.error = Ошибка камеры
+cam.memory = Память камеры
+cam.open_failed = Не удалось открыть камеру
+cam.start_failed = Не удалось включить камеру
+
+# --- cfg ---
+cfg.edit = Отредактируйте src/config.h и укажите api_id/api_hash Telegram
+cfg.required = Требуется настройка
+
+# --- chat ---
+chat.no_messages = Нет сообщений
+chat.thumb.round = Кружок
+chat.thumb.video = Видео
+
+# --- chats ---
+chats.all_loaded = "  |  Все чаты загружены"
+chats.load_failed = Не удалось загрузить чаты. {triangle} = повторить
+chats.loading = Загрузка чатов...
+chats.loading_first = Загрузка первых чатов...
+chats.none = В этом списке нет чатов
+chats.retry = Повтор: {0}
+chats.state_loading = Загрузка
+chats.state_ready = Готово
+chats.status = {0}  |  Загружено чатов: {1}{2}
+chats.tap_more = "  |  Нажмите здесь, чтобы загрузить ещё"
+
+# --- common ---
+common.cancelled = Отменено
+common.disabled = Выключен
+common.enabled = Включён
+common.no = Нет
+common.not_set = Не задан
+common.sending = Отправка...
+common.yes = Да
+
+# --- conn ---
+conn.cached_connecting = Кэш чатов — подключение...
+
+# --- date ---
+date.format = {0} {1} {2}
+date.unknown = Дата неизвестна
+
+# --- delivery ---
+delivery.failed = Не отправлено
+delivery.read = Прочитано
+delivery.sending = Отправка...
+delivery.sent = Отправлено в Telegram
+
+# --- diag ---
+diag.cached_waiting = Данные из кэша — ожидание Telegram
+diag.performance_collecting = Производительность: сбор данных...
+diag.performance_disabled = Производительность: выключено
+diag.transfers = Отправки — страницы меняются каждые 8 с
+
+# --- doc ---
+doc.already = Файл уже загружается
+doc.downloading = Загрузка: {0}
+doc.invalid_path = Неверный путь загрузки
+doc.save_failed = Не удалось сохранить файл
+doc.saved = Сохранено: {0}
+
+# --- folder ---
+folder.all = Все чаты
+folder.default = Папка
+
+# --- hint ---
+hint.back = {circle} Назад
+hint.chat_compose = {square}: текст   L: кружок   R: аудио
+hint.download = {cross}: Загрузить
+hint.download_file = {cross} Скачать файл
+hint.link_photo = Нажмите ссылку / {cross} фото
+hint.mtproxy = {start}  Прокси
+hint.open = "Открыть: "
+hint.open_photo = {cross} Открыть фото
+hint.open_post = {cross}  Open post
+hint.open_settings = {cross} Открыть / {start} Настройки
+hint.pause_fullscreen = {cross} Пауза   {triangle}: весь экран
+hint.photo_view = {dpad}: фото   Pinch: zoom   {triangle}: сброс
+hint.play_pause = {cross} Воспроизвести / пауза
+hint.post_photo = {dpad}: пост   L/R: фото
+hint.prepare_video = {cross} Подготовить видео
+hint.reaction_footer = {dpad}: выбор   {cross}: поставить / убрать   {circle}: назад
+hint.reactions = {square}: реакции
+hint.refresh = {triangle}  Обновить
+hint.select = {dpad}  Выбор
+hint.video_fullscreen = {triangle}: обычный вид   {cross}: воспроизвести / пауза   {circle}: назад
+
+# --- history ---
+history.block_loading = Блок истории: {0}% — загрузка...
+history.block_ready = Блок истории: {0}% — готово
+history.error = История: {0}
+history.loading = Загрузка сообщений...
+history.loading_older = Загрузка старых сообщений...
+history.no_older = Более старых сообщений нет. Проведите вверх, чтобы повторить.
+
+# --- input ---
+input.code = Код входа Telegram:
+input.compose = Новое сообщение
+input.first_name = Имя:
+input.message = Сообщение:
+input.password = Пароль 2FA:
+input.phone = Телефон (+код страны...):
+
+# --- link ---
+link.browser_error = Ошибка браузера: {0}
+link.chat_unavailable = чат недоступен
+link.invalid = Недопустимая веб-ссылка
+link.open_failed = Не удалось открыть ссылку: {0}
+
+# --- media ---
+media.audio = Аудио
+media.file = Файл
+media.loading = Загрузка медиа: {0}
+media.message = сообщение
+media.no_name = Без имени
+media.photo = Фото
+media.photos_count = {0} фото
+media.poll = Опрос
+media.quiz = Викторина
+media.sticker = Стикер
+media.sticker_animated = Анимированный стикер
+media.unavailable = Медиафайл недоступен
+media.video = Видео
+media.video_note = Видеосообщение
+media.voice = Голосовое
+
+# --- message ---
+message.edited = (изм.)
+
+# --- month ---
+month.1 = января
+month.10 = октября
+month.11 = ноября
+month.12 = декабря
+month.2 = февраля
+month.3 = марта
+month.4 = апреля
+month.5 = мая
+month.6 = июня
+month.7 = июля
+month.8 = августа
+month.9 = сентября
+
+# --- net ---
+net.airplane = Режим полёта
+net.connecting = Подключение
+net.disconnected = Нет соединения
+net.init_failed = Не удалось инициализировать сеть.
+net.no_telegram = Нет подключения к Telegram
+net.none = Нет подключения
+net.online = В сети
+net.unknown = Состояние сети неизвестно
+net.wifi_off = Wi-Fi выключен
+
+# --- notice ---
+notice.chats_updated = Список чатов обновлён
+notice.new_message = Новое сообщение: {0}
+notice.refresh_failed = Не удалось обновить
+notice.refreshing_chats = Обновление чатов...
+notice.send_failed = Не удалось отправить сообщение
+
+# --- photo ---
+photo.loading_full = Загрузка полного изображения...
+photo.loading_larger = Загрузка увеличенного фото...
+photo.more = +{0} фото
+
+# --- picker ---
+picker.create_failed = Не удалось создать папку
+picker.drives = Накопители
+picker.empty = Папка пуста
+picker.footer = {cross} Открыть    {square} Выбрать    {triangle} Создать папку    {circle} Назад
+picker.invalid_name = Недопустимое имя папки
+picker.new_folder_title = Новая папка
+picker.no_drives = Накопители не найдены
+picker.open_failed = Не удалось открыть папку
+picker.subtitle = содержание папки
+
+# --- poll ---
+poll.anonymous = " • анонимный"
+poll.correct = " (верно)"
+poll.error = Ошибка: {0}
+poll.footer = {dpad} ↑/↓: вариант   {cross}: выбрать   {triangle}: голос   {square}: отозвать   {circle}: назад
+poll.kind.poll = Опрос
+poll.kind.quiz = Викторина
+poll.multiple = " • несколько ответов"
+poll.public = " • публичный"
+poll.sending_vote = Отправка голоса...
+poll.single = " • один ответ"
+poll.state.choose = Выберите ответ и подтвердите
+poll.state.closed = Опрос завершён
+poll.state.locked = Ответ изменить нельзя
+poll.state.restricted = Голосование недоступно
+poll.updated = Результаты обновлены
+poll.vote_accepted = Голос принят, обновление...
+poll.voters = " • Участников: {0}"
+poll.your_answer = " (ваш ответ)"
+
+# --- post ---
+post.transcription = Расшифровка:
+post.transcription_pending = Расшифровка (в процессе):
+
+# --- presence ---
+presence.bot = бот
+presence.last_month = был(а) в этом месяце
+presence.last_seen_at = был(а) {0}
+presence.last_week = был(а) на этой неделе
+presence.loading = Статус загружается
+presence.online = в сети
+presence.recently = был(а) недавно
+presence.refining = статус уточняется
+presence.unavailable = статус недоступен
+
+# --- proxy ---
+proxy.applying = Применение...
+proxy.check = Проверить подключение
+proxy.check.fail = Прокси недоступен: проверьте сеть, сервер, порт и учётные данные
+proxy.check.ok = Прокси доступен: {0} мс
+proxy.check.starting = Telegram ещё запускается, повторите проверку
+proxy.check.timeout = Прокси не ответил за 15 секунд
+proxy.checking = Проверка прокси...
+proxy.err.bad_encoding = Некорректное кодирование ссылки MTProxy
+proxy.err.bad_secret = Некорректный secret MTProxy
+proxy.err.bad_server = Некорректный адрес сервера MTProxy
+proxy.err.missing_fields = В ссылке нужны server, port и secret
+proxy.err.no_params = В ссылке нет параметров MTProxy
+proxy.err.port_range = Порт должен быть от 1 до 65535
+proxy.err.port_twice = Параметр port указан дважды
+proxy.err.secret_twice = Параметр secret указан дважды
+proxy.err.server_twice = Параметр server указан дважды
+proxy.err.too_long = Слишком длинная ссылка MTProxy
+proxy.err.bad_credentials = Слишком длинные логин или пароль прокси
+proxy.err.credentials_twice = Параметр user или pass указан дважды
+proxy.kb.password = Пароль прокси
+proxy.kb.username = Логин прокси
+proxy.password = Пароль
+proxy.title = Прокси
+proxy.type = Тип
+proxy.type.https = HTTPS
+proxy.type.mtproto = MTProxy
+proxy.type.socks5 = SOCKS5
+proxy.username = Логин
+proxy.footer = {cross} Изменить / применить    {circle} Назад без сохранения
+proxy.import_confirm = Настроить этот MTProxy? Проверьте поля и нажмите «Сохранить и применить».
+proxy.kb.port = Порт MTProxy
+proxy.kb.secret = Secret MTProxy
+proxy.kb.server = Сервер MTProxy
+proxy.need_fields = Укажите сервер и порт (и secret для MTProxy)
+proxy.port = Порт
+proxy.save_apply = Сохранить и применить
+proxy.scan_qr = Сканировать QR-код
+proxy.server = Сервер
+proxy.status.direct = Прямое подключение
+proxy.status.enabled = Прокси включён
+proxy.status.error = Ошибка прокси: проверьте сервер, порт и учётные данные
+proxy.use = Использовать прокси
+
+# --- pv ---
+pv.aac_copy = Не удалось скопировать AAC
+pv.aac_memory = Недостаточно памяти для AAC
+pv.aac_needed = Для подготовки нужен звук AAC
+pv.aac_write = Ошибка записи AAC
+pv.cancelled = Подготовка отменена
+pv.decode_error = Ошибка декодирования
+pv.empty = Пустой видеофайл
+pv.frame_alloc = Не удалось выделить кадр
+pv.frames_memory = Недостаточно памяти для кадров
+pv.h264_error = Ошибка H.264
+pv.h264_finish = Ошибка завершения H.264
+pv.h264_memory = Недостаточно памяти для H.264
+pv.h264_only = Подготовка доступна для H.264 MP4
+pv.h264_open = Не удалось открыть H.264
+pv.h264_size = Неверный размер для H.264
+pv.limit = Подготовленное видео превышает 120 МиБ
+pv.mp4_finish = Не удалось завершить MP4
+pv.mp4_memory = Недостаточно памяти для MP4
+pv.mp4_save = Не удалось сохранить MP4
+pv.mp4_streams = Не удалось создать MP4 потоки
+pv.mp4_write = Ошибка записи MP4
+pv.no_h264_params = Нет параметров H.264
+pv.open_failed = Не удалось открыть видео
+pv.prep_memory = Недостаточно памяти для подготовки
+pv.read_error = Ошибка чтения видео
+pv.read_failed = Не удалось прочитать видео
+pv.scale_error = Ошибка уменьшения кадра
+pv.scale_failed = Не удалось уменьшить кадр
+pv.streams_failed = Не удалось прочитать потоки
+pv.sw_decoder_missing = Программный H.264 декодер недоступен
+
+# --- qr ---
+qr.err.camera_read = Ошибка чтения камеры: {0}
+qr.err.memory = Недостаточно памяти для QR
+qr.err.open_rear = Не удалось открыть заднюю камеру
+qr.err.preview_memory = Недостаточно памяти для превью
+qr.err.start = Не удалось запустить QR-сканер
+qr.footer = Задняя камера: QR-код MTProxy    {circle} Отмена
+qr.hint = Наведите заднюю камеру на QR-код MTProxy
+qr.no_link = В QR-коде нет ссылки MTProxy
+
+# --- reaction ---
+reaction.anon_admin = Реакции недоступны от анонимного администратора
+reaction.emoji_n = Эмодзи {0}
+reaction.guest = Для реакции нужно вступить в чат
+reaction.hint = {cross}: поставить / убрать
+reaction.loading = Загрузка реакций...
+reaction.none = Нет доступных реакций
+reaction.paid = Доступны платные реакции; Stars пока не поддерживаются
+reaction.premium = Для доступных реакций нужен Premium
+reaction.restricted = Реакции ограничены в этом чате
+reaction.title = Реакции
+reaction.updated = Реакция обновлена
+
+# --- rec ---
+rec.convert_start_failed = Не удалось запустить конвертацию
+rec.converting = Конвертация Ogg/Opus: {0}%
+rec.empty = Пустая запись
+rec.err.cancelled = конвертация отменена
+rec.err.encoder_buffer = не выделен буфер encoder
+rec.err.encoder_memory = не выделена память encoder
+rec.err.no_packets = Opus produced no audio packets
+rec.err.ogg_close = Ogg close failed
+rec.err.ogg_header = ошибка заголовка Ogg
+rec.err.ogg_missing = Ogg muxer недоступен
+rec.err.ogg_open = не открыт Ogg-файл: {0}
+rec.err.ogg_stream = не создан Ogg stream
+rec.err.opus_missing = Opus encoder недоступен
+rec.err.pcm_open = не открыт PCM-файл
+rec.err.pcm_read = PCM read failed
+rec.err.resampler_create = не создан resampler
+rec.err.resampler_init = ошибка PCM resampler
+rec.file_create_failed = Не удалось создать файл записи
+rec.file_error = Ошибка файла записи
+rec.finish_first = Сначала завершите запись голосового сообщения
+rec.mic_read_error = Ошибка чтения микрофона
+rec.mic_unavailable = Микрофон недоступен
+rec.no_space = Нет места для записи аудио
+rec.opus_failed = Ошибка Ogg/Opus: {0}
+rec.ready = Ogg/Opus готов, отправка...
+rec.recording = Запись...
+rec.save_error = Ошибка сохранения аудио
+rec.send_failed = Не удалось передать аудио в Telegram
+rec.start_failed = Не удалось запустить запись
+rec.wait_connect = Для записи дождитесь подключения
+
+# --- settings ---
+settings.always = Всегда
+settings.batch = Пакет запросов
+settings.cache_size = Объём кэша медиа
+settings.confirm_logout = {cross}: подтвердить выход
+settings.days = {0} дн.
+settings.download_dir = Папка загрузок
+settings.font_size = Размер шрифта
+settings.footer = {dpad}: выбор / изменение    {cross} Изменить    {circle} Назад
+settings.language = Язык
+settings.language_auto = Автоматически ({0})
+settings.logout = Выйти из аккаунта
+settings.logout_wait = Для выхода дождитесь подключения
+settings.no_limit = Без лимита
+settings.retention = Хранить кэш
+settings.save_failed = Не удалось сохранить настройки
+settings.show_threads = Показывать потоки
+settings.theme = Тема
+settings.theme_dark = Тёмная
+settings.theme_light = Светлая
+settings.title = Настройки
+
+# --- status ---
+status.online = В сети
+
+# --- sticker ---
+sticker.choose_set = Выберите набор стикеров
+sticker.favorites = Избранные
+sticker.footer = {dpad}: выбор   {circle}: наборы   {square}: закрыть
+sticker.loading = Загрузка стикеров...
+sticker.none_in_section = В этом разделе нет стикеров
+sticker.page = Страница {0} / {1}
+sticker.recent = Недавние
+sticker.sending = Отправка стикера...
+sticker.sets_footer = {dpad}: выбор   {cross}: открыть набор   {circle}: назад
+sticker.sets_title = Наборы стикеров
+sticker.title = Стикеры
+
+# --- tg ---
+tg.closed = TDLib закрыта
+tg.created_waiting = TDLib создана; ожидание ответа...
+tg.initializing = Инициализация Telegram...
+tg.worker_failed = Не удалось создать рабочий поток Telegram
+
+# --- topics ---
+topics.all_loaded = Все темы загружены
+topics.checking = Проверка тем группы...
+topics.closed = " [закрыта]"
+topics.footer = {cross}: открыть   {triangle}: ещё темы   {circle}: назад
+topics.load_more = Вниз / {triangle}: загрузить ещё темы
+topics.loading = Загрузка тем...
+topics.none = Нет доступных тем
+topics.title = Темы группы
+
+# --- unit ---
+unit.kib = {0} КиБ
+unit.mb = {0} МБ
+unit.mib = {0} МиБ
+unit.per_sec = {0}/с
+unit.sec = {0} с
+
+# --- unsupported ---
+unsupported.footer = {cross} Подготовить    {circle} Отмена
+unsupported.question = Создать копию H.264 MP4 размером 432×768 на Vita?
+unsupported.reason = Аппаратный декодер Vita не принимает этот размер кадра.
+unsupported.title = Видео не поддерживается
+unsupported.warning = Это может занять время и дополнительное место.
+
+# --- up ---
+up.awaiting = {0}: ожидание ответа Telegram | прошло {1}
+up.confirming = {0}: подтверждение Telegram | прошло {1}
+up.data_line = Данных: {0}/{1} Б; осталось: {2} Б
+up.elapsed = " | прошло {0}"
+up.failed = {0}: ошибка — {1}
+up.kind.audio = Аудио
+up.kind.sticker = Стикер
+up.kind.video_note = Кружок
+up.more = " | ещё: {0}"
+up.progress = {0}: {1}/{2} ({3}%)
+up.s.confirm = " — подтверждение Telegram"
+up.s.finishing = " — ожидание завершения загрузки Telegram"
+up.s.queued = " — ожидание загрузки"
+up.s.speed = " | {0} | ~{1}"
+up.s.stalled = " — нет прогресса {0}"
+up.s.uploading = " — загрузка"
+up.sent = {0}: отправлено
+up.sent_info = {0}: отправлено ({1}, {2})
+up.unknown_error = неизвестная ошибка
+
+# --- user ---
+user.deleted = Удалённый аккаунт
+user.participant = Участник
+
+# --- video ---
+video.loading = Загрузка видео...
+video.unsupported_hint = Видео не поддерживается; X: подготовить копию
+
+# --- video_note ---
+video_note.file_missing = Видеофайл недоступен или пуст
+video_note.send_failed = Не удалось отправить кружок: проверьте подключение
+
+# --- vne ---
+vne.aac_missing = AAC encoder недоступен; пересоберите FFmpeg
+vne.audio_read = Ошибка чтения звука
+vne.bad_duration = Некорректная длительность записи
+vne.cancelled = Запись отменена
+vne.frame_corrupt = Повреждён кадр записи
+vne.h264_encode = Ошибка кодирования H.264
+vne.h264_memory = Недостаточно памяти для H.264
+vne.h264_open = Не удалось открыть H.264 encoder
+vne.h264_params = Ошибка параметров H.264
+vne.mp4_create = Не удалось создать MP4
+vne.mp4_header_memory = Недостаточно памяти для MP4 header
+vne.mp4_memory = Не выделена память для MP4
+vne.mp4_muxer_missing = MP4 muxer недоступен; пересоберите FFmpeg
+vne.mp4_muxer_missing_short = MP4 muxer недоступен
+vne.no_first_frame = В записи нет первого кадра
+vne.no_sps_pps = В H.264 нет SPS/PPS
+vne.open_failed = Не удалось открыть запись
+vne.streams = Не удалось создать MP4 streams
+vne.timestamps_corrupt = Повреждены временные метки записи
+
+# --- vnr ---
+vnr.action.record = {cross} Записать
+vnr.action.retry = {cross} Повторить
+vnr.action.send = {cross} Отправить
+vnr.action.stop = {cross} Остановить
+vnr.audio_file_failed = Не удалось создать файл звука
+vnr.audio_save_error = Ошибка сохранения звука
+vnr.audio_save_space = Не удалось сохранить звук: проверьте свободное место
+vnr.camera = {triangle} Камера
+vnr.cancel = {circle} Отмена
+vnr.encoding = Подготовка MP4...
+vnr.encoding_percent = Подготовка MP4: {0}%
+vnr.err.camera_memory = Недостаточно памяти для камеры
+vnr.frame_save_space = Не удалось сохранить кадр: проверьте свободное место
+vnr.front_camera = Фронтальная камера
+vnr.hint_preview = {cross} Начать запись   {triangle} Сменить камеру
+vnr.mic_start_failed = Не удалось запустить микрофон
+vnr.opening_front = Открытие фронтальной камеры...
+vnr.other_camera_unavailable = Другая камера недоступна; используется прежняя
+vnr.ready = Кружок готов: посмотрите запись перед отправкой
+vnr.rear_camera = Задняя камера
+vnr.record_file_space = Не удалось создать запись: проверьте свободное место
+vnr.review = {square} Просмотр
+vnr.start_failed = Не удалось запустить запись видео
+vnr.timer = {0} / 60 сек.
+vnr.title = Видеокружок
+vnr.too_short = Запишите кружок длительностью хотя бы 1 секунду
+vnr.video_error = Ошибка видео: {0}
+vnr.video_save_error = Ошибка сохранения видео
+
+# --- voice ---
+voice.error = Голос: {0}
+voice.frame_size = Недопустимый размер аудиокадра
+voice.limit_audio = Лимит аудио: 128 МиБ
+voice.limit_voice = Лимит голосового: 20 МиБ
+voice.memory = Недостаточно памяти для аудио
+voice.no_stream = Нет поддерживаемого аудиопотока
+voice.open_output = Не удалось открыть аудиовыход Vita
+voice.output_failed = Ошибка вывода звука
+voice.playing_pause = Воспроизведение — X пауза
+voice.rebuild = Пересоберите FFmpeg с поддержкой аудио
+voice.start_failed = Не удалось запустить поток аудио
+voice.unavailable = Аудиофайл недоступен или превышает лимит размера
+voice.unsupported_codec = Неподдерживаемый аудиокодек: {0}
+voice.worker = Не удалось запустить поток аудиовывода

@@ -24,7 +24,7 @@ public:
 private:
     static void* entry(void* self);
     void run();
-    bool fail(const char* operation, int code);
+    bool fail(const std::string& operation, int code);
     bool started_ = false, camera_open_ = false, camera_started_ = false, thread_started_ = false;
     int memory_ = -1;
     unsigned char* camera_buffer_ = nullptr;

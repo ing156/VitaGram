@@ -5,7 +5,7 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.34.60**. VPK package version: **34.60**. This project is under development.
+Source version: **0.35**. VPK package version: **35.00**. This project is under development.
 
 0.33.0 starts the performance work with bounded diagnostics: hold ![Select](assets/controller-icons/select.svg) for frame/event latency and queue depth;
 aggregated measurements are written in the background to `ux0:data/vitagram/performance.log`.
@@ -25,8 +25,9 @@ See the [measurement guide](docs/performance-release-0.33.0.md). Subsequent opti
 - Standard emoji reactions, voice messages, audio and supported animations.
 - Microphone recording and sending audio messages from the current chat.
 - Forum groups: topic lists, separate topic history, text and sticker sending to the selected topic.
-- Light/dark themes, font size, cache retention settings and account logout.
+- Light/dark themes, font size, cache retention settings, interface language and account logout.
 - Connection indicator, HTTP(S) links opened in the browser, and a startup screen showing initialization stages.
+- Proxy support: MTProxy, SOCKS5 and HTTPS (HTTP CONNECT) — Start → Proxy; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials are stored in plain text in `settings.json`.
 
 A feature being present in the source does not mean every scenario has been tested on hardware.
 The latest sticker and forum-topic changes still require build and PS Vita testing.
@@ -83,6 +84,18 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - **![X](assets/controller-icons/cross.svg) / tap a sticker** — immediately send it to the current chat or topic.
 - **![O](assets/controller-icons/circle.svg) / ![Square](assets/controller-icons/square.svg)** — close the picker.
 - Up to 18 stickers per page; only visible previews are downloaded. Animated stickers use static thumbnails in the picker.
+
+## Languages
+
+The interface language follows the console's system language; if no matching language file exists, English is used.
+Press ![Start](assets/controller-icons/start.svg) on the main screen and change **Language** (the first row) to pick a language manually or return to *Automatic*.
+The choice is stored in `settings.json` (`language`; empty means automatic).
+Shipped languages: English (`en`) and Russian (`ru`).
+
+All texts live in `assets/lang/<code>.lang` and are packaged as `app0:lang/`. To add or fix a language, copy `assets/lang/en.lang`, translate the values and rebuild — no code changes are needed, and the new language appears in the menu automatically.
+Missing keys fall back to English. Controller buttons are written as tokens such as `{cross}`, `{circle}` or `{dpad}` and are replaced by the icons when the file is loaded, so translations change only the text, never the icons. `{0}`, `{1}`… are values inserted by the program.
+New texts in code use `tr("key")` / `tr("key", {args})` from `src/i18n.h`; add the key to every `.lang` file. `bash tests/run-i18n-tests.sh` checks that all catalogs have the same keys and placeholders and that every key used in the sources exists.
+Characters outside the packaged fonts (for example Chinese or Arabic) need a suitable font from `assets/` first. The very first startup screen and developer diagnostics (hold ![Select](assets/controller-icons/select.svg): CPU, threads, performance) stay in English.
 
 ## Building
 
@@ -239,6 +252,7 @@ The additional CPU core is used only after a successful access check; installing
 - `src/media_cache.*`, `src/ui_cache.*` — media and UI caches.
 - `src/cpu_scheduler.*` — thread priorities and load distribution.
 - `src/settings.h`, `src/vita_net.*` — settings and network state.
+- `src/i18n.*`, `assets/lang/*.lang` — localization.
 
 ## Licenses
 
@@ -255,7 +269,7 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.34.60**, версия пакета VPK: **34.60**. Проект находится в разработке.
+Версия исходников: **0.35**, версия пакета VPK: **35.00**. Проект находится в разработке.
 
 ## Возможности
 
@@ -270,7 +284,7 @@ When distributing the application, retain notices and comply with dependency lic
 - Статичные и анимированные стикеры; отправка из недавних, избранных и установленных наборов.
 - Обычные emoji-реакции, воспроизведение голосовых, аудио и поддерживаемых анимаций.
 - Темы форумных групп: список топиков, отдельная история, отправка текста и стикеров в выбранную тему.
-- Светлая/тёмная тема, размер шрифта, настройки хранения кэша и выход из аккаунта.
+- Светлая/тёмная тема, размер шрифта, настройки хранения кэша, язык интерфейса и выход из аккаунта.
 - Индикатор подключения, открытие HTTP(S)-ссылок в браузере, заставка с этапами запуска.
 
 Наличие функции в исходниках не означает проверку всех сценариев на устройстве.
@@ -327,6 +341,18 @@ When distributing the application, retain notices and comply with dependency lic
 - **![X](assets/controller-icons/cross.svg) / тап по стикеру** — сразу отправить в текущий чат или топик.
 - **![O](assets/controller-icons/circle.svg) / ![квадрат](assets/controller-icons/square.svg)** — закрыть меню.
 - На странице до 18 стикеров; загружаются только видимые превью. Анимированные стикеры в меню представлены статичными миниатюрами.
+
+## Языки
+
+Язык интерфейса выбирается по системному языку консоли; если подходящего языкового файла нет, используется английский.
+На главном экране нажмите ![Start](assets/controller-icons/start.svg) и измените **Язык** (первая строка), чтобы выбрать язык вручную или вернуться к *Автоматически*.
+Выбор хранится в `settings.json` (`language`; пустое значение — автоматически).
+Поставляются английский (`en`) и русский (`ru`).
+
+Все тексты находятся в `assets/lang/<код>.lang` и упаковываются в `app0:lang/`. Чтобы добавить или поправить язык, скопируйте `assets/lang/en.lang`, переведите значения и пересоберите пакет — менять код не нужно, новый язык появится в меню сам.
+Недостающие ключи берутся из английского файла. Кнопки консоли записаны токенами вроде `{cross}`, `{circle}`, `{dpad}` и заменяются значками при загрузке файла, поэтому перевод меняет только текст, но не значки. `{0}`, `{1}`… — значения, которые подставляет программа.
+Новые тексты в коде пишутся через `tr("ключ")` / `tr("ключ", {аргументы})` из `src/i18n.h`; ключ добавляется во все `.lang`. `bash tests/run-i18n-tests.sh` проверяет совпадение ключей и подстановок во всех каталогах и наличие каждого используемого в коде ключа.
+Для символов вне упакованных шрифтов (например, китайский или арабский) сначала нужен подходящий шрифт в `assets/`. Самая первая заставка и диагностика для разработчиков (удержание ![Select](assets/controller-icons/select.svg): CPU, потоки, производительность) остаются на английском.
 
 ## Сборка
 
@@ -496,6 +522,13 @@ cmake --build build-modern -j$(nproc)
 
 Настройки сохраняются в `ux0:data/vitagram/settings.json` и применяются при следующем запуске автоматически.
 Secret скрыт на экране, но хранится в файле настроек открытым текстом.
+### SOCKS5 и HTTPS-прокси
+
+Помимо MTProxy поддерживаются **SOCKS5** и **HTTPS** (HTTP CONNECT) прокси. В настройках прокси строка **Тип** переключает MTProxy / SOCKS5 / HTTPS (**![X](assets/controller-icons/cross.svg)** или ←/→).
+Для SOCKS5 и HTTPS вместо secret показываются необязательные поля **Логин** и **Пароль**; пароль скрыт на экране, но хранится в `settings.json` открытым текстом (`proxy_type`, `proxy_username`, `proxy_password`).
+Ссылки `tg://socks?server=…&port=…&user=…&pass=…` и `https://t.me/socks?…` (в сообщениях и QR) импортируются как SOCKS5. Для HTTPS-прокси ссылок Telegram нет — введите данные вручную.
+«Проверить подключение» (`pingProxy`) работает для всех типов. Для проверки на Linux: `bash tests/run-proxy-tests.sh`.
+
 Статус «MTProxy включён» означает, что TDLib приняла настройку; доступность сервера определяется при подключении.
 
 ### Проверки импорта MTProxy
@@ -542,6 +575,7 @@ UI, воспроизведение, обработка ответов и фон�
 - `src/media_cache.*`, `src/ui_cache.*` — кэш медиа и интерфейса.
 - `src/cpu_scheduler.*` — приоритеты потоков и распределение нагрузки.
 - `src/settings.h`, `src/vita_net.*` — настройки и состояние сети.
+- `src/i18n.*`, `assets/lang/*.lang` — локализация.
 
 ## Лицензии
 
