@@ -61,7 +61,7 @@ void start_probe() { // Called on UI only; never overlap probe threads.
         else probe_info_error = deleted;
     }
 }
-bool background(Role role) { return role == Role::Network || role == Role::Parser; }
+bool background(Role role) { return role == Role::Network || role == Role::Parser || role == Role::Storage; }
 void move(Entry& thread, int core, int64_t now) {
     if (thread.core == core) return;
     int rc = sceKernelChangeThreadCpuAffinityMask(thread.id, masks[core]);
@@ -69,9 +69,11 @@ void move(Entry& thread, int core, int64_t now) {
     else {
         check("affinity", rc);
         if (core == 3) { probe_error = rc; fourth = AffinityFailed; }
-        // Do not leave a background worker on the audio core if migration fails.
-        if (core != 2 && sceKernelChangeThreadCpuAffinityMask(thread.id, masks[2]) >= 0) {
-            thread.core = 2; thread.moved = now;
+        // Keep a background worker off the decoder core during playback,
+        // including when the preferred CPU3 is unavailable.
+        int fallback = video_active ? 0 : 2;
+        if (core != fallback && sceKernelChangeThreadCpuAffinityMask(thread.id, masks[fallback]) >= 0) {
+            thread.core = fallback; thread.moved = now;
         }
     }
 }
@@ -80,16 +82,19 @@ void balance(bool urgent) { // mutex held
     int assigned[4] = {};
     for (auto& thread : threads) {
         if (thread.id < 0 || !background(thread.role)) continue;
-        int best = 2, best_score = 10000;
+        int best = video_active ? 0 : 2, best_score = 10000;
         auto score = [&](int core) {
             return (load[core] < 0 ? 40 : load[core]) + assigned[core] * 30 +
-                (core == 2 && video_active ? 80 : 0);
+                (core == 0 ? 30 : 0);
         };
-        for (int core = 1; core <= 3; ++core) {
-            if ((core == 1 && audio_active) || (core == 3 && fourth != 1)) continue;
+        for (int core = 0; core <= 3; ++core) {
+            if ((core == 0 && !video_active) || (core == 1 && audio_active) ||
+                (core == 2 && video_active) || (core == 3 && fourth != Confirmed)) continue;
             if (score(core) < best_score) { best = core; best_score = score(core); }
         }
-        bool forbidden = thread.core < 1 || (thread.core == 1 && audio_active) || (thread.core == 3 && fourth != 1);
+        bool forbidden = thread.core < 0 || (thread.core == 0 && !video_active) ||
+            (thread.core == 1 && audio_active) || (thread.core == 2 && video_active) ||
+            (thread.core == 3 && fourth != Confirmed);
         // Avoid chasing every transient spike and repeatedly evicting warm caches.
         if (urgent || forbidden || (now - thread.moved >= 5000000 && best_score + 20 < score(thread.core)))
             move(thread, best, now);
@@ -104,11 +109,14 @@ void init() {
 }
 Thread::Thread(Role role) : id_(sceKernelGetThreadId()) {
     pthread_mutex_lock(&mutex);
-    int offset = role == Role::Audio ? -8 : role == Role::Ui ? 0 : role == Role::Video ? 12 : 4;
+    int offset = role == Role::Audio ? -8 : role == Role::Ui ? 0 : role == Role::Video ? 12 :
+        role == Role::Storage ? 28 : 24;
     check("priority", sceKernelChangeThreadPriority(id_, std::max(32, base_priority + offset)));
     for (auto& thread : threads) if (thread.id < 0) {
         thread = Entry{id_, role, -1, 0};
-        move(thread, role == Role::Ui ? 0 : role == Role::Audio ? 1 : 2, sceKernelGetSystemTimeWide());
+        int initial_core = role == Role::Ui ? 0 : role == Role::Audio ? 1 :
+            (background(role) && video_active ? 0 : 2);
+        move(thread, initial_core, sceKernelGetSystemTimeWide());
         break;
     }
     balance(true);
@@ -173,6 +181,12 @@ void tick() {
     balance(false);
     pthread_mutex_unlock(&mutex);
 }
+bool videoActive() {
+    pthread_mutex_lock(&mutex);
+    bool active = video_active > 0;
+    pthread_mutex_unlock(&mutex);
+    return active;
+}
 std::string status() {
     pthread_mutex_lock(&mutex);
     std::string result = "CPU ";
@@ -199,7 +213,7 @@ std::string status() {
 }
 std::string threadStatus() {
     pthread_mutex_lock(&mutex);
-    int ui = 0, audio = 0, video = 0, network = 0, parser = 0;
+    int ui = 0, audio = 0, video = 0, network = 0, parser = 0, storage = 0;
     for (const auto& thread : threads) {
         if (thread.id < 0) continue;
         switch (thread.role) {
@@ -208,11 +222,12 @@ std::string threadStatus() {
             case Role::Video: ++video; break;
             case Role::Network: ++network; break;
             case Role::Parser: ++parser; break;
+            case Role::Storage: ++storage; break;
         }
     }
     pthread_mutex_unlock(&mutex);
     return "Threads UI:" + std::to_string(ui) + " Net:" + std::to_string(network) +
         " Parser:" + std::to_string(parser) + " Audio:" + std::to_string(audio) +
-        " Video:" + std::to_string(video);
+        " Video:" + std::to_string(video) + " Disk:" + std::to_string(storage);
 }
 }

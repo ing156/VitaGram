@@ -1,0 +1,16 @@
+diff --git a/libavcodec/vitadec_video.c b/libavcodec/vitadec_video.c
+index 8e0b634..62f0870 100644
+--- a/libavcodec/vitadec_video.c
++++ b/libavcodec/vitadec_video.c
+@@ -693,7 +693,10 @@ static void do_init(AVCodecContext *avctx)
+     sceAvcdecSetDecodeMode(SCE_VIDEODEC_TYPE_HW_AVCDEC, 0x80);
+     sceVideodecQueryMemSizeInternal(SCE_VIDEODEC_TYPE_HW_AVCDEC, &init, &codec_buf_size);
+     if (codec_buf_size <= 0) {
+-        av_log(avctx, AV_LOG_ERROR, "vita_h264 init: query codec buffer size failed\n");
++        av_log(avctx, AV_LOG_ERROR,
++               "vita_h264 init: query codec buffer size failed size=%d raster=%dx%d refs=%d\n",
++               codec_buf_size, init.hwAvc.horizontal, init.hwAvc.vertical,
++               init.hwAvc.numOfRefFrames);
+         goto fail;
+     }
+ 

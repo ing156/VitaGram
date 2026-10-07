@@ -11,6 +11,8 @@ public:
     std::string stop();
     std::string takeCompleted();
     void cancel();
+    // 检查录音是否正在运行（用于方形按钮取消操作）
+    bool active() const { return recording_.load() || processing_.load() || started_; }
     bool recording() const { return recording_.load(); }
     bool processing() const { return processing_.load(); }
     int seconds() const;

@@ -1,3 +1,4 @@
+#include "performance.h"
 #include "qr_scanner.h"
 #include "proxy_link.h"
 #include "cpu_scheduler.h"
@@ -74,6 +75,7 @@ bool QrScanner::start() {
 }
 
 void QrScanner::stop() {
+    performance::Scope measurement(performance::Metric::QrStop);
     stopping_ = true;
     if (thread_started_) { pthread_join(thread_, nullptr); thread_started_ = false; }
     if (camera_started_) { sceCameraStop(Device); camera_started_ = false; }

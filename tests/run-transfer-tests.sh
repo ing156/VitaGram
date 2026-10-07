@@ -3,11 +3,15 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/vitagram-transfer-tests.XXXXXX")
 trap 'rm -rf -- "$build_dir"' EXIT
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -I "$root/src" \
+  -I "$root/build-modern/external/jansson/include" "$root/tests/upload_status_test.cpp" \
+  -l:libjansson.so.4 -o "$build_dir/upload_status"
+"$build_dir/upload_status"
 "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -pthread -DVITAGRAM_VERSION='"test"' \
   -I "$root/tests/stubs" -I "$root/src" -I "$root/external/tdlib-upstream" -I "$root/build-modern/tdlib" \
   -I "$root/build-modern/external/jansson/include" \
-  "$root/src/telegram_client.cpp" "$root/src/media_cache.cpp" "$root/src/ui_cache.cpp" \
-  "$root/src/proxy_link.cpp" "$root/tests/transfers_test.cpp" -l:libjansson.so.4 -o "$build_dir/transfers"
+  "$root/src/telegram_client.cpp" "$root/src/media_cache.cpp" "$root/src/media_trash.cpp" "$root/src/ui_cache.cpp" \
+  "$root/src/proxy_link.cpp" "$root/tests/transfers_test.cpp" -Wl,--wrap=stat -l:libjansson.so.4 -o "$build_dir/transfers"
 (cd "$build_dir" && ./transfers)
 if [[ -n "${FFMPEG_AUDIO_BUILD:-}" ]]; then
   "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -pthread \

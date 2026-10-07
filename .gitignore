@@ -5,7 +5,15 @@ build-modern/
 install/
 external/tdlib-vita/
 external/ffmpeg-animation/install/
+external/ffmpeg-vita/
 external/rlottie-vita/install/
+external/font-tools-venv/
+/assets/NotoColorEmoji-64.ttf
+/assets/NotoSansJP-JIS.otf
+
+# test metrics
+docs/
+tests/
 
 # executables and package outputs
 *.vpk

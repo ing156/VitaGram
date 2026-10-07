@@ -1,9 +1,18 @@
+#include "td_dispatch_policy.h"
+#include "td_unused_update.h"
+#include "td_sticker_sets.h"
+#include "sticker_preview.h"
+#include "account_cleanup.h"
 #include "telegram_client.h"
 #include "proxy_link.h"
 #include "video_note_message.h"
+#include "video_quality.h"
 #include "cpu_scheduler.h"
 #include "td_event_queue.h"
 #include "config.h"
+#include "performance_log.h"
+#include "file_download.h"
+#include "rich_message.h"
 
 #include <td/telegram/td_json_client.h>
 #include <jansson.h>
@@ -32,6 +41,42 @@ static const char* json_str(json_t* o, const char* key, const char* def = "") {
     return json_is_string(v) ? json_string_value(v) : def;
 }
 
+// Freeing a parsed reply costs about as much as parsing it on the Vita. It stays
+// inline: handing roots to another thread (0.33.49) made Parser and UI wait on
+// the shared malloc lock and slowed the startup flood instead.
+static void release_td_json(json_t* root,uint64_t wire_bytes=0) {
+    performance::Scope metric(performance::Metric::JsonRelease);
+    performance::SlowScope slow(performance::SlowPhase::Release,json_str(root,"@type"),wire_bytes ? wire_bytes : td_event_wire_bytes(root));
+    json_decref(root);
+}
+
+// UI-thread only. Big replies are freed a few milliseconds per frame instead of
+// in one 60-90 ms stall. The same thread frees them, so no malloc lock is shared
+// with Parser (the 0.33.49 cross-thread hand-off did that and slowed startup).
+struct RetiredJson { json_t* node; int depth; };
+static std::vector<RetiredJson> retired_json;
+static void retire_td_json(json_t* root,uint64_t wire_bytes=0) {
+    if (!wire_bytes) wire_bytes=td_event_wire_bytes(root);
+    if (wire_bytes<16*1024) { release_td_json(root,wire_bytes); return; }
+    retired_json.push_back({root,0});
+}
+static void drain_retired_json(int64_t budget_us) {
+    if (retired_json.empty()) return;
+    performance::Scope metric(performance::Metric::JsonRelease);
+    const int64_t started=sceKernelGetSystemTimeWide();
+    while (!retired_json.empty() && sceKernelGetSystemTimeWide()-started<budget_us) {
+        const auto item=retired_json.back(); retired_json.pop_back();
+        json_t* node=item.node;
+        const size_t children=json_is_array(node) ? json_array_size(node) : json_is_object(node) ? json_object_size(node) : 0;
+        if (item.depth<6 && children>1) {
+            // Detach children first; freeing the shell then leaves them alive.
+            if (json_is_array(node)) { size_t i; json_t* v; json_array_foreach(node,i,v) { json_incref(v); retired_json.push_back({v,item.depth+1}); } }
+            else { const char* k; json_t* v; json_object_foreach(node,k,v) { json_incref(v); retired_json.push_back({v,item.depth+1}); } }
+        }
+        json_decref(node);
+    }
+}
+
 static int32_t chat_list_id(json_t* list) {
     const char* type = json_str(list, "@type");
     if (!std::strcmp(type, "chatListMain")) return 0;
@@ -51,29 +96,222 @@ static void clear_cached_file_ids(json_t* root) {
     }
 }
 
+void* TelegramClient::prepareCache() {
+    performance::Scope measurement(performance::Metric::CacheRestore);
+    if (auto* startup = ui_cache_.loadStartup()) return startup;
+    // One-time migration from the monolithic cache. Subsequent starts read only
+    // the small index before showing chats; full histories remain on Storage.
+    ui_cache_.load(cacheLoadProceed, this); full_cache_loaded_ = true;
+    auto* startup = ui_cache_.startupSnapshot();
+    auto proceed = [](void* opaque) -> bool { return !static_cast<TelegramClient*>(opaque)->stopping_; };
+    ui_cache_.saveStartup(startup, proceed, this);
+    return startup;
+}
 void TelegramClient::restoreCache() {
-    media_cache_.load(); ui_cache_.load();
-    json_t* snapshot = ui_cache_.snapshot();
-    json_t* users = snapshot ? json_object_get(snapshot, "users") : nullptr;
-    const char* user_key; json_t* user;
-    if (json_is_object(users)) json_object_foreach(users, user_key, user) parseUser(user);
-    json_t* cached = snapshot ? json_object_get(snapshot, "chats") : nullptr;
-    media_cache_.resolve(cached); clear_cached_file_ids(cached);
-    const char* key; json_t* chat;
-    if (json_is_object(cached)) json_object_foreach(cached, key, chat) parseChat(chat);
-    for (auto& chat : known_chats_) chat.cached_metadata = true;
-    json_t* folders = snapshot ? json_object_get(snapshot, "folders") : nullptr;
-    if (folders) parseFolders(folders);
-    if (snapshot) restoreStickerCache(snapshot);
-    if (snapshot) json_decref(snapshot);
-    publishChats();
-    if (!chats_.empty()) status_ = "Cached chats - connecting...";
+    if (account_cleanup::pending() || logging_out_) return;
+
+    // Synchronous compatibility path. Production uses restoreCacheAsync on Storage.
+    auto* startup = prepareCache();
+    if (startup) {
+        applyRestoredCache(startup);
+    }
+
+    // Complete details before returning to synchronous callers.
+    if (!full_cache_loaded_) {
+        ui_cache_.load();
+        full_cache_loaded_ = true;
+    }
+    media_cache_.load();
+}
+bool TelegramClient::restoreCacheAsync() {
+    if (cache_worker_started_ || logging_out_ || account_cleanup::pending() || stopping_) return false;
+    restore_on_cache_worker_ = true;
+    return startCacheWorker();
+}
+void TelegramClient::beginCacheApply(void* opaque) {
+    if (applying_snapshot_) json_decref(static_cast<json_t*>(applying_snapshot_));
+    applying_snapshot_ = opaque;
+    cache_apply_stage_ = 0;
+    cache_restore_chats_ = known_chats_.empty();
+
+}
+void TelegramClient::applyRestoredCache(void* opaque) {
+    // Synchronous compatibility path for offline tools/tests; production pump
+    // calls one slice per frame, after protocol events.
+    beginCacheApply(opaque);
+    while (applying_snapshot_) applyCacheSlice();
+}
+void TelegramClient::applyCacheSlice() {
+    auto* snapshot = static_cast<json_t*>(applying_snapshot_);
+    if (!snapshot) return;
+    performance::Scope measurement(performance::Metric::CacheApply);
+    if (logging_out_ || !cache_restore_allowed_) {
+        json_decref(snapshot); applying_snapshot_ = nullptr; return;
+    }
+    const auto started = sceKernelGetSystemTimeWide();
+    bool changed = false;
+
+    // Never let a partially installed cache replace live chats arriving between
+    // slices. Once the complete cached list is installed, normal list handover
+    // preserves its existing stable-window behavior.
+    if (cache_apply_stage_ <= 1 && cache_restore_chats_ &&
+        std::any_of(known_chats_.begin(), known_chats_.end(), [](const ChatItem& c) { return !c.cached_metadata; })) {
+        cache_restore_chats_ = false; startup_chat_snapshots_.clear();
+        known_chats_.erase(std::remove_if(known_chats_.begin(), known_chats_.end(),
+            [](const ChatItem& c) { return c.cached_metadata; }), known_chats_.end());
+        changed = true;
+    }
+
+    // Limit processing per slice to prevent UI blocking
+    unsigned count = 0;
+    const unsigned max_count = 4; // Reduced from 8 to improve responsiveness
+
+    for (; count < max_count; ++count) {
+        if (cache_apply_stage_ == 0) {
+            auto* folders = json_object_get(snapshot, "folders");
+            if (folders && !live_folders_received_) parseFolders(folders);
+            json_object_del(snapshot, "folders"); ++cache_apply_stage_;
+        } else if (cache_apply_stage_ <= 2) {
+            auto* collection = json_object_get(snapshot, cache_apply_stage_ == 1 ? "chats" : "users");
+            auto* iter = json_object_iter(collection);
+            if (!iter) { ++cache_apply_stage_; continue; }
+            auto* value = json_object_iter_value(iter);
+            const auto id = json_i53(value, "id");
+            if (cache_apply_stage_ == 1 && cache_restore_chats_ && id) {
+                // A malformed snapshot may repeat an ID under different keys.
+                const bool duplicate = std::any_of(known_chats_.begin(), known_chats_.end(),
+                    [&](const ChatItem& c) { return c.id == id; });
+                if (duplicate) {
+                    std::string key = json_object_iter_key(iter); json_object_del(collection, key.c_str());
+                    if (sceKernelGetSystemTimeWide() - started >= 500) break; // Reduced timeout
+                    continue;
+                }
+                parseChat(value);
+                auto& chat = known_chats_.back(); chat.cached_metadata = true;
+                for (const auto& entry : chat.list_orders) if (entry.second) {
+                    auto copy = chat; copy.order = entry.second;
+                    auto& rows = startup_chat_snapshots_[entry.first];
+                    auto at = std::lower_bound(rows.begin(), rows.end(), copy, [](const ChatItem& a, const ChatItem& b) {
+                        return a.order != b.order ? a.order > b.order : a.id > b.id;
+                    });
+                    rows.insert(at, std::move(copy));
+                }
+                changed = true;
+            } else if (cache_apply_stage_ == 2 && id && !user_names_.count(id)) {
+                if (user_presence_.count(id)) json_object_del(value, "status");
+                parseUser(value); user_photos_[id].fresh = false;
+            }
+            std::string key = json_object_iter_key(iter);
+            json_object_del(collection, key.c_str());
+            if (!json_object_size(collection)) ++cache_apply_stage_;
+        } else {
+            json_decref(snapshot); applying_snapshot_ = nullptr; changed = true; break;
+        }
+        if (sceKernelGetSystemTimeWide() - started >= 500) break; // Reduced timeout
+    }
+
+    if (changed) publishChats();
+    if (!ready_ && !chats_.empty() && input_kind_ == InputKind::None) status_ = "Cached chats - connecting...";
+}
+
+void TelegramClient::requestCachedDetails(int index) {
+    // Online responses provide session-valid IDs. Offline details are read and
+    // validated only when opened, on the same Storage worker as file checks.
+    if (ready_ || logging_out_ || !cache_restore_allowed_) return;
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    cache_demand_ = {current_chat_id_, history_generation_, sticker_session_, sticker_generation_, index, true};
+    pthread_mutex_unlock(&queue_mutex_);
+}
+void TelegramClient::prepareCachedDetails() {
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    auto key = cache_demand_; cache_demand_.pending = false;
+    pthread_mutex_unlock(&queue_mutex_);
+    if (!key.pending) return;
+    json_t* data = key.index == -1 ? ui_cache_.history(key.chat) :
+        key.index == -2 ? ui_cache_.stickerSnapshot() : ui_cache_.stickerItems(key.index);
+    auto proceed = [](void* opaque) -> bool {
+        auto* self = static_cast<TelegramClient*>(opaque);
+        if (self->stopping_) return false;
+        performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+        const bool replaced = self->cache_demand_.pending;
+        pthread_mutex_unlock(&self->queue_mutex_);
+        sceKernelDelayThread(500);
+        return !replaced;
+    };
+    if (!media_cache_.resolve(data, true, proceed, this)) { if (data) json_decref(data); return; }
+    clear_cached_file_ids(data);
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    if (!stopping_ && !cache_demand_.pending) {
+        if (cache_result_) json_decref(static_cast<json_t*>(cache_result_));
+        cache_result_ = data; cache_result_key_ = key; data = nullptr;
+    }
+    pthread_mutex_unlock(&queue_mutex_);
+    if (data) json_decref(data);
+}
+void TelegramClient::applyCachedDetails() {
+    void* opaque = nullptr;
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    std::swap(opaque, cache_result_); auto key = cache_result_key_;
+    pthread_mutex_unlock(&queue_mutex_);
+    auto* data = static_cast<json_t*>(opaque);
+    if (!data) return;
+    if (!ready_ && !logging_out_ && cache_restore_allowed_ && key.chat == current_chat_id_ &&
+        key.history == history_generation_ && key.session == sticker_session_ && key.stickers == sticker_generation_) {
+        if (key.index == -1) {
+            history_items_.clear();
+            const char* id; json_t* message;
+            json_object_foreach(data, id, message) if (matchesTopic(message)) history_items_.push_back(parseMessage(message));
+            history_cached_ = !history_items_.empty(); rebuildHistory();
+        } else if (key.index == -2) restoreStickerCache(data);
+        else applyStickerResponse(data, false);
+    }
+    json_decref(data);
+}
+void TelegramClient::prepareCachedAvatar() {
+    int64_t id = 0;
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    if (!cached_avatar_requests_.empty()) {
+        id = cached_avatar_requests_.front(); cached_avatar_requests_.pop_front();
+    }
+    pthread_mutex_unlock(&queue_mutex_);
+    if (!id) return;
+    auto* file = ui_cache_.chatAvatar(id);
+    auto proceed = [](void* opaque) -> bool { return !static_cast<TelegramClient*>(opaque)->stopping_; };
+    if (file && media_cache_.resolve(file, true, proceed, this)) {
+        auto* local = json_object_get(file, "local");
+        std::string path = json_is_true(json_object_get(local, "is_downloading_completed")) ? json_str(local, "path") : "";
+        // Validate even descriptors without a remote cache key. Storage only.
+        struct stat info{};
+        const auto expected=json_i53(file,"size");
+        if (path.empty() || stat(path.c_str(),&info) || !S_ISREG(info.st_mode) ||
+            info.st_size<=0 || (expected>0 && info.st_size!=expected)) path.clear();
+        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        if (!stopping_) cached_avatar_results_.emplace_back(id, std::move(path));
+        pthread_mutex_unlock(&queue_mutex_);
+    }
+    if (file) json_decref(file);
+}
+void TelegramClient::applyCachedAvatar() {
+    std::pair<int64_t, std::string> result;
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    if (!cached_avatar_results_.empty()) {
+        result = std::move(cached_avatar_results_.front()); cached_avatar_results_.pop_front();
+    }
+    pthread_mutex_unlock(&queue_mutex_);
+    if (!result.first || logging_out_ || !cache_restore_allowed_) return;
+    auto apply = [&](ChatItem& chat) {
+        if (chat.id == result.first && chat.cached_metadata) chat.avatar_path = result.second;
+    };
+    for (auto& chat : known_chats_) apply(chat);
+    for (auto& chat : chats_) apply(chat);
+    for (auto& entry : startup_chat_snapshots_) for (auto& chat : entry.second) apply(chat);
 }
 
 void TelegramClient::restoreStickerCache(void* opaque) {
     json_t* snapshot = static_cast<json_t*>(opaque);
     json_t* packs = json_object_get(snapshot, "sticker_packs");
     if (json_is_object(packs)) {
+        clear_cached_file_ids(packs);
         sticker_packs_ = {{0, "Избранные"}, {1, "Недавние"}};
         sticker_set_ids_ = {0, 0};
         applyStickerResponse(packs, true);
@@ -86,6 +324,16 @@ void TelegramClient::restoreStickerCache(void* opaque) {
     sticker_status_ = sticker_packs_.size() > 2 ? "Выберите набор стикеров" : sticker_status_;
 }
 
+void TelegramClient::applyStickerPackIcon(size_t index, void* opaque) {
+    if (index >= sticker_packs_.size()) return;
+    json_t* file = sticker_pack_preview(static_cast<json_t*>(opaque));
+    auto& pack = sticker_packs_[index];
+    pack.icon_file_id = (int32_t)json_i53(file, "id");
+    json_t* local = json_object_get(file, "local");
+    pack.icon_path = json_is_true(json_object_get(local, "is_downloading_completed")) ?
+        json_str(local, "path") : "";
+}
+
 void TelegramClient::applyStickerResponse(void* opaque, bool packs) {
     json_t* root = static_cast<json_t*>(opaque);
     if (packs) {
@@ -94,16 +342,30 @@ void TelegramClient::applyStickerResponse(void* opaque, bool packs) {
             ChatFolderItem pack;
             pack.id = (int32_t)sticker_packs_.size();
             pack.title = json_str(set, "title");
-            json_t* icon = json_object_get(set, "thumbnail");
-            pack.icon_file_id = (int32_t)json_i53(json_object_get(icon, "file"), "id");
-            pack.icon_path = json_str(json_object_get(json_object_get(icon, "file"), "local"), "path");
             sticker_packs_.push_back(pack);
             sticker_set_ids_.push_back(json_i53(set, "id"));
+            applyStickerPackIcon(sticker_packs_.size()-1, set);
         }
         return;
     }
-    stickers_.clear(); json_t* items = json_object_get(root, "stickers"); size_t i; json_t* item;
-    json_array_foreach(items, i, item) {
+    if (sticker_apply_root_) json_decref(static_cast<json_t*>(sticker_apply_root_));
+    sticker_apply_root_=json_incref(root);sticker_apply_offset_=0;sticker_apply_chat_=current_chat_id_;
+    sticker_apply_generation_=sticker_generation_;sticker_apply_session_=sticker_session_;
+    stickers_.clear();applyStickerSlice();
+}
+
+void TelegramClient::applyStickerSlice() {
+    if (!sticker_apply_root_) return;
+    auto* root=static_cast<json_t*>(sticker_apply_root_);
+    if (sticker_apply_generation_!=sticker_generation_ || sticker_apply_session_!=sticker_session_ || sticker_apply_chat_!=current_chat_id_) {
+        release_td_json(root);sticker_apply_root_=nullptr;return;
+    }
+    performance::SlowScope slow(performance::SlowPhase::Ui,"sticker_slice");
+    auto* items=json_object_get(root,"stickers");const auto started=sceKernelGetSystemTimeWide();
+    for (int n=0;n<8 && sticker_apply_offset_<json_array_size(items);++n) {
+        auto* item=json_deep_copy(json_array_get(items,sticker_apply_offset_++));
+        for (auto id:media_cache_.enqueue(item)) pending_files_.erase(id);
+        media_cache_.resolve(item,false);
         SendStickerItem s;
         s.file = (int32_t)json_i53(json_object_get(item, "sticker"), "id");
         s.width = (int)json_i53(item, "width"); s.height = (int)json_i53(item, "height");
@@ -113,9 +375,15 @@ void TelegramClient::applyStickerResponse(void* opaque, bool packs) {
         s.preview = (int32_t)json_i53(preview, "id");
         json_t* local = json_object_get(preview, "local");
         if (json_is_true(json_object_get(local, "is_downloading_completed"))) s.path = json_str(local, "path");
-        if (s.file) stickers_.push_back(s);
+        if (s.file || !s.path.empty()) stickers_.push_back(s);
+
+        json_decref(item);
+        if (sceKernelGetSystemTimeWide()-started>=500) break;
     }
-    sticker_status_ = stickers_.empty() ? "В этом разделе нет стикеров" : "X: отправить выбранный стикер";
+    if (sticker_apply_offset_>=json_array_size(items)) {
+        release_td_json(root);sticker_apply_root_=nullptr;
+        sticker_status_=stickers_.empty() ? "В этом разделе нет стикеров" : "";
+    } else sticker_status_="Загрузка стикеров...";
 }
 
 TelegramClient::TelegramClient()
@@ -124,6 +392,8 @@ TelegramClient::TelegramClient()
 
 TelegramClient::~TelegramClient() {
     stopWorker();
+    if (cleanup_started_) pthread_join(cleanup_thread_, nullptr);
+    if (sticker_apply_root_) json_decref(static_cast<json_t*>(sticker_apply_root_));
     pthread_mutex_destroy(&queue_mutex_);
 }
 
@@ -137,10 +407,20 @@ void TelegramClient::stopWorker() {
     if (worker_running) pthread_join(worker_, nullptr);
     if (parser_running) pthread_join(parser_, nullptr);
     if (cache_running) pthread_join(cache_worker_, nullptr);
+    media_cache_.invalidate(); // Never reuse late file jobs with a new TD session.
+    if (applying_snapshot_) json_decref(static_cast<json_t*>(applying_snapshot_));
+    applying_snapshot_ = nullptr;
 
-    pthread_mutex_lock(&queue_mutex_);
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
     for (void* root : parsed_) json_decref(static_cast<json_t*>(root));
     parsed_.clear(); incoming_.clear(); outgoing_.clear();
+    if (restored_snapshot_) json_decref(static_cast<json_t*>(restored_snapshot_));
+    restored_snapshot_ = nullptr;
+    if (cache_result_) json_decref(static_cast<json_t*>(cache_result_));
+    cache_result_ = nullptr; cache_demand_.pending = false;
+    cached_avatar_requests_.clear(); cached_avatar_results_.clear(); cached_avatar_seen_.clear();
+    incoming_bytes_ = parsed_wire_bytes_ = 0; incoming_priority_ = 0;
+    sampleQueues();
     pthread_mutex_unlock(&queue_mutex_);
 }
 
@@ -154,27 +434,126 @@ void* TelegramClient::parserEntry(void* self) {
     return nullptr;
 }
 
+void TelegramClient::sampleQueues() {
+    performance::collector().queues(incoming_.size(), incoming_bytes_, parsed_.size(), parsed_wire_bytes_, outgoing_.size());
+}
+
 void TelegramClient::runParser() {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Parser);
     int64_t slice_started = sceKernelGetSystemTimeWide();
     while (!stopping_) {
         std::string text;
-        pthread_mutex_lock(&queue_mutex_);
+        int64_t received_at = 0;
+        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
         if (!incoming_.empty()) {
-            text = std::move(incoming_.front()); incoming_.pop_front();
+            text = std::move(incoming_.front().text);
+            incoming_bytes_ -= text.size();
+            received_at = incoming_.front().received;
+            if (incoming_.front().priority && incoming_priority_) --incoming_priority_;
+            incoming_.pop_front();
+            sampleQueues();
         }
         pthread_mutex_unlock(&queue_mutex_);
         if (text.empty()) { sceKernelDelayThread(2000); continue; }
+        const auto raw_wait=performance::now()-received_at;
+        performance::observe(performance::Metric::RawWait, raw_wait);
+        performance::Scope parse_measurement(performance::Metric::Parse);
+        performance::SlowScope slow_parse(performance::SlowPhase::Parse,"invalid_json",text.size());
         json_error_t error;
-        json_t* root = json_loads(text.c_str(), 0, &error);
+        json_t* root = compact_raw_unused_td_update(text);
+        if (!root) root = compact_raw_sticker_sets(text);
+        if (!root) root = compact_raw_chat_update(text);
+        if (!root) root = compact_raw_sticker_items(text);
+        const bool messages_candidate = !root && text.size() >= 2048 &&
+            std::string_view(text.data(), 64).find("\"@type\":\"messages\"") != std::string_view::npos;
+        if (messages_candidate) {
+            const auto compact_started = performance::now();
+            root = compact_raw_messages(text);
+            performance::observe(performance::Metric::MessagesCompactUs, performance::now() - compact_started);
+        }
+        if (messages_candidate)
+            performance::observe(root ? performance::Metric::MessagesCompactHit : performance::Metric::MessagesCompactMiss, (int64_t)text.size());
+        // A big stickerSet/stickers reply that stays on Jansson means the raw
+        // compaction rejected it; the log shows how often and how large.
+        const bool sticker_candidate = !root && text.size() >= 2048 &&
+            (std::string_view(text.data(), 128).find("\"stickerSet\"") != std::string_view::npos ||
+             std::string_view(text.data(), 128).find("\"stickers\"") != std::string_view::npos);
+        if (sticker_candidate) performance::observe(performance::Metric::StickerCompactMiss, (int64_t)text.size());
+        if (!root) root = json_loads(text.c_str(), 0, &error);
         if (!root) {
             root = json_pack("{s:s,s:i,s:s}", "@type", "error", "code", 500,
                              "message", "Unable to parse TDLib response");
         }
         if (root) {
+            json_object_set_new(root, "@received_at", json_integer(received_at));
+            if (performance::enabled) json_object_set_new(root, "@wire_bytes", json_integer(text.size()));
+            parse_measurement.finish();
+            slow_parse.name(json_str(root,"@type")); slow_parse.finish();
+            if (auto* compact=compact_unused_td_update(root)) {
+                release_td_json(root);root=compact;
+            }
+            // Icon replies need one static preview, not a whole sticker set on UI.
+            if (!std::strcmp(json_str(json_object_get(root,"@extra"),"kind"),"sticker_pack_icon") &&
+                !std::strcmp(json_str(root,"@type"),"stickerSet")) {
+                auto* compact=json_object();
+                for (const char* field:{"@type","@extra","@received_at","@wire_bytes","id"})
+                    json_object_set(compact,field,json_object_get(root,field));
+                if (auto* preview=sticker_pack_preview(root))
+                    json_object_set_new(compact,"thumbnail",json_pack("{s:{s:s},s:O}","format","@type","thumbnailFormatPng","file",preview));
+                release_td_json(root);root=compact;
+            }
+            // The pack list needs only id, title and one static preview per set.
+            // Trim the ~300 KB reply here so UI copy/save/release stay small.
+            if (!std::strcmp(json_str(json_object_get(root,"@extra"),"kind"),"sticker_packs") &&
+                !std::strcmp(json_str(root,"@type"),"stickerSets")) {
+                auto* compact=json_object();
+                for (const char* field:{"@type","@extra","@received_at","@wire_bytes"})
+                    json_object_set(compact,field,json_object_get(root,field));
+                auto* sets=json_array();
+                size_t i; json_t* set;
+                json_array_foreach(json_object_get(root,"sets"),i,set) {
+                    auto* entry=json_pack("{s:s,s:O?,s:O?}","@type","stickerSetInfo","id",json_object_get(set,"id"),"title",json_object_get(set,"title"));
+                    if (auto* preview=sticker_pack_preview(set))
+                        json_object_set_new(entry,"thumbnail",json_pack("{s:{s:s},s:O}","format","@type","thumbnailFormatPng","file",preview));
+                    if (entry) json_array_append_new(sets,entry);
+                }
+                json_object_set_new(compact,"sets",sets);
+                release_td_json(root);root=compact;
+            }
+            // Deliver immediately: filesystem validation must never hold up the
+            // serial protocol stream. The UI queues file-only copies separately.
             // Transfer ownership: only the UI may access/decref this object next.
-            pthread_mutex_lock(&queue_mutex_);
-            enqueue_td_event(parsed_, root);
+            auto* diagnostic_extra=json_object_get(root,"@extra");
+            const bool diagnostic_history=!std::strcmp(json_str(diagnostic_extra,"kind"),"history") && json_is_true(json_object_get(diagnostic_extra,"first"));
+            const bool diagnostic_forum=!std::strcmp(json_str(diagnostic_extra,"kind"),"forum_check");
+            const auto sent_at=json_i53(diagnostic_extra,"send_at");
+            if ((diagnostic_history || diagnostic_forum) && sent_at>0 && received_at>=sent_at)
+                performance::observe(diagnostic_history ? performance::Metric::FirstHistoryResponse : performance::Metric::ForumResponse,received_at-sent_at);
+            if (diagnostic_history) performance::observe(performance::Metric::FirstHistoryParse,performance::now()-received_at-raw_wait);
+            if (diagnostic_history || (!std::strcmp(json_str(diagnostic_extra,"kind"),"history") && !std::strcmp(json_str(root,"@type"),"error")))
+                foreground_until_.store(0);
+            auto metadata=describe_td_event(root);
+            if (metadata.history && json_is_true(json_object_get(json_object_get(root,"@extra"),"first"))) {
+                performance::observe(performance::Metric::FirstHistoryRawWait,raw_wait);
+                metadata.parsed=performance::now();
+                json_object_set_new(root,"@parsed_at",json_integer(metadata.parsed));
+            }
+            // Persisting a history reply copies every message (50-150 ms for 80 KB);
+            // do it here, off the UI thread, while this thread still owns the tree.
+            if (!logging_out_ && !std::strcmp(json_str(root,"@type"),"messages")) {
+                ui_cache_.rememberMessages(root,text.size());
+                json_object_set_new(root,"@ui_remembered",json_true());
+            }
+            // The pack list copy (~100 ms under load) belongs on this thread too.
+            if (!logging_out_ && !std::strcmp(json_str(root,"@type"),"stickerSets") &&
+                !std::strcmp(json_str(json_object_get(root,"@extra"),"kind"),"sticker_packs")) {
+                ui_cache_.saveStickerPacks(root);
+                json_object_set_new(root,"@ui_saved",json_true());
+            }
+            performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+            parsed_wire_bytes_ += metadata.bytes;
+            parsed_wire_bytes_ -= parsed_.enqueue(root,metadata);
+            sampleQueues();
             pthread_mutex_unlock(&queue_mutex_);
         }
         if (sceKernelGetSystemTimeWide() - slice_started >= 2000) {
@@ -184,63 +563,205 @@ void TelegramClient::runParser() {
     }
 }
 
+bool TelegramClient::cacheLoadProceed(void* opaque) {
+    auto* self = static_cast<TelegramClient*>(opaque);
+    int64_t pause_started=0;
+    while (!self->stopping_) {
+        performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+        const size_t pending = self->incoming_.size() + self->parsed_.size();
+        const bool congested = pending >= 32;
+        // Live events waiting for the Parser/UI mean the cores are shared with
+        // this load: halve its duty cycle (2 ms work, 2 ms rest) instead of 80%.
+        const bool busy = pending >= 8;
+        pthread_mutex_unlock(&self->queue_mutex_);
+        const auto now = sceKernelGetSystemTimeWide();
+        if (now>=self->interaction_until_.load() && now>=self->cache_service_at_) {
+            self->cache_service_at_=now+10000;
+            self->prepareCachedAvatar();
+            auto permitted=[](void* opaque)->bool {
+                auto* client=static_cast<TelegramClient*>(opaque);
+                return !client->stopping_ && sceKernelGetSystemTimeWide()>=client->interaction_until_.load();
+            };
+            const auto started=performance::now();
+            if (self->media_cache_.validateNext(permitted,self))
+                performance::observe(performance::Metric::CacheService,performance::now()-started);
+        }
+        const auto after_service=sceKernelGetSystemTimeWide();
+        if (!congested && !self->uploads_pending_ && after_service >= self->interaction_until_.load()) {
+            if (now-self->cache_load_slice_ >= 2000) {
+                sceKernelDelayThread(busy ? 2000 : 500); self->cache_load_slice_ = sceKernelGetSystemTimeWide();
+            }
+            if (pause_started) performance::observe(performance::Metric::CachePause,performance::now()-pause_started);
+            return !self->stopping_;
+        }
+        if (!pause_started) pause_started=performance::now();
+        sceKernelDelayThread(2000);
+    }
+    if (pause_started) performance::observe(performance::Metric::CachePause,performance::now()-pause_started);
+    return false;
+}
+
 void* TelegramClient::cacheEntry(void* opaque) {
     auto* self = static_cast<TelegramClient*>(opaque);
-    cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Parser);
-    int64_t next = 0;
-    while (!self->stopping_) {
-        int64_t now = sceKernelGetSystemTimeWide();
-        if (now >= next) {
-            self->media_cache_.flush(); self->ui_cache_.flush();
-            next = now + 5000000;
+    cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Storage);
+    if (self->restore_on_cache_worker_) {
+        auto* snapshot = static_cast<json_t*>(self->prepareCache());
+        performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+        if (!self->stopping_) { self->restored_snapshot_ = snapshot; snapshot = nullptr; }
+        pthread_mutex_unlock(&self->queue_mutex_);
+        if (snapshot) json_decref(snapshot);
+        if (!self->stopping_) {
+            performance::Scope details(performance::Metric::CacheDetailsLoad);
+            if (!self->full_cache_loaded_) { self->ui_cache_.load(cacheLoadProceed, self); self->full_cache_loaded_ = true; }
+            self->media_cache_.load();
         }
-        self->flushUploadLogs();
-        sceKernelDelayThread(100000);
     }
-    self->media_cache_.flush(); self->ui_cache_.flush();
+    int64_t next = sceKernelGetSystemTimeWide() + 30000000;
+    int64_t next_performance = performance::now() + 5000000;
+    // Leave the card to startup and the first chat list before sweeping.
+    const int64_t sweep_after = sceKernelGetSystemTimeWide() + 20000000;
+    // A slow card must not be worn for the whole session: sweep in a short window only.
+    const int64_t sweep_until = sweep_after + 40000000;
+    auto proceed = [](void* opaque) -> bool {
+        auto* self = static_cast<TelegramClient*>(opaque);
+        return !self->stopping_ && !self->uploads_pending_ && !cpu_scheduler::videoActive() &&
+            sceKernelGetSystemTimeWide() >= self->interaction_until_.load();
+    };
+    while (!self->stopping_) {
+        // Media and cache files share the same Vita storage device. Delay
+        // validation, directory sweeps and snapshot writes during playback.
+        if (cpu_scheduler::videoActive()) { sceKernelDelayThread(100000); continue; }
+        int64_t now = sceKernelGetSystemTimeWide();
+        if (now < self->interaction_until_.load()) { sceKernelDelayThread(10000); continue; }
+        self->prepareCachedDetails();
+        self->prepareCachedAvatar();
+        auto validate = [](void* opaque) -> bool {
+            auto* client = static_cast<TelegramClient*>(opaque);
+            return !client->stopping_ && !cpu_scheduler::videoActive() &&
+                sceKernelGetSystemTimeWide() >= client->interaction_until_.load();
+        };
+        const bool checked_file = self->media_cache_.validateNext(validate, self);
+        // Old media directories are emptied only while nothing interactive waits.
+        if (!checked_file && validate(self) && !self->uploads_pending_ &&
+            now >= sweep_after && now < sweep_until && now >= self->foreground_until_.load())
+            self->trash_.step(now); // Self-throttled; the idle 100 ms sleep below is enough.
+        self->flushUploadLogs();
+        if (now >= next_performance) {
+            const int64_t sampled = performance::now();
+            performance::flush("ux0:data/vitagram/performance.log", "ux0:data/vitagram/performance.previous.log", VITAGRAM_VERSION, sampled);
+            next_performance = sceKernelGetSystemTimeWide() + 5000000;
+        }
+        if (now >= next) {
+            performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+            bool congested = self->incoming_.size()+self->parsed_.size() >= 128;
+            pthread_mutex_unlock(&self->queue_mutex_);
+            if (!congested) {
+                self->media_cache_.flush(proceed, self);
+                self->ui_cache_.flush(proceed, self);
+                next = sceKernelGetSystemTimeWide() + 90000000;
+            }
+        }
+        sceKernelDelayThread(checked_file ? 2000 : 100000);
+    }
+    // Caches are best-effort: keep the last atomic snapshot instead of blocking
+    // shutdown with a fresh full save. An in-flight write observes stopping_.
     self->flushUploadLogs();
+    performance::flush("ux0:data/vitagram/performance.log", "ux0:data/vitagram/performance.previous.log", VITAGRAM_VERSION, performance::now());
     return nullptr;
 }
 
 void TelegramClient::runWorker() {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Network);
     // This port's TDLib scheduler is single-threaded: keep every TD call here.
+    // Callback registration doesn't change verbosity. The TDLib default is 5
+    // and formats/writes detailed protocol logs synchronously on this thread.
+    td_json_client_execute(nullptr, "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":1}");
+    // TDLib must not hold files in a directory while it is swapped out.
+    media_trash::rotate();
     client_ = td_json_client_create();
     if (!client_) {
-        pthread_mutex_lock(&queue_mutex_);
-        incoming_.push_back("{\"@type\":\"error\",\"code\":500,\"message\":\"TDLib creation failed\"}");
+        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        incoming_.push_back({"{\"@type\":\"error\",\"code\":500,\"message\":\"TDLib creation failed\"}", sceKernelGetSystemTimeWide()});
+        incoming_bytes_ += incoming_.back().text.size(); sampleQueues();
         pthread_mutex_unlock(&queue_mutex_);
         return;
     }
+    int64_t last_receive = 0;
     while (!stopping_) {
-        std::deque<std::string> requests;
-        pthread_mutex_lock(&queue_mutex_);
+        std::deque<Request> requests;
+        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
         // Bound each send batch; receiving updates and yielding must not be
         // postponed behind a large burst of thumbnail/history requests.
-        const bool congested = incoming_.size() + parsed_.size() >= 128;
-        for (int i = 0; !congested && i < request_batch_size_.load() && !outgoing_.empty(); ++i) {
+        // Оптимизация: увеличиваем буфер с 128 до 200 запросов для более быстрой загрузки чатов
+        const bool congested = incoming_.size() + parsed_.size() >= 200;
+        const bool interactive = sceKernelGetSystemTimeWide() < interaction_until_.load();
+        bool foreground = sceKernelGetSystemTimeWide() < foreground_until_.load();
+        for (int i = 0; i < (interactive ? 1 : request_batch_size_.load()) && !outgoing_.empty(); ++i) {
             int64_t now = sceKernelGetSystemTimeWide();
-            auto best = outgoing_.begin();
+            auto best = outgoing_.end();
             auto score = [&](const Request& request) {
                 // Aging prevents background requests from starving indefinitely.
                 return request.priority + std::min<int64_t>(4, (now-request.queued)/2000000);
             };
-            for (auto it = outgoing_.begin(); it != outgoing_.end(); ++it)
-                if (score(*it) > score(*best)) best = it;
-            requests.push_back(std::move(best->text)); outgoing_.erase(best);
+            for (auto it = outgoing_.begin(); it != outgoing_.end(); ++it) {
+                if (!td_request_allowed(it->priority,it->backlog_exempt,congested,interactive,foreground)) continue;
+                if (best == outgoing_.end() || score(*it) > score(*best)) best = it;
+            }
+            if (best == outgoing_.end()) break;
+            performance::observe(performance::Metric::RequestWait, now-best->queued);
+            if (best->first_history) {
+                performance::observe(performance::Metric::FirstHistoryRequestWait,now-best->queued);
+                // Until the reply arrives, background downloads stay in the app queue.
+                foreground_until_.store(now + 10000000); foreground = true;
+            }
+            if (best->forum_check) performance::observe(performance::Metric::ForumRequestWait,now-best->queued);
+            best->selected=now;
+            requests.push_back(std::move(*best)); outgoing_.erase(best);
         }
+        sampleQueues();
         pthread_mutex_unlock(&queue_mutex_);
-        for (const auto& request : requests) td_json_client_send(client_, request.c_str());
+        for (auto& request : requests) {
+            // Only tracked requests are stamped, outside the shared mutex.
+            // @extra is echoed by TDLib, correlating the reply without a map.
+            const bool tracked=performance::enabled && (request.first_history || request.forum_check);
+            json_t* stamped=nullptr;
+            if (tracked) {
+                stamped=json_loads(request.text.c_str(),0,nullptr);
+                auto* extra=json_object_get(stamped,"@extra");
+                if (json_is_object(extra)) {
+                    json_object_set_new(extra,"selected_at",json_integer(request.selected));
+                    json_object_set_new(extra,"send_at",json_integer(performance::now()));
+                    char* dumped=json_dumps(stamped,JSON_COMPACT | JSON_ENSURE_ASCII);
+                    if (dumped) { request.text=dumped;std::free(dumped); }
+                }
+                json_decref(stamped);
+            }
+            const auto send_started=performance::now();
+            { performance::Scope measurement(performance::Metric::Send);
+              td_json_client_send(client_, request.text.c_str()); }
+            if (tracked) performance::observe(request.first_history ? performance::Metric::FirstHistorySend : performance::Metric::ForumSend,performance::now()-send_started);
+        }
         bool received = false;
         // In the single-threaded Vita port receive() ALSO advances socket I/O.
         // Backpressure new requests, never the scheduler. Drain response bursts
         // within a time budget; the parser coalesces file-progress snapshots.
         int64_t receive_started = sceKernelGetSystemTimeWide();
         for (int n = 0; n < 32; ++n) {
+            int64_t receive_time = performance::now();
+            if (last_receive) performance::observe(performance::Metric::ReceiveGap, receive_time-last_receive);
+            last_receive = receive_time;
             const char* response = td_json_client_receive(client_, 0.0);
+            performance::observe(performance::Metric::Receive, performance::now()-receive_time);
             if (response) {
-                pthread_mutex_lock(&queue_mutex_);
-                incoming_.emplace_back(response);
+                performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+                // Replies to the open chat (history, reactions, forum) jump the
+                // startup update flood; TDLib writes "@extra" at the end.
+                const bool priority = td_reply_is_foreground(response);
+                Incoming entry{response, sceKernelGetSystemTimeWide(), priority};
+                incoming_bytes_ += entry.text.size();
+                if (priority) { incoming_.insert(incoming_.begin() + incoming_priority_, std::move(entry)); ++incoming_priority_; }
+                else incoming_.push_back(std::move(entry));
+                sampleQueues();
                 pthread_mutex_unlock(&queue_mutex_);
                 received = true;
             } else break;
@@ -252,13 +773,18 @@ void TelegramClient::runWorker() {
     client_ = nullptr;
 }
 
-bool TelegramClient::start() {
+bool TelegramClient::start(bool defer_cache_worker) {
+    if (worker_started_) return true;
     if (VITAGRAM_API_ID <= 0 || std::strstr(VITAGRAM_API_HASH, "PUT_YOUR")) {
         error_ = "Edit src/config.h and set your Telegram api_id/api_hash";
         status_ = "Configuration required";
         return false;
     }
 
+    if (account_cleanup::pending() && !account_cleanup::purge()) {
+        error_ = status_ = "Не удалось удалить данные прошлого аккаунта. Освободите доступ к карте и перезапустите приложение.";
+        return false;
+    }
     sceIoMkdir("ux0:data/vitagram", 0777);
     sceIoMkdir(VITAGRAM_DB_DIR, 0777);
     sceIoMkdir(VITAGRAM_FILES_DIR, 0777);
@@ -267,25 +793,44 @@ bool TelegramClient::start() {
     pthread_attr_t attributes;
     stopping_ = false;
     pthread_attr_init(&attributes);
-    pthread_attr_setstacksize(&attributes, 2 * 1024 * 1024);
+    // Оптимизация: уменьшение размера стека с 2МБ до 1МБ экономит ~3-4МБ RAM (3 потока)
+    pthread_attr_setstacksize(&attributes, 1 * 1024 * 1024);
     int worker_result = pthread_create(&worker_, &attributes, workerEntry, this);
     int parser_result = worker_result == 0 ? pthread_create(&parser_, &attributes, parserEntry, this) : -1;
-    int cache_result = parser_result == 0 ? pthread_create(&cache_worker_, &attributes, cacheEntry, this) : -1;
     pthread_attr_destroy(&attributes);
     worker_started_ = worker_result == 0;
     parser_started_ = parser_result == 0;
-    cache_worker_started_ = cache_result == 0;
-    if (!worker_started_ || !parser_started_ || !cache_worker_started_) {
+    if (!worker_started_ || !parser_started_) {
         error_ = "Telegram worker creation failed";
         stopWorker();
         return false;
     }
+    if (!defer_cache_worker && !startCacheWorker()) { stopWorker(); return false; }
     status_ = "TDLib created; waiting for response...";
     sendRaw("{\"@type\":\"getAuthorizationState\",\"@extra\":\"startup_probe\"}");
     return true;
 }
 
+bool TelegramClient::startCacheWorker() {
+    if (cache_worker_started_) return true;
+    if (stopping_) return false;
+    pthread_attr_t attributes;
+    pthread_attr_init(&attributes);
+    // Оптимизация: уменьшение размера стека с 2МБ до 1МБ экономит ~3-4МБ RAM (3 потока)
+    pthread_attr_setstacksize(&attributes, 1 * 1024 * 1024);
+    int result = pthread_create(&cache_worker_, &attributes, cacheEntry, this);
+    pthread_attr_destroy(&attributes);
+    cache_worker_started_ = result == 0;
+    if (result != 0) {
+        error_ = "Cache worker creation failed";
+        notice_ = error_; notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+        std::fprintf(stderr, "%s: %d\n", error_.c_str(), result);
+    }
+    return result == 0;
+}
+
 void TelegramClient::configureProxy(bool enabled, const std::string& server, int port, const std::string& secret) {
+    cancelProxyCheck();
     proxy_enabled_ = enabled; proxy_server_ = server; proxy_port_ = port; proxy_secret_ = secret;
     if (worker_started_ && tdlib_parameters_sent_) applyProxy();
 }
@@ -304,10 +849,34 @@ void TelegramClient::applyProxy() {
     sendJson(request);
 }
 
-void TelegramClient::sendRaw(const char* json, int priority) {
+void TelegramClient::cancelProxyCheck() {
+    ++proxy_check_generation_;
+    proxy_check_deadline_ = 0; proxy_check_status_.clear();
+}
+
+void TelegramClient::checkProxy(const std::string& server, int port, const std::string& secret) {
+    if (proxy_check_deadline_) return;
+    cancelProxyCheck();
+    if (server.empty() || secret.empty() || port < 1 || port > 65535) {
+        proxy_check_status_ = "Укажите сервер, порт и secret"; return;
+    }
+    if (!worker_started_ || !tdlib_parameters_sent_) {
+        proxy_check_status_ = "Telegram ещё запускается, повторите проверку"; return;
+    }
+    auto* proxy = json_pack("{s:s,s:s,s:i,s:{s:s,s:s}}", "@type", "proxy", "server", server.c_str(),
+        "port", port, "type", "@type", "proxyTypeMtproto", "secret", secret.c_str());
+    auto* request = json_pack("{s:s,s:o}", "@type", "pingProxy", "proxy", proxy);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:i}", "kind", "proxy_check", "generation", proxy_check_generation_));
+    proxy_check_status_ = "Проверка MTProxy...";
+    proxy_check_deadline_ = sceKernelGetSystemTimeWide() + 15000000;
+    sendJson(request);
+}
+
+void TelegramClient::sendRaw(const char* json, int priority, bool first_history, bool backlog_exempt, int32_t file_id, bool forum_check) {
     if (!worker_started_) return;
-    pthread_mutex_lock(&queue_mutex_);
-    outgoing_.push_back({json, priority, sceKernelGetSystemTimeWide()});
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    outgoing_.push_back({json, priority, sceKernelGetSystemTimeWide(),first_history,backlog_exempt,file_id,forum_check});
+    sampleQueues();
     pthread_mutex_unlock(&queue_mutex_);
 }
 
@@ -317,17 +886,34 @@ void TelegramClient::sendJson(void* opaque) {
     if (!std::strcmp(method, "sendMessage") && current_topic_ && !json_object_get(root, "topic_id"))
         json_object_set_new(root, "topic_id", json_pack("{s:s,s:i}", "@type", "messageTopicForum", "forum_topic_id", current_topic_));
     const char* kind = json_str(json_object_get(root, "@extra"), "kind");
+    if (!std::strcmp(kind, "media_upload")) {
+        auto* options = json_object_get(root, "options");
+        if (!json_is_object(options)) {
+            options = json_pack("{s:s}", "@type", "messageSendOptions");
+            json_object_set_new(root, "options", options);
+        }
+        json_object_set_new(options, "sending_id", json_integer(json_i53(json_object_get(root, "@extra"), "token")));
+    }
     int priority = 1;
-    if (!std::strncmp(kind, "reaction_", 9) || !std::strncmp(kind, "sticker_", 8) || !std::strncmp(kind, "forum_", 6)) priority = 4;
-    if (!std::strcmp(method, "getChatHistory") || !std::strcmp(method, "getForumTopicHistory") || !std::strcmp(method, "getForumTopics")) priority = 3;
+    if (!std::strncmp(kind, "poll_", 5) || !std::strncmp(kind, "reaction_", 9) || !std::strncmp(kind, "sticker_", 8) || !std::strncmp(kind, "forum_", 6) || !std::strcmp(kind, "proxy_check")) priority = 4;
+    if (!std::strcmp(method, "getChatHistory") || !std::strcmp(method, "getForumTopicHistory") || !std::strcmp(method, "getForumTopics")) priority = 9;
     else if (!std::strcmp(method, "downloadFile")) priority = json_i53(root, "priority") >= 32 ? 4 : 1;
-    else if (!std::strcmp(method, "cancelDownloadFile") || !std::strcmp(method, "sendMessage")) priority = 4;
+    else if (!std::strcmp(method, "cancelDownloadFile") || !std::strcmp(method, "sendMessage") ||
+             !std::strcmp(method, "openChat") || !std::strcmp(method, "closeChat")) priority = 4;
     else if (!std::strncmp(kind, "refresh_main", 12)) priority = refresh_manual_ ? 3 : 0;
-    else if (!std::strcmp(method, "loadChats")) priority = 2;
+    else if (!std::strncmp(kind,"post_",5)) priority = 4;
+    else if (!std::strcmp(kind,"avatar_metadata")) priority = 3;
+    else if (!std::strcmp(kind,"sticker_pack_icon") || !std::strcmp(kind,"sticker_packs")) priority = 1;
+    // Only the displayed list loads chats (never while a chat is open): it is
+    // what the user looks at, so it must pass the interaction gate.
+    else if (!std::strcmp(method, "loadChats")) priority = 5;
     else if (!std::strcmp(method, "optimizeStorage")) priority = 0;
+    if (!std::strcmp(method,"openChat") || !std::strcmp(method,"closeChat")) priority=10;
+    if (!std::strcmp(kind,"forum_check")) priority=9;
     char* dumped = json_dumps(root, JSON_COMPACT | JSON_ENSURE_ASCII);
     if (dumped) {
-        sendRaw(dumped, priority);
+        sendRaw(dumped, priority,json_is_true(json_object_get(json_object_get(root,"@extra"),"first")),
+            !std::strcmp(method,"loadChats") || !std::strcmp(kind,"visible_avatar") || !std::strcmp(kind,"avatar_metadata"),!std::strcmp(method,"downloadFile") ? (int32_t)json_i53(root,"file_id") : 0,!std::strcmp(kind,"forum_check"));
         std::free(dumped);
     }
     json_decref(root);
@@ -442,7 +1028,9 @@ void TelegramClient::processAuth(void* opaque) {
     } else if (!std::strcmp(type, "authorizationStateWaitEncryptionKey")) {
         sendRaw("{\"@type\":\"checkDatabaseEncryptionKey\",\"encryption_key\":\"\"}");
     } else if (!std::strcmp(type, "authorizationStateWaitPhoneNumber")) {
-        ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); sender_requests_.clear();
+        cache_restore_allowed_ = false;
+        startup_chat_snapshots_.clear();
+        ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); supergroup_forum_.clear(); user_photos_.clear(); sender_requests_.clear();
         folder_windows_.clear(); folders_.clear(); selected_folder_ = 0; user_presence_.clear();
         setInput(InputKind::Phone, "Enter your phone number");
     } else if (!std::strcmp(type, "authorizationStateWaitCode")) {
@@ -458,15 +1046,24 @@ void TelegramClient::processAuth(void* opaque) {
         error_.clear();
         status_ = "Online";
         input_kind_ = InputKind::None;
+        syncOpenedChat();
         requestChatsPage();
+        // Profile photos and thumbnails get per-photo names. Without a file
+        // database every re-download collides with older copies: up to 21
+        // create attempts, each a directory scan. Counter names need one.
+        sendRaw("{\"@type\":\"setOption\",\"name\":\"ignore_file_names\",\"value\":{\"@type\":\"optionValueBoolean\",\"value\":true}}", 10);
         if (current_chat_id_) { history_done_ = false; requestHistoryPage(); }
         next_update_check_ = sceKernelGetSystemTimeWide() + 10000000;
     } else if (!std::strcmp(type, "authorizationStateLoggingOut")) {
-        ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); sender_requests_.clear();
-        folder_windows_.clear(); folders_.clear(); selected_folder_ = 0; user_presence_.clear();
+        logging_out_ = true;
+        if (!account_cleanup::mark()) error_ = "Не удалось сохранить отметку очистки аккаунта";
+        clearAccountMemory();
+        status_ = "Выход из аккаунта...";
     } else if (!std::strcmp(type, "authorizationStateClosed")) {
         closed_ = true;
         ready_ = false;
+        opened_chat_id_ = 0;
+        connection_ready_ = false;
         status_ = "TDLib closed";
     }
 }
@@ -484,6 +1081,12 @@ void TelegramClient::parseUser(void* opaque) {
     std::string last = json_str(user, "last_name");
     if (!last.empty()) { if (!name.empty()) name += " "; name += last; }
     user_names_[id] = name.empty() ? "Удалённый аккаунт" : name;
+    json_t* photo = json_object_get(json_object_get(user, "profile_photo"), "small");
+    json_t* local = json_object_get(photo, "local");
+    auto& avatar = user_photos_[id];
+    avatar.file = (int32_t)json_i53(photo, "id");
+    avatar.path = json_is_true(json_object_get(local, "is_downloading_completed")) ? json_str(local, "path") : "";
+    avatar.fresh = true;
     if (json_is_object(json_object_get(user, "status"))) parseUserStatus(id, json_object_get(user, "status"));
     if (json_is_object(json_object_get(user, "type")))
         user_presence_[id].bot = !std::strcmp(json_str(json_object_get(user, "type"), "@type"), "userTypeBot");
@@ -531,6 +1134,40 @@ std::string TelegramClient::senderName(const MessageItem& message) const {
     return "Участник";
 }
 
+std::string TelegramClient::senderAvatar(const MessageItem& message) const {
+    if (message.sender_chat) {
+        for (const auto& chat : known_chats_) if (chat.id == message.sender_id) return chat.avatar_path;
+    } else {
+        auto it = user_photos_.find(message.sender_id);
+        if (it != user_photos_.end()) return it->second.path;
+    }
+    return "";
+}
+
+void TelegramClient::ensureSenderMedia(const MessageItem& message) {
+    performance::SlowScope slow(performance::SlowPhase::Ui,"ensure_sender_media");
+    if (!ready_ || !message.sender_id || !currentChatIsGroup() || message.outgoing) return;
+    bool fresh = false; int32_t file = 0; std::string path;
+    if (message.sender_chat) {
+        for (const auto& chat : known_chats_) if (chat.id == message.sender_id) {
+            fresh = !chat.cached_metadata; file = chat.avatar_file_id; path = chat.avatar_path; break;
+        }
+    } else {
+        auto it = user_photos_.find(message.sender_id);
+        if (it != user_photos_.end()) { fresh = it->second.fresh; file = it->second.file; path = it->second.path; }
+    }
+    if (!fresh) {
+        std::string key = std::string(message.sender_chat ? "c" : "u") + std::to_string(message.sender_id);
+        int64_t now = sceKernelGetSystemTimeWide();
+        if (now >= sender_requests_[key]) {
+            sender_requests_[key] = now + 10000000;
+            sendJson(json_pack("{s:s,s:I,s:s}", "@type", message.sender_chat ? "getChat" : "getUser",
+                message.sender_chat ? "chat_id" : "user_id", (json_int_t)message.sender_id, "@extra", "sender_lookup"));
+        }
+    }
+    if (path.empty()) requestFile(file, 8);
+}
+
 void TelegramClient::parseChat(void* opaque) {
     json_t* chat = (json_t*)opaque;
     ChatItem item;
@@ -575,55 +1212,28 @@ void TelegramClient::parseChat(void* opaque) {
 
 static void parse_reactions(MessageItem& message, json_t* info) {
     message.reactions.clear();
-
-    // 1. Primary check: interaction_info -> reactions (Original logic)
-    json_t* reactions_obj = json_object_get(info, "interaction_info");
-    if (json_is_object(reactions_obj)) {
-        json_t* reactions = json_object_get(reactions_obj, "reactions");
-        if (json_is_object(reactions) || json_is_array(reactions)) {
-            if (json_is_object(reactions)) {
-                // Check for a direct 'reactions' field if it's an object
-                json_t* reactions_array = json_object_get(reactions, "reactions");
-                if (json_is_array(reactions_array)) {
-                    size_t i; json_t* reaction;
-                    json_array_foreach(reactions_array, i, reaction) {
-                        json_t* type = json_object_get(reaction, "type");
-                        const char* kind = json_str(type, "@type");
-                        std::string emoji = !std::strcmp(kind, "reactionTypeEmoji") ? json_str(type, "emoji") :
-                            !std::strcmp(kind, "reactionTypePaid") ? "Stars" : "Custom";
-                        message.reactions.push_back({emoji, (int)json_i53(reaction, "total_count"), json_is_true(json_object_get(reaction, "is_chosen"))});
-                    }
-                }
-            } else if (json_is_array(reactions)) {
-                // Fallback for simple array structure
-                size_t i; json_t* reaction;
-                json_array_foreach(reactions, i, reaction) {
-                    json_t* type = json_object_get(reaction, "type");
-                    const char* kind = json_str(type, "@type");
-                    std::string emoji = !std::strcmp(kind, "reactionTypeEmoji") ? json_str(type, "emoji") :
-                        !std::strcmp(kind, "reactionTypePaid") ? "Stars" : "Custom";
-                    message.reactions.push_back({emoji, (int)json_i53(reaction, "total_count"), json_is_true(json_object_get(reaction, "is_chosen"))});
-                }
-            }
-        }
+    auto* nested=json_object_get(info,"interaction_info");
+    if (nested) info=nested;
+    auto* reactions=json_object_get(info,"reactions");
+    if (json_is_object(reactions)) reactions=json_object_get(reactions,"reactions");
+    size_t i;json_t* reaction;
+    json_array_foreach(reactions,i,reaction) {
+        auto* type=json_object_get(reaction,"type");
+        const char* kind=json_str(type,"@type");
+        const auto custom=json_i53(type,"custom_emoji_id");
+        std::string emoji=!std::strcmp(kind,"reactionTypeEmoji") ? json_str(type,"emoji") :
+            !std::strcmp(kind,"reactionTypePaid") ? "Stars" : "Custom";
+        if (emoji.empty()) continue;
+        message.reactions.push_back({emoji,(int)json_i53(reaction,"total_count"),json_is_true(json_object_get(reaction,"is_chosen")),custom});
     }
+}
 
-    // 2. Secondary check: Check for a direct 'reactions' field at the root level of the info object (less likely, but safe)
-    json_t* reactions_direct = json_object_get(info, "reactions");
-    if (json_is_object(reactions_direct)) {
-        json_t* reactions_array = json_object_get(reactions_direct, "reactions");
-        if (json_is_array(reactions_array)) {
-            // Logic from previous block repeated for consistency
-            size_t i; json_t* reaction;
-            json_array_foreach(reactions_array, i, reaction) {
-                json_t* type = json_object_get(reaction, "type");
-                const char* kind = json_str(type, "@type");
-                std::string emoji = !std::strcmp(kind, "reactionTypeEmoji") ? json_str(type, "emoji") :
-                    !std::strcmp(kind, "reactionTypePaid") ? "Stars" : "Custom";
-                message.reactions.push_back({emoji, (int)json_i53(reaction, "total_count"), json_is_true(json_object_get(reaction, "is_chosen"))});
-            }
-        }
-    }
+static void parse_transcription(MessageItem& message, json_t* note) {
+    json_t* result = json_object_get(note, "speech_recognition_result");
+    const char* type = json_str(result, "@type");
+    message.transcription_pending = !std::strcmp(type, "speechRecognitionResultPending");
+    message.transcription = !std::strcmp(type, "speechRecognitionResultText") ? json_str(result, "text") :
+        message.transcription_pending ? json_str(result, "partial_text") : "";
 }
 
 
@@ -648,24 +1258,97 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
     } else if (out.outgoing && out.id > 0 && out.id <= read_outbox_[json_i53(msg, "chat_id")]) out.delivery = DeliveryState::Read;
     json_t* content = json_object_get(msg, "content");
     const char* type = json_is_object(content) ? json_str(content, "@type") : "";
-    if (!std::strcmp(type, "messageText")) {
+    if (!std::strcmp(type, "messagePoll")) {
+        out.poll = PollData::parse(json_object_get(content, "poll"));
+        out.media_label = out.poll.quiz ? "Викторина" : "Опрос";
+        out.text = out.poll.question;
+    } else if (!std::strcmp(type, "messageRichMessage")) {
+        auto* blocks = json_object_get(json_object_get(content, "message"), "blocks");
+        rich_message::blocks(out.text, blocks);
+        auto visit = [&](json_t* block) {
+            const char* block_type = json_str(block, "@type");
+            const char* media_type = nullptr;
+            const char* media_key = nullptr;
+            if (!std::strcmp(block_type, "pageBlockPhoto")) { media_type = "messagePhoto"; media_key = "photo"; }
+            else if (!std::strcmp(block_type, "pageBlockVideo")) { media_type = "messageVideo"; media_key = "video"; }
+            else if (!std::strcmp(block_type, "pageBlockAnimation")) { media_type = "messageAnimation"; media_key = "animation"; }
+            else if (!std::strcmp(block_type, "pageBlockAudio")) { media_type = "messageAudio"; media_key = "audio"; }
+            else if (!std::strcmp(block_type, "pageBlockVoiceNote")) { media_type = "messageVoiceNote"; media_key = "voice_note"; }
+            else if (!std::strcmp(block_type, "pageBlockDocument")) { media_type = "messageDocument"; media_key = "document"; }
+            if (!media_type) return;
+            const char* label = !std::strcmp(media_type, "messagePhoto") ? "Фото" :
+                !std::strcmp(media_type, "messageVideo") ? "Видео" :
+                !std::strcmp(media_type, "messageAnimation") ? "GIF" :
+                !std::strcmp(media_type, "messageAudio") ? "Аудио" :
+                !std::strcmp(media_type, "messageVoiceNote") ? "Голосовое" : "Файл";
+            if (out.media_label.find(label) == std::string::npos) {
+                if (!out.media_label.empty()) out.media_label += " · ";
+                out.media_label += label;
+            }
+            auto* media = json_object_get(block, media_key);
+            if (!json_is_object(media)) return;
+            auto* nested_content = json_pack("{s:s}", "@type", media_type);
+            json_object_set(nested_content, media_key, media);
+            auto* nested_message = json_pack("{s:o}", "content", nested_content);
+            auto parsed = parseMessage(nested_message);
+            json_decref(nested_message);
+            out.photos.insert(out.photos.end(), parsed.photos.begin(), parsed.photos.end());
+            if (parsed.animation && !out.animation) {
+                out.animation = true; out.video = parsed.video;
+                out.video_duration = parsed.video_duration;
+                out.video_width = parsed.video_width; out.video_height = parsed.video_height;
+                out.video_alternative = parsed.video_alternative;
+                out.animation_file_id = parsed.animation_file_id;
+                out.animation_size = parsed.animation_size; out.animation_downloaded = parsed.animation_downloaded;
+                out.animation_path = std::move(parsed.animation_path); out.animation_error = std::move(parsed.animation_error);
+                out.media_file_id = parsed.media_file_id; out.media_path = std::move(parsed.media_path);
+            }
+            if (parsed.voice && !out.voice) {
+                out.voice = true; out.audio = parsed.audio;
+                out.audio_title = std::move(parsed.audio_title); out.audio_performer = std::move(parsed.audio_performer);
+                out.voice_duration = parsed.voice_duration; out.voice_file_id = parsed.voice_file_id;
+                out.voice_size = parsed.voice_size; out.voice_downloaded = parsed.voice_downloaded;
+                out.voice_path = std::move(parsed.voice_path); out.voice_error = std::move(parsed.voice_error);
+            }
+            if (parsed.document && !out.document) {
+                out.document = true; out.document_name = std::move(parsed.document_name);
+                out.document_size = parsed.document_size; out.document_downloaded = parsed.document_downloaded;
+                if (!out.media_file_id) { out.media_file_id = parsed.media_file_id; out.media_path = std::move(parsed.media_path); }
+            }
+        };
+        rich_message::visit_blocks(blocks, visit);
+        if (out.photos.size() > 1) {
+            auto position = out.media_label.find("Фото");
+            if (position != std::string::npos)
+                out.media_label.replace(position, std::strlen("Фото"), std::to_string(out.photos.size()) + " фото");
+        }
+    } else if (!std::strcmp(type, "messageText")) {
         json_t* ft = json_object_get(content, "text");
         out.text = json_is_object(ft) ? json_str(ft, "text", "") : "";
     } else if (!std::strcmp(type, "messageAnimation") || !std::strcmp(type, "messageVideo") || !std::strcmp(type, "messageVideoNote")) {
         out.animation = true;
         out.video = std::strcmp(type, "messageAnimation") != 0;
         out.video_note = !std::strcmp(type, "messageVideoNote");
-        out.text = std::string(out.video_note ? "[video note] " : out.video ? "[video] " : "[GIF] ") + json_str(json_object_get(content, "caption"), "text");
+        out.media_label = out.video_note ? "Видеосообщение" : out.video ? "Видео" : "GIF";
+        out.text = json_str(json_object_get(content, "caption"), "text");
         json_t* animation = json_object_get(content, out.video_note ? "video_note" : out.video ? "video" : "animation");
+        if (out.video_note) parse_transcription(out, animation);
         out.video_duration = std::max<int64_t>(0, json_i53(animation, "duration"));
         json_t* file = json_object_get(animation, out.video ? "video" : "animation");
+        int64_t w = json_i53(animation, "width"), h = json_i53(animation, "height");
+        if (out.video_note) w = h = json_i53(animation, "length");
+        if (out.video && !out.video_note) {
+            auto quality = VideoQuality::minimum(content);
+            file = quality.file; w = quality.width; h = quality.height;
+            out.video_alternative = quality.alternative;
+        }
+        out.video_width = (int)w; out.video_height = (int)h;
         out.animation_file_id = (int32_t)json_i53(file, "id");
         out.animation_size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
         json_t* local = json_object_get(file, "local");
         out.animation_downloaded = json_i53(local, "downloaded_size");
         if (json_is_true(json_object_get(local, "is_downloading_completed"))) out.animation_path = json_str(local, "path");
-        int64_t w = json_i53(animation, "width"), h = json_i53(animation, "height");
-        if (out.video_note) w = h = json_i53(animation, "length");
+
         if (out.animation_size > (out.video ? 128 : 20) * 1024 * 1024) out.animation_error = out.video ? "Video limit: 128 MiB" : "GIF limit: 20 MiB";
         else if (w > 1280 || h > 1280 || (w > 0 && h > 0 && w * h > 1280 * 720))
             out.animation_error = "Video/animation exceeds 720p pixel limit";
@@ -684,7 +1367,8 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
     } else if (!std::strcmp(type, "messagePhoto")) {
         json_t* caption = json_object_get(content, "caption");
         const char* caption_text = json_is_object(caption) ? json_str(caption, "text") : "";
-        out.text = caption_text[0] ? caption_text : "[photo]";
+        out.media_label = "Фото";
+        out.text = caption_text;
         json_t* photo = json_object_get(content, "photo");
         json_t* sizes = json_is_object(photo) ? json_object_get(photo, "sizes") : nullptr;
         if (json_is_array(sizes) && json_array_size(sizes) != 0) {
@@ -738,7 +1422,8 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
             json_t* local = json_object_get(animation, "local");
             if (json_is_true(json_object_get(local, "is_downloading_completed"))) out.animation_path = json_str(local, "path");
         }
-        out.text = std::string(json_str(sticker, "emoji")) + (animated ? " [animated sticker]" : " [sticker]");
+        out.media_label = animated ? "Анимированный стикер" : "Стикер";
+        out.text = json_str(sticker, "emoji");
         json_t* thumb = json_is_object(sticker) ? json_object_get(sticker, "thumbnail") : nullptr;
         json_t* file = animated ? json_object_get(thumb, "file") : json_object_get(sticker, "sticker");
         if (animated) {
@@ -756,6 +1441,7 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         out.voice = true;
         out.audio = !std::strcmp(type, "messageAudio");
         json_t* note = json_object_get(content, out.audio ? "audio" : "voice_note");
+        if (!out.audio) parse_transcription(out, note);
         json_t* file = json_object_get(note, out.audio ? "audio" : "voice");
         if (out.audio) {
             out.audio_title = json_str(note, "title");
@@ -782,25 +1468,44 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
             out.voice_path.clear();
         }
         if (out.voice_size > (out.audio ? 128 : 20) * 1024 * 1024) out.voice_error = out.audio ? "Audio limit: 128 MiB" : "Voice limit: 20 MiB";
-        out.text = out.audio ? "[audio] " + out.audio_title + (out.audio_performer.empty() ? "" : " - " + out.audio_performer)
-            : "[voice] " + std::to_string(out.voice_duration) + " s";
+        out.media_label = out.audio ? "Аудио" : "Голосовое";
+        out.text = out.audio ? out.audio_title + (out.audio_performer.empty() ? "" : " - " + out.audio_performer) : "";
         std::string caption = json_str(json_object_get(content, "caption"), "text");
         if (!caption.empty()) out.text += "\n" + caption;
     }
-    else if (!std::strcmp(type, "messageDocument")) out.text = "[file]";
+    else if (!std::strcmp(type, "messageDocument")) {
+        out.document = true;
+        json_t* document = json_object_get(content, "document");
+        json_t* file = json_object_get(document, "document");
+        json_t* local = json_object_get(file, "local");
+        out.document_name = json_str(document, "file_name");
+        out.media_file_id = (int32_t)json_i53(file, "id");
+        out.document_size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
+        out.document_downloaded = json_i53(local, "downloaded_size");
+        if (json_is_true(json_object_get(local, "is_downloading_completed"))) out.media_path = json_str(local, "path");
+        out.media_label = "Файл";
+        out.text = out.document_name.empty() ? "Без имени" : out.document_name;
+        std::string caption = json_str(json_object_get(content, "caption"), "text");
+        if (!caption.empty()) out.text += "\n" + caption;
+    }
     else out.text = type[0] ? std::string("[") + type + "]" : "[message]";
     auto add_link = [&](const std::string& url) {
-        std::string prefix = url.substr(0, 8);
+        std::string normalized = url;
+        if (normalized.compare(0, 5, "t.me/") == 0 || normalized.compare(0, 12, "telegram.me/") == 0)
+            normalized = "https://" + normalized;
+        std::string prefix = normalized.substr(0, 8);
         std::transform(prefix.begin(), prefix.end(), prefix.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-        if (prefix.compare(0, 7, "http://") && prefix != "https://" && !is_proxy_link(url)) return;
-        if (url.find_first_of("\r\n\t ") != std::string::npos) return;
-        if (std::find(out.links.begin(), out.links.end(), url) == out.links.end()) out.links.push_back(url);
+        if (prefix.compare(0, 7, "http://") && prefix != "https://" && !is_proxy_link(normalized)) return;
+        if (normalized.find_first_of("\r\n\t ") != std::string::npos) return;
+        if (std::find(out.links.begin(), out.links.end(), normalized) == out.links.end()) out.links.push_back(normalized);
     };
+    if (!std::strcmp(type, "messageRichMessage"))
+        rich_message::visit_links(json_object_get(content, "message"), add_link);
     std::string lower = out.text;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     for (size_t pos = 0; pos < lower.size();) {
         size_t next = std::string::npos;
-        for (const char* prefix : {"http", "tg:", "t.me/proxy?", "telegram.me/proxy?", "telegram.dog/proxy?"})
+        for (const char* prefix : {"http", "tg:", "t.me/", "telegram.me/", "telegram.dog/proxy?"})
             next = std::min(next, lower.find(prefix, pos));
         if (next == std::string::npos) break;
         pos = next;
@@ -824,34 +1529,64 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
     return out;
 }
 
-void TelegramClient::requestFile(int32_t file_id, int priority) {
+void TelegramClient::requestFile(int32_t file_id, int priority, bool visible_avatar) {
+    media_cache_.prioritize(file_id);
     if (!ready_) return;
     if (file_id <= 0) return;
+    // The visible row asks again every frame; the check is RAM only.
+    if (media_cache_.awaiting(file_id)) return;
+    if (visible_avatar) list_avatar_files_.insert(file_id);
     bool fresh = pending_files_.insert(file_id).second;
-    if (!fresh && file_priorities_[file_id] >= priority) return;
+    if (!fresh && file_priorities_[file_id] >= priority) {
+        if (visible_avatar) {
+            performance::lock(&queue_mutex_,performance::Metric::QueueLock);
+            for (auto& queued:outgoing_) if (queued.file_id==file_id) queued.backlog_exempt=true;
+            pthread_mutex_unlock(&queue_mutex_);
+        }
+        return;
+    }
     file_priorities_[file_id] = priority;
     json_t* req = json_pack("{s:s,s:i,s:i,s:I,s:I,s:b}",
         "@type", "downloadFile", "file_id", file_id, "priority", priority,
         "offset", (json_int_t)0, "limit", (json_int_t)0, "synchronous", 0);
+    if (visible_avatar) json_object_set_new(req,"@extra",json_pack("{s:s}","kind","visible_avatar"));
     sendJson(req);
 }
 
+void TelegramClient::downloadDocument(const MessageItem& message, const std::string& directory) {
+    if (!message.document || message.media_file_id <= 0) return;
+    std::string dir = normalized_download_dir(directory);
+    if (dir.empty()) { document_status_ = "Неверный путь загрузки"; return; }
+    if (document_downloads_.count(message.media_file_id)) { document_status_ = "Файл уже загружается"; return; }
+    if (!message.media_path.empty()) {
+        std::string result;
+        document_status_ = save_downloaded_file(message.media_path, dir, message.document_name,
+                                                 message.media_file_id, result) ? "Сохранено: " + result : "Не удалось сохранить файл";
+        return;
+    }
+    document_downloads_[message.media_file_id] = {dir, message.document_name};
+    document_status_ = "Загрузка: " + safe_download_name(message.document_name, message.media_file_id);
+    requestFile(message.media_file_id, 32);
+}
+
 std::string TelegramClient::uploadStatus() const {
-    return uploads_.summary(sceKernelGetSystemTimeWide());
+    return uploads_.summary(sceKernelGetSystemTimeWide(), currentChatId());
 }
 std::vector<std::string> TelegramClient::uploadDetails() const {
     return uploads_.lines(sceKernelGetSystemTimeWide());
 }
 void TelegramClient::logUploads(bool force) {
+    uploads_pending_.store(std::any_of(uploads_.items().begin(), uploads_.items().end(),
+        [](const MediaUploads::Item& item) { return !item.terminal; }));
     int64_t now = sceKernelGetSystemTimeWide();
     if (!force && now - upload_log_time_ < 2000000) return;
     upload_log_time_ = now;
     std::string snapshot;
-    for (const auto& line : uploads_.lines(now)) snapshot += line + "\n";
+    for (const auto& line : uploads_.lines(now, true)) snapshot += line + "\n";
     if (snapshot.empty() || snapshot == upload_log_snapshot_) return;
     upload_log_snapshot_ = snapshot;
     std::string entry = std::to_string(std::time(nullptr)) + " " + snapshot;
-    pthread_mutex_lock(&queue_mutex_);
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
     // Diagnostic output may be dropped under slow storage; protocol events may not.
     if (upload_logs_.size() >= 64) upload_logs_.pop_front();
     upload_logs_.push_back(std::move(entry));
@@ -859,7 +1594,7 @@ void TelegramClient::logUploads(bool force) {
 }
 void TelegramClient::flushUploadLogs() {
     std::deque<std::string> lines;
-    pthread_mutex_lock(&queue_mutex_);
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
     lines.swap(upload_logs_);
     pthread_mutex_unlock(&queue_mutex_);
     if (lines.empty()) return;
@@ -880,10 +1615,31 @@ void TelegramClient::updateFile(void* opaque) {
     json_t* local = json_object_get(file, "local");
     const char* path = json_is_object(local) ? json_str(local, "path") : "";
     if (id <= 0) return;
-    if (json_is_true(json_object_get(local, "is_downloading_completed"))) {
-        for (auto& sticker : stickers_) if (sticker.preview == id) sticker.path = path;
-        for (auto& pack : sticker_packs_) if (pack.icon_file_id == id) pack.icon_path = path;
+    auto document_job = document_downloads_.find(id);
+    if (document_job != document_downloads_.end() && json_is_true(json_object_get(local, "is_downloading_completed")) && path[0]) {
+        std::string result;
+        document_status_ = save_downloaded_file(path, document_job->second.directory, document_job->second.name,
+                                                 id, result) ? "Сохранено: " + result : "Не удалось сохранить файл";
+        document_downloads_.erase(document_job);
     }
+    auto update_document = [&](MessageItem& message) {
+        if (message.document && message.media_file_id == id) {
+            message.document_downloaded = json_i53(local, "downloaded_size");
+            if (document_downloads_.count(id)) {
+                if (message.document_size > 0)
+                    document_status_ = "Загрузка: " + std::to_string(std::min<int64_t>(99,
+                        message.document_downloaded * 100 / message.document_size)) + "%";
+                else document_status_ = "Загрузка: " + std::to_string(message.document_downloaded / 1024) + " КиБ";
+            }
+        }
+    };
+    for (auto& message : messages_) update_document(message);
+    for (auto& message : history_items_) update_document(message);
+    for (auto& photo : user_photos_) if (photo.second.file == id)
+        photo.second.path = json_is_true(json_object_get(local, "is_downloading_completed")) ? path : "";
+
+    for (auto& sticker : stickers_) if (sticker.preview == id) sticker.path = path;
+    for (auto& pack : sticker_packs_) if (pack.icon_file_id == id) pack.icon_path = path;
     auto update_voice = [&](MessageItem& message) {
         if (message.voice_file_id != id) return;
         message.voice_size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
@@ -900,10 +1656,18 @@ void TelegramClient::updateFile(void* opaque) {
         message.animation_downloaded = json_i53(local, "downloaded_size");
         if (std::max(message.animation_size, message.animation_downloaded) > (message.video ? 128 : 20) * 1024 * 1024)
             message.animation_error = message.video ? "Video limit: 128 MiB" : "GIF limit: 20 MiB";
-        if (json_is_true(json_object_get(local, "is_downloading_completed"))) message.animation_path = path;
+        if (json_is_true(json_object_get(local, "is_downloading_completed"))) {
+            message.animation_path = path;
+            if (message.video && id == active_animation_file_ && animation_started_at_) {
+                performance::observe(performance::Metric::VideoReady, performance::now()-animation_started_at_);
+                animation_started_at_ = 0;
+            }
+        }
     };
     for (auto& message : messages_) update_animation(message);
     for (auto& message : history_items_) update_animation(message);
+    for (auto& entry:reaction_previews_) if (entry.second.file==id)
+        entry.second.path=json_is_true(json_object_get(local,"is_downloading_completed")) ? path : "";
     if (!json_is_true(json_object_get(local, "is_downloading_completed"))) {
         for (auto& chat : known_chats_) if (chat.avatar_file_id == id) chat.avatar_path.clear();
         for (auto& chat : chats_) if (chat.avatar_file_id == id) chat.avatar_path.clear();
@@ -941,8 +1705,18 @@ void TelegramClient::updateFile(void* opaque) {
 }
 
 void TelegramClient::ensureChatMedia(size_t index) {
+    performance::SlowScope slow(performance::SlowPhase::Ui,"ensure_chat_media");
     if (index >= chats_.size()) return;
     const auto& chat = chats_[index];
+    if (chat.cached_metadata && chat.avatar_path.empty() && cache_restore_allowed_) {
+        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        if (cached_avatar_requests_.size() + cached_avatar_results_.size() < 32 &&
+            !cached_avatar_seen_.count(chat.id)) {
+            if (cached_avatar_seen_.size() >= 2048) cached_avatar_seen_.clear();
+            cached_avatar_seen_.insert(chat.id); cached_avatar_requests_.push_back(chat.id);
+        }
+        pthread_mutex_unlock(&queue_mutex_);
+    }
     // Restored file IDs are intentionally zero. loadChats may return only list
     // positions, so explicitly refresh metadata for visible cached rows.
     if (ready_ && chat.cached_metadata) {
@@ -954,21 +1728,17 @@ void TelegramClient::ensureChatMedia(size_t index) {
             sendJson(request);
         }
     }
-    if (chat.avatar_path.empty()) requestFile(chat.avatar_file_id, 8);
+    if (chat.avatar_path.empty()) requestFile(chat.avatar_file_id, 8,true);
 }
 
 void TelegramClient::ensureMessageMedia(size_t index) {
+    performance::SlowScope slow(performance::SlowPhase::Ui,"ensure_message_media");
     if (index >= messages_.size()) return;
     const auto& message = messages_[index];
-    if (ready_ && currentChatIsGroup() && !message.outgoing && message.sender_id && senderName(message) == "Участник") {
-        std::string key = std::string(message.sender_chat ? "c" : "u") + std::to_string(message.sender_id);
-        if (sender_requests_.insert(key).second)
-            sendJson(json_pack("{s:s,s:I,s:s}", "@type", message.sender_chat ? "getChat" : "getUser",
-                message.sender_chat ? "chat_id" : "user_id", (json_int_t)message.sender_id, "@extra", "sender_lookup"));
-    }
+    ensureSenderMedia(message);
     if (!message.photos.empty()) {
         ensurePhotoThumbnail(index, 0);
-    } else if (message.media_path.empty()) requestFile(message.media_file_id, 16);
+    } else if (!message.document && message.media_path.empty()) requestFile(message.media_file_id, 16);
 }
 
 void TelegramClient::setAnimationTarget(int index) {
@@ -978,9 +1748,23 @@ void TelegramClient::setAnimationTarget(int index) {
         if (active_animation_file_ && pending_files_.erase(active_animation_file_))
             sendJson(json_pack("{s:s,s:i,s:b}", "@type", "cancelDownloadFile", "file_id", active_animation_file_, "only_if_pending", 0));
         active_animation_file_ = wanted;
+        animation_started_at_ = 0; animation_progress_ = 0; animation_progress_at_ = 0;
     }
+    if (wanted && message->animation_path.empty()) {
+        const int64_t now = sceKernelGetSystemTimeWide();
+        // The open video is what the user waits for: keep background downloads
+        // in the app queue so the single TDLib thread and the link serve it.
+        foreground_until_.store(now + 2000000);
+        if (message->animation_downloaded != animation_progress_ || !animation_progress_at_) {
+            animation_progress_ = message->animation_downloaded; animation_progress_at_ = now;
+        } else if (now - animation_progress_at_ > 20000000 && pending_files_.erase(wanted)) {
+            // No progress for a long time: TDLib may have dropped the job. A repeated downloadFile is harmless.
+            animation_progress_at_ = now;
+        }
+    } else { animation_progress_ = 0; animation_progress_at_ = 0; }
     if (wanted && message->animation_path.empty() && pending_files_.insert(wanted).second) {
         ++animation_download_generation_;
+        if (!animation_started_at_) animation_started_at_ = performance::now();
         json_t* request = json_pack("{s:s,s:i,s:i,s:I,s:I,s:b}", "@type", "downloadFile", "file_id", wanted,
             "priority", 32, "offset", (json_int_t)0, "limit", (json_int_t)0, "synchronous", 0);
         json_object_set_new(request, "@extra", json_pack("{s:s,s:i,s:I}", "kind", "animation_download", "file", wanted,
@@ -1020,44 +1804,142 @@ void TelegramClient::ensureFullPhoto(size_t message_index, size_t photo_index) {
 }
 
 void TelegramClient::process(void* opaque) {
+    performance::Scope measurement(performance::Metric::Process);
     json_t* root = static_cast<json_t*>(opaque);
     if (!root) return;
-    uploads_.process(root, sceKernelGetSystemTimeWide());
+    const uint64_t wire_bytes=td_event_wire_bytes(root);
+    performance::SlowScope slow_process(performance::SlowPhase::Process,json_str(root,"@type"),wire_bytes);
+    // Ignore late account responses once logout starts; they must not repopulate caches.
+    if (logging_out_) {
+        if (!std::strcmp(json_str(root, "@type"), "updateAuthorizationState")) processAuth(root);
+        retire_td_json(root,wire_bytes); return;
+    }
+    json_t* list_extra = json_object_get(root, "@extra");
+    const char* request_kind = json_str(list_extra, "kind");
+    const bool refresh_reply = !std::strcmp(request_kind, "refresh_main_ids") || !std::strcmp(request_kind, "refresh_main_chat");
+    if ((refresh_reply || !std::strcmp(request_kind, "load_main_chats")) &&
+        (json_i53(list_extra, "list_generation") != list_generation_ ||
+         (refresh_reply && json_object_get(list_extra, "refresh_generation") &&
+          json_i53(list_extra, "refresh_generation") != refresh_generation_))) {
+        // Old replies must not overwrite newer metadata or complete a retry.
+        retire_td_json(root,wire_bytes); return;
+    }
+    const int64_t received_at = json_i53(root, "@received_at");
+    const int64_t event_time = received_at > 0 ? received_at : sceKernelGetSystemTimeWide();
+    const char* event_type = json_str(root, "@type");
+    json_t* event_file = !std::strcmp(event_type, "updateFile") ? json_object_get(root, "file") :
+        !std::strcmp(event_type, "file") ? root : nullptr;
+    if (event_file) {
+        const int32_t id = (int32_t)json_i53(event_file, "id");
+        if (id && file_update_times_[id] > event_time) { retire_td_json(root,wire_bytes); return; }
+        if (id) file_update_times_[id] = event_time;
+    } else {
+        json_t* message = !std::strcmp(event_type, "message") ? root : json_object_get(root, "message");
+        const int32_t id = (int32_t)json_i53(MediaUploads::messageFile(message), "id");
+        if (id) file_update_times_[id] = std::max(file_update_times_[id], event_time);
+    }
+    uploads_.process(root, event_time);
+    json_object_del(root, "@received_at");
+    json_object_del(root,"@parsed_at");
+    json_object_del(root, "@wire_bytes");
     logUploads();
-    media_cache_.resolve(root);
-    ui_cache_.remember(root);
+    const bool sticker_payload=!std::strcmp(event_type,"stickerSet") || !std::strcmp(event_type,"updateStickerSet") || !std::strcmp(event_type,"stickers");
+    if (!sticker_payload) for (auto id : media_cache_.enqueue(root)) pending_files_.erase(id);
+    // Retain TD's original file metadata for future background/cache resolves.
+    // A temporarily unverified UI path must not erase it from persisted history.
+    ui_cache_.remember(root,wire_bytes);
+    if (!sticker_payload) media_cache_.resolve(root, false);
 
     const char* type = json_str(root, "@type");
+    if (!std::strcmp(type, "updateConnectionState")) {
+        const bool connected = !std::strcmp(json_str(json_object_get(root, "state"), "@type"), "connectionStateReady");
+        if (connected && !connection_ready_) resetListRequests(sceKernelGetSystemTimeWide());
+        connection_ready_ = connected;
+        retire_td_json(root,wire_bytes); return;
+    }
     if (!std::strcmp(type, "updateUserStatus")) {
         parseUserStatus(json_i53(root, "user_id"), json_object_get(root, "status"));
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(root, "@extra"), "cache_cleanup")) {
         cache_maintenance_ = false;
         if (!std::strcmp(type, "error")) error_ = std::string("Cache: ") + json_str(root, "message");
-        json_decref(root); return;
+        else media_cache_.invalidate();
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(type, "user") || !std::strcmp(type, "updateUser")) {
         parseUser(!std::strcmp(type, "user") ? root : json_object_get(root, "user"));
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(type, "error") && !std::strcmp(json_str(root, "@extra"), "sender_lookup")) {
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     json_t* extra = json_object_get(root, "@extra");
+    if (!std::strcmp(json_str(extra, "kind"), "public_link")) {
+        if (json_i53(extra, "generation") == link_generation_) {
+            if (!std::strcmp(type, "chat")) {
+                parseChat(root);
+                openChat(json_i53(root, "id"), json_str(root, "title"));
+                link_chat_opened_ = true;
+            } else {
+                notice_ = std::string("Не удалось открыть ссылку: ") + json_str(root, "message", "чат недоступен");
+                notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+            }
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    const std::string poll_kind = json_str(extra, "kind");
+    if (poll_kind == "poll_vote" || poll_kind == "poll_refresh") {
+        const auto key = std::make_pair(json_i53(extra, "chat"), json_i53(extra, "message"));
+        auto& request = poll_requests_[key];
+        request.pending = false;
+        if (!std::strcmp(type, "error")) request.status = std::string("Ошибка: ") + json_str(root, "message");
+        else if (poll_kind == "poll_vote") {
+            request.pending = true; request.status = "Голос принят, обновление...";
+            json_t* refresh = json_pack("{s:s,s:I,s:I}", "@type", "getMessage", "chat_id", (json_int_t)key.first, "message_id", (json_int_t)key.second);
+            json_object_set_new(refresh, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "poll_refresh", "chat", (json_int_t)key.first, "message", (json_int_t)key.second));
+            sendJson(refresh);
+        } else request.status = "Результаты обновлены";
+        if (std::strcmp(type, "message")) { retire_td_json(root,wire_bytes); return; }
+    }
+    if (!std::strcmp(type, "updatePoll")) {
+        PollData poll = PollData::parse(json_object_get(root, "poll"));
+        for (auto* list : {&history_items_, &messages_}) for (auto& m : *list) if (poll.id && m.poll.id == poll.id) {
+            m.poll = poll; m.media_label = poll.quiz ? "Викторина" : "Опрос"; m.text = poll.question;
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+
+    if (!std::strcmp(json_str(extra, "kind"), "proxy_check")) {
+        if (proxy_check_deadline_ && json_i53(extra, "generation") == proxy_check_generation_) {
+            proxy_check_deadline_ = 0;
+            if (!std::strcmp(type, "seconds")) {
+                char result[128];
+                std::snprintf(result, sizeof(result), "MTProxy доступен: %.0f мс", json_number_value(json_object_get(root, "seconds")) * 1000);
+                proxy_check_status_ = result;
+            } else proxy_check_status_ = "MTProxy недоступен: проверьте сеть, сервер, порт и secret";
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "proxy_config")) {
         if (json_i53(extra, "generation") == proxy_generation_)
             proxy_status_ = !std::strcmp(type, "error") ? "Ошибка MTProxy: проверьте сервер, порт и secret" :
                 (proxy_enabled_ ? "MTProxy включён" : "Прямое подключение");
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "forum_check") || !std::strcmp(json_str(extra, "kind"), "forum_topics")) {
         if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "generation") == topics_generation_) {
+            if (!std::strcmp(json_str(extra,"kind"),"forum_check") && json_i53(extra,"requested_at")>0)
+                performance::observe(performance::Metric::ForumReady,performance::now()-json_i53(extra,"requested_at"));
             topics_pending_ = false;
             if (!std::strcmp(type, "error")) topics_status_ = json_str(root, "message");
             else if (!std::strcmp(json_str(extra, "kind"), "forum_check")) {
-                if (json_is_true(json_object_get(root, "is_forum"))) loadTopics(true);
-                else { topics_open_ = false; refreshHistory(); }
+                const bool forum=json_is_true(json_object_get(root, "is_forum"));
+                if (json_i53(root,"id")) supergroup_forum_[json_i53(root,"id")]=forum;
+                // The first history page was requested in parallel. A forum
+                // invalidates it by generation; an ordinary group keeps it.
+                if (forum) { showTopicsList(); loadTopics(true); }
+                else if (topics_open_) { topics_open_ = false; refreshHistory(); }
             } else {
                 json_t* arr = json_object_get(root, "topics"); size_t i; json_t* entry;
                 json_array_foreach(arr, i, entry) {
@@ -1074,10 +1956,25 @@ void TelegramClient::process(void* opaque) {
                 topics_end_ = !json_array_size(arr) || (!date && !message && !offset) ||
                     (date == topics_date_ && message == topics_message_ && offset == topics_offset_);
                 topics_date_ = date; topics_message_ = message; topics_offset_ = offset;
-                topics_status_ = topics_.empty() ? "Нет доступных тем" : topics_end_ ? "Все темы загружены" : "Вниз / Triangle: загрузить ещё темы";
+                topics_status_ = topics_.empty() ? "Нет доступных тем" : topics_end_ ? "Все темы загружены" : "Вниз / \uE000: загрузить ещё темы";
             }
         }
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "sticker_pack_icon")) {
+        if (json_i53(extra, "session") == sticker_session_ && !std::strcmp(type, "stickerSet") &&
+            json_i53(root, "id") == json_i53(extra, "set")) {
+            auto it = std::find(sticker_set_ids_.begin()+std::min<size_t>(2, sticker_set_ids_.size()),
+                                sticker_set_ids_.end(), json_i53(extra, "set"));
+            if (it != sticker_set_ids_.end()) {
+                size_t index = it - sticker_set_ids_.begin();
+                auto* preview=sticker_pack_preview(root);
+                for (auto id:media_cache_.enqueue(preview)) pending_files_.erase(id);
+                media_cache_.resolve(preview,false);
+                applyStickerPackIcon(index,root);
+            }
+        }
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "sticker_packs") ||
         !std::strcmp(json_str(extra, "kind"), "sticker_items")) {
@@ -1085,9 +1982,13 @@ void TelegramClient::process(void* opaque) {
         if (json_i53(extra, "chat") == current_chat_id_ &&
             json_i53(extra, "session") == sticker_session_ &&
             (packs || json_i53(extra, "generation") == sticker_generation_)) {
-            if (!std::strcmp(type, "error")) sticker_status_ = json_str(root, "message");
-            else if (packs) {
-                ui_cache_.saveStickerPacks(root);
+            if (!packs) { sticker_items_pending_set_=0;sticker_selection_pending_=false;sticker_selection_loaded_=std::strcmp(type,"error")!=0; }
+            if (!std::strcmp(type, "error")) {
+                sticker_status_ = json_str(root, "message");
+                if (packs) sticker_packs_fresh_ = false;
+            } else if (packs) {
+                sticker_packs_fresh_ = true;
+                if (!json_object_get(root,"@ui_saved")) ui_cache_.saveStickerPacks(root);
                 sticker_packs_ = {{0, "Избранные"}, {1, "Недавние"}};
                 sticker_set_ids_ = {0, 0};
                 applyStickerResponse(root, true);
@@ -1097,35 +1998,79 @@ void TelegramClient::process(void* opaque) {
                 applyStickerResponse(root, false);
             }
         }
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra,"kind"),"reaction_icons")) {
+        if (json_i53(extra,"chat")==current_chat_id_ && json_i53(extra,"message")==reaction_message_ && !std::strcmp(type,"stickers")) {
+            size_t i;json_t* sticker;
+            json_array_foreach(json_object_get(root,"stickers"),i,sticker) {
+                const auto custom=json_i53(json_object_get(sticker,"full_type"),"custom_emoji_id");
+                auto found=reaction_previews_.find(custom);
+                if (found==reaction_previews_.end()) continue;
+                auto* file=sticker_static_thumbnail(json_object_get(sticker,"thumbnail"));
+                if (!file && !std::strcmp(json_str(json_object_get(sticker,"format"),"@type"),"stickerFormatWebp")) file=json_object_get(sticker,"sticker");
+                for (auto id:media_cache_.enqueue(file)) pending_files_.erase(id);
+                media_cache_.resolve(file,false);
+                found->second.file=(int32_t)json_i53(file,"id");
+                found->second.path=json_is_true(json_object_get(json_object_get(file,"local"),"is_downloading_completed")) ? json_str(json_object_get(file,"local"),"path") : "";
+            }
+        }
+        retire_td_json(root,wire_bytes);return;
+    }
+    if (!std::strncmp(json_str(extra,"kind"),"post_",5)) {
+        if (json_i53(extra,"chat")==current_chat_id_ && json_i53(extra,"generation")==history_generation_ && !std::strcmp(type,"message")) storeMessage(root);
+        retire_td_json(root,wire_bytes);return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "reaction_choices") || !std::strcmp(json_str(extra, "kind"), "reaction_send")) {
         if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "message") == reaction_message_) {
             reaction_pending_ = false;
+            if (!std::strcmp(json_str(extra, "kind"), "reaction_choices")) {
+                reaction_loading_ = false; reaction_loaded_ = std::strcmp(type, "error") != 0;
+                if (reaction_requested_at_) performance::observe(performance::Metric::ReactionResponse, performance::now()-reaction_requested_at_);
+                reaction_requested_at_ = 0;
+            }
             if (!std::strcmp(type, "error")) reaction_status_ = json_str(root, "message");
             else if (!std::strcmp(type, "availableReactions")) {
-                reaction_choices_.clear();
+                reaction_choices_.clear(); reaction_custom_choices_.clear(); reaction_previews_.clear();
+                auto add_custom=[&](int64_t id) {
+                    if (id<=0) return;
+                    for (const auto& entry:reaction_custom_choices_) if (entry.second==id) return;
+                    std::string label="Эмодзи " + std::to_string(reaction_custom_choices_.size()+1);
+                    reaction_custom_choices_[label]=id;reaction_choices_.push_back(label);
+                };
+                bool premium_available=false, paid_available=false;
                 for (const char* field : {"top_reactions", "recent_reactions", "popular_reactions"}) {
                     size_t i; json_t* option;
                     json_array_foreach(json_object_get(root, field), i, option) {
                         json_t* kind = json_object_get(option, "type");
-                        if (std::strcmp(json_str(kind, "@type"), "reactionTypeEmoji") || json_is_true(json_object_get(option, "needs_premium"))) continue;
+                        if (json_is_true(json_object_get(option,"needs_premium"))) { premium_available=true;continue; }
+                        if (!std::strcmp(json_str(kind,"@type"),"reactionTypePaid")) { paid_available=true;continue; }
+                        if (!std::strcmp(json_str(kind,"@type"),"reactionTypeCustomEmoji")) { add_custom(json_i53(kind,"custom_emoji_id"));continue; }
+                        if (std::strcmp(json_str(kind,"@type"),"reactionTypeEmoji")) continue;
                         std::string emoji = json_str(kind, "emoji");
                         if (!emoji.empty() && std::find(reaction_choices_.begin(), reaction_choices_.end(), emoji) == reaction_choices_.end()) reaction_choices_.push_back(emoji);
                     }
                 }
                 for (const auto& message : messages_) if (message.id == reaction_message_)
-                    for (const auto& reaction : message.reactions)
+                    for (const auto& reaction : message.reactions) {
+                        if (reaction.chosen && reaction.custom_emoji_id) add_custom(reaction.custom_emoji_id);
                         if (reaction.chosen && reaction.emoji != "Stars" && reaction.emoji != "Custom" &&
                             std::find(reaction_choices_.begin(), reaction_choices_.end(), reaction.emoji) == reaction_choices_.end())
                             reaction_choices_.push_back(reaction.emoji);
-                reaction_status_ = reaction_choices_.empty() ? "Нет доступных обычных реакций" : "X: поставить / убрать";
+                    }
+                reaction_status_ = reaction_choices_.empty() ? "Нет доступных реакций" : "\uE002: поставить / убрать";
+                if (reaction_choices_.empty() && premium_available) reaction_status_="Для доступных реакций нужен Premium";
+                if (reaction_choices_.empty() && paid_available) reaction_status_="Доступны платные реакции; Stars пока не поддерживаются";
+                const char* reason=json_str(json_object_get(root,"unavailability_reason"),"@type");
+                if (!std::strcmp(reason,"reactionUnavailabilityReasonAnonymousAdministrator")) reaction_status_="Реакции недоступны от анонимного администратора";
+                else if (!std::strcmp(reason,"reactionUnavailabilityReasonGuest")) reaction_status_="Для реакции нужно вступить в чат";
+                else if (!std::strcmp(reason,"reactionUnavailabilityReasonRestricted")) reaction_status_="Реакции ограничены в этом чате";
             } else {
                 reaction_status_ = "Реакция обновлена";
                 sendJson(json_pack("{s:s,s:I,s:I}", "@type", "getMessage", "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)reaction_message_));
             }
         }
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "voice_download") && !std::strcmp(type, "error")) {
         int32_t file = (int32_t)json_i53(extra, "file");
@@ -1135,19 +2080,12 @@ void TelegramClient::process(void* opaque) {
                 message.voice_error = std::string("Audio download: ") + json_str(root, "message");
             rebuildHistory();
         }
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     const char* list_kind = json_is_object(extra) ? json_str(extra, "kind") : json_str(root, "@extra");
     if (!std::strcmp(list_kind, "avatar_metadata") && !std::strcmp(type, "error")) {
         // Retry only while the row is visible, with the existing 10s backoff.
-        json_decref(root); return;
-    }
-    bool list_reply = !std::strcmp(list_kind, "refresh_main_ids") || !std::strcmp(list_kind, "refresh_main_chat") ||
-                      !std::strcmp(list_kind, "load_main_chats");
-    if (list_reply && json_i53(extra, "list_generation") != list_generation_) {
-        // Metadata remains useful after switching; request state does not.
-        if (!std::strcmp(type, "chat")) parseChat(root);
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "animation_download") && !std::strcmp(type, "error")) {
         int32_t file = (int32_t)json_i53(extra, "file");
@@ -1157,7 +2095,7 @@ void TelegramClient::process(void* opaque) {
                 message.animation_error = std::string("Media download: ") + json_str(root, "message");
             rebuildHistory();
         }
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(list_kind, "refresh_main_ids")) {
         if (!std::strcmp(type, "error")) {
@@ -1172,40 +2110,44 @@ void TelegramClient::process(void* opaque) {
                 auto known = std::find_if(known_chats_.begin(), known_chats_.end(),
                     [&](const ChatItem& chat) { return chat.id == chat_id; });
                 // Live TDLib updates already maintain known chat metadata. Refresh
-                // cached snapshots once; avoid 15 redundant getChat calls every 10s.
-                if ((known == known_chats_.end() || known->cached_metadata) && refresh_ids_.insert(chat_id).second) {
+                // cached snapshots once; refresh all entries on explicit user request.
+                if ((refresh_manual_ || known == known_chats_.end() || known->cached_metadata) && refresh_ids_.insert(chat_id).second) {
                     sendListRequest("getChat", "refresh_main_chat", chat_id);
                 }
             }
             if (refresh_ids_.empty()) finishChatRefresh();
         }
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     bool refresh_chat = !std::strcmp(list_kind, "refresh_main_chat");
     if (refresh_chat && !std::strcmp(type, "error")) {
         chats_error_ = json_str(root, "message");
         refresh_ids_.clear(); refresh_pending_ = false;
         notice_ = "Refresh failed"; notice_until_ = sceKernelGetSystemTimeWide() + 8000000;
-        json_decref(root); return;
+        retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(list_kind, "load_main_chats")) {
         chats_pending_ = false;
+        chats_request_deadline_ = 0;
         next_chats_request_ = sceKernelGetSystemTimeWide() + 500000;
         if (!std::strcmp(type, "error")) {
             if (json_i53(root, "code") == 404) chats_end_ = true;
             else chats_error_ = json_str(root, "message");
         }
-        json_decref(root);
+        if (!std::strcmp(type, "ok") || (!std::strcmp(type, "error") && json_i53(root, "code") == 404))
+            finishStartupChatList();
+        retire_td_json(root,wire_bytes);
         return;
     }
     bool history_reply = json_is_object(extra) && !std::strcmp(json_str(extra, "kind"), "history");
     if (history_reply && (json_i53(extra, "chat") != current_chat_id_ ||
-        json_i53(extra, "generation") != history_generation_)) { json_decref(root); return; }
+        json_i53(extra, "generation") != history_generation_)) { retire_td_json(root,wire_bytes); return; }
     if (history_reply && !std::strcmp(type, "error")) {
         history_pending_ = false;
         history_error_ = json_str(root, "message");
     }
     if (!std::strcmp(type, "updateChatFolders")) {
+        live_folders_received_ = true;
         parseFolders(root);
     } else if (!std::strcmp(type, "updateAuthorizationState") ||
         !std::strncmp(type, "authorizationState", 18)) {
@@ -1252,13 +2194,24 @@ void TelegramClient::process(void* opaque) {
     } else if (!std::strcmp(type, "messages")) {
         json_t* arr = json_object_get(root, "messages");
         if (history_reply && json_is_array(arr)) {
-            if (history_cached_) { history_items_.clear(); history_cached_ = false; }
+            // TDLib can omit interaction_info for older history entries. Keep
+            // the cached reaction snapshot until an explicit update arrives.
+            if (history_cached_) {
+                for (const auto& item : history_items_)
+                    if (!item.reactions.empty()) cached_reactions_.emplace(item.id, item.reactions);
+                history_items_.clear(); history_cached_ = false;
+            }
             history_pending_ = false;
+            if (json_array_size(arr)) chat_live_ready_=true;
             int64_t old_cursor = history_cursor_;
             size_t i; json_t* m;
             json_array_foreach(arr, i, m) {
                 if (json_is_object(m) && matchesTopic(m)) {
                     MessageItem parsed = parseMessage(m);
+                    if (!json_is_object(json_object_get(json_object_get(m, "interaction_info"), "reactions"))) {
+                        auto known = cached_reactions_.find(parsed.id);
+                        if (known != cached_reactions_.end()) parsed.reactions = known->second;
+                    }
                     if (replaced_message_ids_.count(parsed.id)) continue;
                     if (!history_cursor_ || parsed.id < history_cursor_) history_cursor_ = parsed.id;
                     if (std::none_of(history_items_.begin(), history_items_.end(), [&](const MessageItem& v) { return v.id == parsed.id; }))
@@ -1272,10 +2225,13 @@ void TelegramClient::process(void* opaque) {
             rebuildHistory();
             status_ = history_done_ ? "Online" : "Loading older messages...";
         }
+    } else if (!std::strcmp(type, "updateSupergroup")) {
+        json_t* group = json_object_get(root, "supergroup");
+        if (json_i53(group, "id")) supergroup_forum_[json_i53(group, "id")] = json_is_true(json_object_get(group, "is_forum"));
     } else if (!std::strcmp(type, "updateNewChat")) {
         json_t* chat = json_object_get(root, "chat");
         if (json_is_object(chat)) parseChat(chat);
-    } else if (!std::strcmp(type, "updateChatLastMessage")) {
+    } else if (!std::strcmp(type, "updateChatLastMessage") || !std::strcmp(type, "updateChatDraftMessage")) {
         int64_t id = json_i53(root, "chat_id");
         updateChatPositions(id, json_object_get(root, "positions"));
         noteLastMessage(id, json_object_get(root, "last_message"));
@@ -1296,7 +2252,7 @@ void TelegramClient::process(void* opaque) {
         json_t* position = json_object_get(root, "position");
         json_t* list = json_is_object(position) ? json_object_get(position, "list") : nullptr;
         int32_t list_id = chat_list_id(list);
-        if (list_id < 0) { json_decref(root); return; }
+        if (list_id < 0) { retire_td_json(root,wire_bytes); return; }
         auto found = std::find_if(known_chats_.begin(), known_chats_.end(), [&](const ChatItem& c) { return c.id == id; });
         if (found == known_chats_.end() && json_i53(position, "order")) {
             json_t* request = json_pack("{s:s,s:I}", "@type", "getChat", "chat_id", (json_int_t)id);
@@ -1307,10 +2263,10 @@ void TelegramClient::process(void* opaque) {
         }
     } else if (!std::strcmp(type, "message")) {
         storeMessage(root);
-    } else if (!std::strcmp(type, "updateMessageInteractionInfo")) {
+    } else if (!std::strcmp(type, "updateMessageInteractionInfo") || !std::strcmp(type,"updateMessageReactions")) {
         if (json_i53(root, "chat_id") == current_chat_id_) {
             for (auto& message : history_items_) if (message.id == json_i53(root, "message_id"))
-                parse_reactions(message, json_object_get(root, "interaction_info"));
+                parse_reactions(message, !std::strcmp(type,"updateMessageReactions") ? root : json_object_get(root, "interaction_info"));
             rebuildHistory();
         }
     } else if (!std::strcmp(type, "updateMessageEdited")) {
@@ -1318,6 +2274,18 @@ void TelegramClient::process(void* opaque) {
             for (auto& item : history_items_) if (item.id == json_i53(root, "message_id"))
                 item.edit_date = json_i53(root, "edit_date");
             rebuildHistory();
+        }
+    } else if (!std::strcmp(type, "updateMessageContent")) {
+        if (json_i53(root, "chat_id") == current_chat_id_) {
+            json_t* content = json_object_get(root, "new_content");
+            const char* kind = json_str(content, "@type");
+            json_t* note = !std::strcmp(kind, "messageVoiceNote") ? json_object_get(content, "voice_note") :
+                !std::strcmp(kind, "messageVideoNote") ? json_object_get(content, "video_note") : nullptr;
+            if (note) {
+                for (auto& item : history_items_) if (item.id == json_i53(root, "message_id"))
+                    parse_transcription(item, note);
+                rebuildHistory();
+            }
         }
     } else if (!std::strcmp(type, "updateFile")) {
         json_t* file = json_object_get(root, "file");
@@ -1336,51 +2304,157 @@ void TelegramClient::process(void* opaque) {
         }
     }
 
-    json_decref(root);
+    retire_td_json(root,wire_bytes);
 }
 
-void TelegramClient::pump() {
-    if (!worker_started_) return;
+void TelegramClient::pump(bool interactive) {
+    performance::Scope measurement(performance::Metric::Pump);
+    void* restored = nullptr;
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    std::swap(restored, restored_snapshot_);
+    pthread_mutex_unlock(&queue_mutex_);
+    if (restored) beginCacheApply(restored);
+    if (proxy_check_deadline_ && sceKernelGetSystemTimeWide() >= proxy_check_deadline_) {
+        proxy_check_deadline_ = 0; ++proxy_check_generation_;
+        proxy_check_status_ = "MTProxy не ответил за 15 секунд";
+    }
+    if (logging_out_ && closed_) {
+        if (!cleanup_started_ && cleanup_result_ == 0) {
+            stopWorker(); // Includes the final cache flush and TDLib destruction.
+            status_ = "Удаление данных аккаунта...";
+            pthread_attr_t attr;
+            pthread_attr_init(&attr);
+            pthread_attr_setstacksize(&attr, 256 * 1024);
+            cleanup_started_ = pthread_create(&cleanup_thread_, &attr, cleanupEntry, this) == 0;
+            pthread_attr_destroy(&attr);
+            if (!cleanup_started_) cleanup_result_ = -1;
+        }
+        if (cleanup_result_ == 1) status_ = "Данные аккаунта удалены. Перезапустите VitaGram для входа.";
+        else if (cleanup_result_ == -1)
+            error_ = status_ = "Не удалось полностью удалить данные. Очистка повторится при запуске.";
+        return;
+    }
+    if (!worker_started_) {
+        if (!interactive) { applyCacheSlice(); applyCachedDetails(); applyCachedAvatar(); }
+        return;
+    }
     int64_t pump_start = sceKernelGetSystemTimeWide();
-    logUploads();
+    if (!interactive) logUploads();
+    size_t queued=0;
+    performance::lock(&queue_mutex_,performance::Metric::QueueLock);queued=parsed_.size();pthread_mutex_unlock(&queue_mutex_);
+    const int budget=td_pump_budget_us(queued,interactive,pump_start<interaction_until_.load());
+    const int limit=interactive ? 4 : budget>2000 ? 128 : 32;
     bool changed = false;
-    for (int i = 0; i < 32; ++i) {
-        void* msg = nullptr;
-        pthread_mutex_lock(&queue_mutex_);
-        if (!parsed_.empty()) { msg = parsed_.front(); parsed_.pop_front(); }
+    for (int i = 0; i < limit; ++i) {
+        void* msg = nullptr;TdEventMetadata selected;
+        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        const bool background_turn = (++event_turn_ % 4) == 0;
+        const auto select_started=performance::now();
+        msg = take_td_event(parsed_, interactive && !background_turn, background_turn, current_chat_id_, history_generation_,&selected);
+        performance::observe(performance::Metric::EventSelect,performance::now()-select_started);
+        if (msg) parsed_wire_bytes_ -= selected.bytes;
+        sampleQueues();
         pthread_mutex_unlock(&queue_mutex_);
         if (!msg) break;
-        const char* type = json_str(static_cast<json_t*>(msg), "@type");
-        // File progress does not reorder the chat list.
-        changed = changed || (std::strcmp(type, "updateFile") && std::strcmp(type, "file"));
+        int64_t received = selected.received;
+        if (received > 0) performance::observe(performance::Metric::EventWait, performance::now()-received);
+        changed = changed || selected.changes_chats;
+        const bool first_history=selected.first_history && selected.chat==current_chat_id_ && selected.generation==history_generation_;
+        const auto requested_at=first_history ? selected.requested : 0;
+        const auto parsed_at=first_history ? selected.parsed : 0;
+        const auto apply_started=performance::now();
+        if (parsed_at>0) performance::observe(performance::Metric::FirstHistoryUiWait,apply_started-parsed_at);
         process(msg);
-        if (sceKernelGetSystemTimeWide() - pump_start >= 2000) break;
+        if (first_history) {
+            const auto applied_at=performance::now();
+            performance::observe(performance::Metric::FirstHistoryApply,applied_at-apply_started);
+            if (requested_at>0) performance::observe(performance::Metric::FirstHistoryReady,applied_at-requested_at);
+        }
+        if (sceKernelGetSystemTimeWide() - pump_start >= budget) break;
     }
-    if (!history_pending_ && !history_done_ && history_error_.empty()) requestHistoryPage();
+    // Apply only file fields, never replay messages, send results or upload
+    // progress. Live events processed above replace/cancel stale file jobs.
+    for (int i = 0; !interactive && i < 4 &&
+         sceKernelGetSystemTimeWide() - pump_start < 2000; ++i) {
+        auto* file = media_cache_.takeValidated();
+        if (!file) break;
+        updateFile(file);
+        json_decref(file);
+    }
+    if (!interactive && !history_pending_ && !history_done_ && history_error_.empty()) requestHistoryPage();
     if (changed) publishChats();
+    if (interactive) return;
+    if (sceKernelGetSystemTimeWide() - pump_start < 2000) {
+        applyCacheSlice(); applyCachedDetails(); applyCachedAvatar();
+        if (sceKernelGetSystemTimeWide()-pump_start<2000) applyStickerSlice();
+    }
+    drain_retired_json(retired_json.size()>256 ? 8000 : 2500);
+    recoverListRequests(sceKernelGetSystemTimeWide());
     if (ready_ && !current_chat_id_ && !chats_pending_ && !chats_end_ && chats_error_.empty() &&
-        chats_.size() < chats_target_ && sceKernelGetSystemTimeWide() >= next_chats_request_) requestChatsPage();
+        (chats_.size() < chats_target_ || startup_chat_snapshots_.count(selected_folder_)) &&
+        sceKernelGetSystemTimeWide() >= next_chats_request_) requestChatsPage();
     if (ready_ && !current_chat_id_ && !refresh_pending_ && sceKernelGetSystemTimeWide() >= next_update_check_)
         checkChatUpdates(false);
 }
 
+void TelegramClient::finishStartupChatList() {
+    auto snapshot = startup_chat_snapshots_.find(selected_folder_);
+    if (snapshot == startup_chat_snapshots_.end()) return;
+    const size_t visible = std::min(chats_target_, snapshot->second.size());
+    size_t live = 0;
+    for (const auto& chat : known_chats_)
+        if (!chat.cached_metadata && chat.list_orders.count(selected_folder_)) ++live;
+    // loadChats may return fewer entries than requested; keep the old rows
+    // until the visible window is filled or TDLib confirms the end of the list.
+    if (!chats_end_ && live < visible) return;
+    startup_chat_snapshots_.erase(snapshot);
+    // Cached rows not confirmed by this TDLib session must not linger forever.
+    for (auto& chat : known_chats_)
+        if (chat.cached_metadata) chat.list_orders.erase(selected_folder_);
+    publishChats();
+}
+
 void TelegramClient::publishChats() {
+    performance::Scope measurement(performance::Metric::PublishChats);
+    auto snapshot = startup_chat_snapshots_.find(selected_folder_);
+    if (snapshot != startup_chat_snapshots_.end()) {
+        selected_chat_count_ = snapshot->second.size();
+        const size_t visible = std::min(chats_target_, snapshot->second.size());
+        chats_.assign(snapshot->second.begin(), snapshot->second.begin()+visible);
+        return;
+    }
     // TDLib can send cached updates beyond loadChats.limit. Expose only the
     // requested window; never download avatars for the undisplayed remainder.
-    chats_.clear();
+    struct RankedChat { const ChatItem* item; int64_t order; };
+    std::vector<RankedChat> ranked;
+    ranked.reserve(known_chats_.size());
     for (const auto& chat : known_chats_) {
         auto order = chat.list_orders.find(selected_folder_);
         if (order == chat.list_orders.end() || !order->second) continue;
-        chats_.push_back(chat); chats_.back().order = order->second;
+        ranked.push_back({&chat, order->second});
     }
-    std::sort(chats_.begin(), chats_.end(), [](const ChatItem& a, const ChatItem& b) {
-        return a.order != b.order ? a.order > b.order : a.id > b.id;
+    const size_t visible = std::min(chats_target_, ranked.size());
+    std::partial_sort(ranked.begin(), ranked.begin()+visible, ranked.end(), [](const RankedChat& a, const RankedChat& b) {
+        return a.order != b.order ? a.order > b.order : a.item->id > b.item->id;
     });
-    selected_chat_count_ = chats_.size();
-    if (chats_.size() > chats_target_) chats_.resize(chats_target_);
+    selected_chat_count_ = ranked.size();
+    if (folder_selected_at_ && visible && !folder_first_seen_) {
+        folder_first_seen_ = true;
+        performance::observe(performance::Metric::FolderFirstRow, performance::now() - folder_selected_at_);
+    }
+    if (folder_selected_at_ && (visible >= std::min<size_t>(chats_target_, 8) || chats_end_)) {
+        performance::observe(performance::Metric::FolderReady, performance::now() - folder_selected_at_);
+        performance::observe(performance::Metric::FolderRequests, (int64_t)folder_requests_);
+        folder_selected_at_ = 0;
+    }
+    chats_.clear(); chats_.reserve(visible);
+    for (size_t i = 0; i < visible; ++i) {
+        chats_.push_back(*ranked[i].item); chats_.back().order = ranked[i].order;
+    }
 }
 
 void TelegramClient::sendListRequest(const char* method, const char* kind, int64_t chat_id) {
+    if (folder_selected_at_ && !std::strcmp(kind, "load_main_chats")) ++folder_requests_;
     json_t* request = json_pack("{s:s}", "@type", method);
     if (chat_id) json_object_set_new(request, "chat_id", json_integer(chat_id));
     else {
@@ -1391,6 +2465,8 @@ void TelegramClient::sendListRequest(const char* method, const char* kind, int64
     }
     json_object_set_new(request, "@extra", json_pack("{s:s,s:I}", "kind", kind,
         "list_generation", (json_int_t)list_generation_));
+    if (!std::strncmp(kind, "refresh_main", 12))
+        json_object_set_new(json_object_get(request, "@extra"), "refresh_generation", json_integer(refresh_generation_));
     sendJson(request);
 }
 
@@ -1399,16 +2475,19 @@ void TelegramClient::selectFolder(int32_t id) {
     if (id && std::none_of(folders_.begin(), folders_.end(), [&](const ChatFolderItem& f) { return f.id == id; })) return;
     folder_windows_[selected_folder_] = {chats_target_, chats_end_};
     selected_folder_ = id; ++list_generation_;
+    folder_selected_at_ = performance::now();
+    folder_first_seen_ = false; folder_requests_ = 0;
     auto saved = folder_windows_.find(id);
     chats_target_ = saved == folder_windows_.end() ? 15 : saved->second.target;
     chats_pending_ = false;
     chats_end_ = saved != folder_windows_.end() && saved->second.end;
+    chats_request_deadline_ = refresh_deadline_ = 0;
     refresh_pending_ = refresh_manual_ = false; refresh_ids_.clear();
     chats_error_.clear(); notice_.clear(); notice_until_ = 0;
     next_chats_request_ = 0; next_update_check_ = 0;
     refresh_top_ = true;
     publishChats();
-    if (saved == folder_windows_.end() || chats_.size() < chats_target_) requestChatsPage();
+    if (startup_chat_snapshots_.count(id) || saved == folder_windows_.end() || chats_.size() < chats_target_) requestChatsPage();
     checkChatUpdates(false);
 }
 
@@ -1437,6 +2516,7 @@ void TelegramClient::parseFolders(void* opaque) {
 }
 
 void TelegramClient::rebuildHistory() {
+    performance::Scope measurement(performance::Metric::RebuildHistory);
     std::sort(history_items_.begin(), history_items_.end(), [](const MessageItem& a, const MessageItem& b) { return a.id < b.id; });
     messages_.clear();
     for (const auto& item : history_items_) {
@@ -1456,7 +2536,8 @@ void TelegramClient::rebuildHistory() {
             album.photos.insert(album.photos.end(), item.photos.begin(), item.photos.end());
             for (const auto& url : item.links)
                 if (std::find(album.links.begin(), album.links.end(), url) == album.links.end()) album.links.push_back(url);
-            if ((album.text.empty() || album.text == "[photo]") && item.text != "[photo]") album.text = item.text;
+            if (album.text.empty() && !item.text.empty()) album.text = item.text;
+            album.media_label = std::to_string(album.photos.size()) + " фото";
         } else messages_.push_back(item);
     }
 }
@@ -1471,10 +2552,11 @@ std::string TelegramClient::updateNotice() const {
 
 void TelegramClient::checkChatUpdates(bool manual) {
     if (!ready_) return;
+    recoverListRequests(sceKernelGetSystemTimeWide());
     if (refresh_pending_) {
         if (manual) {
             refresh_manual_ = true;
-            pthread_mutex_lock(&queue_mutex_);
+            performance::lock(&queue_mutex_, performance::Metric::QueueLock);
             for (auto& request : outgoing_)
                 if (request.text.find("\"kind\":\"refresh_main") != std::string::npos) request.priority = 3;
             pthread_mutex_unlock(&queue_mutex_);
@@ -1484,6 +2566,8 @@ void TelegramClient::checkChatUpdates(bool manual) {
         return;
     }
     refresh_pending_ = true; refresh_manual_ = manual;
+    ++refresh_generation_;
+    refresh_deadline_ = sceKernelGetSystemTimeWide() + 30000000;
     refresh_before_.clear();
     for (const auto& chat : chats_) refresh_before_.push_back(chat.id);
     refresh_ids_.clear(); chats_error_.clear();
@@ -1491,11 +2575,12 @@ void TelegramClient::checkChatUpdates(bool manual) {
     if (manual) { notice_ = "Refreshing chats..."; notice_until_ = sceKernelGetSystemTimeWide() + 10000000; }
     // Snapshot the latest top entries; loadChats advances the older-page cursor.
     sendListRequest("getChats", "refresh_main_ids");
-    if (chats_.empty() && !chats_pending_ && !chats_end_) requestChatsPage();
+    if ((chats_.empty() || startup_chat_snapshots_.count(selected_folder_)) && !chats_pending_ && !chats_end_) requestChatsPage();
 }
 
 void TelegramClient::finishChatRefresh() {
     refresh_pending_ = false;
+    refresh_deadline_ = 0;
     publishChats();
     if (refresh_manual_) refresh_top_ = true;
     std::vector<int64_t> current;
@@ -1547,28 +2632,119 @@ void TelegramClient::loadMoreChats() {
 void TelegramClient::requestChatsPage() {
     if (!ready_ || chats_pending_ || chats_end_) return;
     chats_pending_ = true;
+    chats_request_deadline_ = sceKernelGetSystemTimeWide() + 30000000;
     sendListRequest("loadChats", "load_main_chats");
     status_ = "Loading chats...";
+}
+
+void TelegramClient::resetListRequests(int64_t now) {
+    // Keep displayed chats and pagination; invalidate only in-flight requests.
+    ++list_generation_;
+    chats_pending_ = refresh_pending_ = false;
+    chats_request_deadline_ = refresh_deadline_ = 0;
+    refresh_ids_.clear(); chats_error_.clear();
+    next_chats_request_ = next_update_check_ = now;
+}
+
+void TelegramClient::recoverListRequests(int64_t now) {
+    if ((chats_pending_ && chats_request_deadline_ && now >= chats_request_deadline_) ||
+        (refresh_pending_ && refresh_deadline_ && now >= refresh_deadline_))
+        resetListRequests(now);
+}
+
+void TelegramClient::syncOpenedChat() {
+    if (!ready_) { opened_chat_id_ = 0; return; }
+    if (opened_chat_id_ == current_chat_id_) return;
+    if (opened_chat_id_)
+        sendJson(json_pack("{s:s,s:I}", "@type", "closeChat", "chat_id", (json_int_t)opened_chat_id_));
+    const bool from_list = !opened_chat_id_;
+    opened_chat_id_ = current_chat_id_;
+    if (opened_chat_id_)
+        sendJson(json_pack("{s:s,s:I}", "@type", "openChat", "chat_id", (json_int_t)opened_chat_id_));
+    if (opened_chat_id_ && from_list) dropListAvatarDownloads();
+}
+
+void TelegramClient::dropListAvatarDownloads() {
+    // The list is hidden: its avatars must not compete with the open chat.
+    // Unsent requests are dropped; sent ones are cancelled only if TDLib has
+    // not started them. The list requests them again when shown.
+    std::unordered_set<int32_t> unsent;
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    for (auto it = outgoing_.begin(); it != outgoing_.end();) {
+        if (it->file_id && list_avatar_files_.count(it->file_id)) { unsent.insert(it->file_id); it = outgoing_.erase(it); }
+        else ++it;
+    }
+    sampleQueues();
+    pthread_mutex_unlock(&queue_mutex_);
+    for (auto id : list_avatar_files_) {
+        if (!pending_files_.erase(id)) continue;
+        file_priorities_.erase(id);
+        if (!unsent.count(id))
+            sendJson(json_pack("{s:s,s:i,s:b}", "@type", "cancelDownloadFile", "file_id", id, "only_if_pending", 1));
+    }
+    list_avatar_files_.clear();
 }
 
 void TelegramClient::openChat(int64_t id, const std::string& title) {
     current_topic_ = 0; topics_open_ = topics_pending_ = false; topics_.clear(); ++topics_generation_;
     forum_title_ = title;
     replaced_message_ids_.clear();
+    viewed_message_=viewed_message_at_=0;
+    chat_open_at_=performance::now();chat_present_pending_=chat_live_present_pending_=true;chat_live_ready_=false;
     current_chat_id_ = id;
+    syncOpenedChat();
     current_chat_title_ = title;
     if (ready_) for (const auto& chat : known_chats_) if (chat.id == id && chat.user_id) {
         sendJson(json_pack("{s:s,s:I,s:s}", "@type", "getUser", "user_id", (json_int_t)chat.user_id, "@extra", "sender_lookup"));
         break;
     }
     if (ready_) for (const auto& chat : known_chats_) if (chat.id == id && chat.group && chat.supergroup_id) {
-        topics_open_ = topics_pending_ = true; topics_status_ = "Проверка тем группы...";
-        ++history_generation_; history_pending_ = false; history_done_ = true; history_items_.clear(); messages_.clear();
+        auto known = supergroup_forum_.find(chat.supergroup_id);
+        if (known != supergroup_forum_.end()) {
+            if (!known->second) break; // Ordinary group: history without getSupergroup.
+            showTopicsList(); loadTopics(true); return;
+        }
+        // Unknown kind: show cached history and request the first page now;
+        // the forum check runs in parallel instead of in front of it.
+        refreshHistory();
+        topics_pending_ = true; topics_status_ = "Проверка тем группы...";
         json_t* req = json_pack("{s:s,s:I}", "@type", "getSupergroup", "supergroup_id", (json_int_t)chat.supergroup_id);
         json_object_set_new(req, "@extra", json_pack("{s:s,s:I,s:i}", "kind", "forum_check", "chat", (json_int_t)id, "generation", (int)topics_generation_));
+        json_object_set_new(json_object_get(req,"@extra"),"requested_at",json_integer(performance::now()));
         sendJson(req); return;
     }
     refreshHistory();
+}
+
+bool TelegramClient::openTelegramLink(const std::string& url) {
+    if (!ready_) return false;
+    std::string lower = url;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    size_t start = 0;
+    for (const char* prefix : {"https://t.me/", "http://t.me/", "https://telegram.me/", "http://telegram.me/"})
+        if (lower.compare(0, std::strlen(prefix), prefix) == 0) { start = std::strlen(prefix); break; }
+    if (!start) return false;
+    size_t end = url.find_first_of("/?#", start);
+    std::string username = url.substr(start, end == std::string::npos ? end : end - start);
+    if (username.size() < 5 || username.size() > 32) return false;
+    for (unsigned char c : username) if (!std::isalnum(c) && c != '_') return false;
+    // Invite links and service endpoints need their own TDLib link workflows.
+    if (username == "share" || username == "addstickers" || username == "joinchat" || username == "proxy" || username == "socks") return false;
+    if (end != std::string::npos && url[end] == '/') {
+        size_t next = url.find_first_of("/?#", end + 1);
+        std::string segment = url.substr(end + 1, next == std::string::npos ? next : next - end - 1);
+        if (!segment.empty() && !std::all_of(segment.begin(), segment.end(), [](unsigned char c) { return std::isdigit(c); })) return false;
+    }
+    ++link_generation_;
+    auto* request = json_pack("{s:s,s:s}", "@type", "searchPublicChat", "username", username.c_str());
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:i}", "kind", "public_link", "generation", (int)link_generation_));
+    sendJson(request);
+    return true;
+}
+
+void TelegramClient::showTopicsList() {
+    topics_open_ = true; topics_pending_ = false;
+    ++history_generation_; history_pending_ = false; history_done_ = true; history_items_.clear(); messages_.clear();
 }
 
 bool TelegramClient::matchesTopic(void* opaque) const {
@@ -1588,6 +2764,7 @@ void TelegramClient::loadTopics(bool refresh) {
 
 void TelegramClient::openTopic(size_t index) {
     if (index >= topics_.size()) return;
+    chat_open_at_=performance::now();chat_present_pending_=chat_live_present_pending_=true;chat_live_ready_=false;
     current_topic_ = topics_[index].id; topics_open_ = false;
     current_chat_title_ = forum_title_ + " / " + topics_[index].title;
     refreshHistory();
@@ -1603,6 +2780,10 @@ void TelegramClient::storeMessage(void* opaque, int64_t old_id) {
     if (!json_is_object(message) || json_i53(message, "chat_id") != current_chat_id_ || !current_chat_id_) return;
     if (!matchesTopic(message)) return;
     MessageItem parsed = parseMessage(message);
+    // A message without interaction_info has no new reaction snapshot. Keep
+    // known counts until TDLib supplies the info or an explicit reactions update.
+    if (!json_is_object(json_object_get(json_object_get(message,"interaction_info"),"reactions")))
+        for (const auto& item:history_items_) if (item.id==parsed.id) { parsed.reactions=item.reactions;break; }
     if (old_id && old_id != parsed.id) {
         replaced_message_ids_.insert(old_id);
         history_items_.erase(std::remove_if(history_items_.begin(), history_items_.end(),
@@ -1628,9 +2809,10 @@ void TelegramClient::updateReadOutbox(int64_t chat_id, int64_t last_id) {
 void TelegramClient::refreshHistory() {
     if (!current_chat_id_ || topics_open_) return;
     ++history_generation_;
+    cached_reactions_.clear();
     history_items_.clear(); messages_.clear();
     json_t* cached = ui_cache_.history(current_chat_id_);
-    media_cache_.resolve(cached); clear_cached_file_ids(cached);
+    media_cache_.resolve(cached, false); clear_cached_file_ids(cached);
     const char* key; json_t* message;
     if (json_is_object(cached)) json_object_foreach(cached, key, message) { if (matchesTopic(message)) history_items_.push_back(parseMessage(message)); }
     if (cached) json_decref(cached);
@@ -1639,6 +2821,7 @@ void TelegramClient::refreshHistory() {
     history_cursor_ = 0; history_target_ = 60;
     history_pending_ = history_end_ = false; history_done_ = !ready_;
     history_error_.clear();
+    requestCachedDetails();
     requestHistoryPage();
 }
 
@@ -1662,6 +2845,8 @@ void TelegramClient::requestHistoryPage() {
         "limit", history_cursor_ ? 10 : 5,
         "only_local", 0);
     json_t* extra = json_pack("{s:s,s:I,s:i}", "kind", "history", "chat", (json_int_t)current_chat_id_, "generation", (int)history_generation_);
+    json_object_set_new(extra,"first",json_boolean(history_cursor_==0));
+    if (!history_cursor_) json_object_set_new(extra,"requested_at",json_integer(performance::now()));
     if (current_topic_) {
         json_object_set_new(req, "@type", json_string("getForumTopicHistory"));
         json_object_set_new(req, "forum_topic_id", json_integer(current_topic_));
@@ -1673,14 +2858,21 @@ void TelegramClient::requestHistoryPage() {
 }
 
 void TelegramClient::openStickers() {
-    ++sticker_session_;
+    ++sticker_session_; sticker_items_pending_set_=0;
+    sticker_selected_pack_=-1;sticker_selection_pending_=sticker_selection_loaded_=false;
     if (sticker_packs_.size() < 2) {
         sticker_packs_ = {{0, "Избранные"}, {1, "Недавние"}};
         sticker_set_ids_ = {0, 0};
     }
     stickers_.clear();
     sticker_status_ = ready_ ? "Выберите набор стикеров" : "Нет подключения к Telegram";
-    if (!ready_ || !current_chat_id_ || sticker_packs_.size() > 2) return;
+    requestCachedDetails(-2);
+    selectStickerPack(1);
+    loadStickerPacks();
+}
+
+void TelegramClient::loadStickerPacks() {
+    if (!ready_ || !current_chat_id_ || sticker_packs_fresh_) return;
     json_t* root = json_pack("{s:s,s:{s:s}}", "@type", "getInstalledStickerSets", "sticker_type", "@type", "stickerTypeRegular");
     json_object_set_new(root, "@extra", json_pack("{s:s,s:I,s:i}", "kind", "sticker_packs", "chat", (json_int_t)current_chat_id_, "session", (int)sticker_session_));
     sendJson(root);
@@ -1689,16 +2881,25 @@ void TelegramClient::openStickers() {
 void TelegramClient::ensureStickerPackIcon(size_t index) {
     if (index >= sticker_packs_.size()) return;
     auto& pack = sticker_packs_[index];
-    if (pack.icon_file_id <= 0 || !pack.icon_path.empty()) return;
-    requestFile(pack.icon_file_id, 20);
+    if (!pack.icon_path.empty()) return;
+    if (pack.icon_file_id > 0) { requestFile(pack.icon_file_id, 20); return; }
+    // Missing covers stay placeholders; selecting a set loads its contents.
+
 }
 
 void TelegramClient::selectStickerPack(int index) {
     if (index < 0 || index >= (int)sticker_set_ids_.size()) return;
+    if (index==sticker_selected_pack_ && (sticker_selection_pending_ || sticker_selection_loaded_)) return;
+    sticker_selected_pack_=index;sticker_selection_pending_=ready_ && current_chat_id_;sticker_selection_loaded_=false;
     ++sticker_generation_; stickers_.clear();
+    sticker_items_pending_set_=index>=2 ? sticker_set_ids_[index] : 0;
     sticker_status_ = ready_ ? "Загрузка стикеров..." : "Нет подключения к Telegram";
     json_t* cached = ui_cache_.stickerItems(index);
-    if (cached) { applyStickerResponse(cached, false); json_decref(cached); }
+    if (cached) {
+        media_cache_.resolve(cached, false); clear_cached_file_ids(cached);
+        applyStickerResponse(cached, false); json_decref(cached);
+    }
+    requestCachedDetails(index);
     if (!ready_ || !current_chat_id_) return;
     json_t* root = json_pack("{s:s}", "@type", index == 0 ? "getFavoriteStickers" : index == 1 ? "getRecentStickers" : "getStickerSet");
     if (index == 1) json_object_set_new(root, "is_attached", json_false());
@@ -1714,10 +2915,13 @@ void TelegramClient::ensureSticker(size_t index) {
 bool TelegramClient::sendSticker(size_t index) {
     if (!ready_ || !current_chat_id_ || topics_open_ || index >= stickers_.size()) return false;
     const auto& s = stickers_[index];
+    if (s.file <= 0) return false; // Offline cache has no session-valid send ID.
     json_t* input = json_pack("{s:s,s:{s:s,s:i},s:i,s:i}", "@type", "inputSticker", "sticker", "@type", "inputFileId", "id", s.file, "width", s.width, "height", s.height);
     json_t* content = json_pack("{s:s,s:o,s:s}", "@type", "inputMessageSticker", "sticker", input, "emoji", s.emoji.c_str());
     json_t* root = json_pack("{s:s,s:I,s:o,s:s}", "@type", "sendMessage", "chat_id", (json_int_t)current_chat_id_, "input_message_content", content, "@extra", "send_message");
+    json_object_set_new(root, "@extra", uploads_.beginSticker(s.file, current_chat_id_, sceKernelGetSystemTimeWide()));
     sendJson(root); status_ = "Sending sticker...";
+    logUploads(true);
     return true;
 }
 
@@ -1760,22 +2964,109 @@ bool TelegramClient::sendAudioFile(const std::string& path, int duration, int64_
     return true;
 }
 
+bool TelegramClient::pollPending(int64_t message) const {
+    auto it = poll_requests_.find({current_chat_id_, message});
+    return it != poll_requests_.end() && it->second.pending;
+}
+std::string TelegramClient::pollStatus(int64_t message) const {
+    if (!ready_) return "Нет подключения";
+    auto it = poll_requests_.find({current_chat_id_, message});
+    return it == poll_requests_.end() ? "" : it->second.status;
+}
+bool TelegramClient::answerPoll(int64_t message, const std::vector<int>& options) {
+    if (!ready_ || !current_chat_id_ || pollPending(message)) return false;
+    auto it = std::find_if(messages_.begin(), messages_.end(), [message](const MessageItem& m) { return m.id == message; });
+    if (it == messages_.end() || !it->poll.validAnswer(options)) return false;
+    json_t* req = json_pack("{s:s,s:I,s:I,s:[]}", "@type", "setPollAnswer", "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)message, "option_ids");
+    for (int option : options) json_array_append_new(json_object_get(req, "option_ids"), json_integer(option));
+    json_object_set_new(req, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "poll_vote", "chat", (json_int_t)current_chat_id_, "message", (json_int_t)message));
+    poll_requests_[{current_chat_id_, message}] = {true, "Отправка голоса..."};
+    sendJson(req); return true;
+}
+
+void TelegramClient::messagesPresented() {
+    if (!current_chat_id_ || topics_open_ || messages_.empty() || !chat_open_at_) return;
+    const auto elapsed=performance::now()-chat_open_at_;
+    if (chat_present_pending_) { performance::observe(performance::Metric::ChatFirstPresent,elapsed);chat_present_pending_=false; }
+    if (chat_live_present_pending_ && chat_live_ready_) { performance::observe(performance::Metric::ChatFirstLivePresent,elapsed);chat_live_present_pending_=false; }
+}
+
+void TelegramClient::viewMessage(int64_t id) {
+    if (!ready_ || !current_chat_id_ || id<=0) return;
+    const auto now=sceKernelGetSystemTimeWide();
+    if (viewed_message_==id && now-viewed_message_at_<5000000) return;
+    const bool opened=viewed_message_!=id;
+    viewed_message_=id;viewed_message_at_=now;
+    if (opened) loadReactions(id);
+    auto* request=json_pack("{s:s,s:I,s:{s:s},s:b}","@type","viewMessages","chat_id",(json_int_t)current_chat_id_,"source","@type",current_topic_ ? "messageSourceForumTopicHistory" : "messageSourceChatHistory","force_read",0);
+    auto* ids=json_array();json_array_append_new(ids,json_integer(id));json_object_set_new(request,"message_ids",ids);
+    json_object_set_new(request,"@extra",json_pack("{s:s,s:I,s:I}","kind","post_view","chat",(json_int_t)current_chat_id_,"generation",(json_int_t)history_generation_));
+    sendJson(request);
+    auto* refresh=json_pack("{s:s,s:I,s:I}","@type","getMessage","chat_id",(json_int_t)current_chat_id_,"message_id",(json_int_t)id);
+    json_object_set_new(refresh,"@extra",json_pack("{s:s,s:I,s:I}","kind","post_refresh","chat",(json_int_t)current_chat_id_,"generation",(json_int_t)history_generation_));
+    sendJson(refresh);
+}
+
 void TelegramClient::loadReactions(int64_t id) {
-    reaction_message_ = id; reaction_choices_.clear(); reaction_pending_ = false;
+    // Prefetched when the message opens: the picker reuses an answer that is
+    // already loaded or on its way instead of asking TDLib again.
+    if (ready_ && id > 0 && id == reaction_message_ && (reaction_loading_ || reaction_loaded_)) {
+        if (reaction_loaded_ && !reaction_choices_.empty()) reaction_status_ = "\uE002: поставить / убрать";
+        return;
+    }
+    reaction_message_ = id; reaction_choices_.clear(); reaction_custom_choices_.clear(); reaction_previews_.clear(); reaction_pending_ = false;
+    reaction_loading_ = reaction_loaded_ = false;
     reaction_status_ = ready_ ? "Загрузка реакций..." : "Нет подключения";
     if (!ready_ || !current_chat_id_ || id <= 0) return;
+    reaction_loading_ = true; reaction_requested_at_ = performance::now();
     json_t* request = json_pack("{s:s,s:I,s:I,s:i}", "@type", "getMessageAvailableReactions",
         "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)id, "row_size", 8);
     json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "reaction_choices", "chat", (json_int_t)current_chat_id_, "message", (json_int_t)id));
     sendJson(request);
 }
+void TelegramClient::ensureReactionMedia(size_t index) {
+    if (!ready_ || index>=reaction_choices_.size()) return;
+    auto custom=reaction_custom_choices_.find(reaction_choices_[index]);
+    if (custom==reaction_custom_choices_.end()) return;
+    auto found=reaction_previews_.find(custom->second);
+    if (found!=reaction_previews_.end()) {
+        if (found->second.path.empty()) requestFile(found->second.file,32);
+        return;
+    }
+    auto* ids=json_array();
+    const size_t begin=index/32*32;
+    for (size_t i=begin;i<reaction_choices_.size() && i<begin+32;++i) {
+        auto item=reaction_custom_choices_.find(reaction_choices_[i]);
+        if (item!=reaction_custom_choices_.end() && !reaction_previews_.count(item->second)) {
+            reaction_previews_[item->second]={};json_array_append_new(ids,json_integer(item->second));
+        }
+    }
+    auto* request=json_pack("{s:s}","@type","getCustomEmojiStickers");
+    json_object_set_new(request,"custom_emoji_ids",ids);
+    json_object_set_new(request,"@extra",json_pack("{s:s,s:I,s:I}","kind","reaction_icons","chat",(json_int_t)current_chat_id_,"message",(json_int_t)reaction_message_));
+    sendJson(request);
+}
+std::string TelegramClient::reactionIcon(size_t index) const {
+    if (index>=reaction_choices_.size()) return {};
+    auto custom=reaction_custom_choices_.find(reaction_choices_[index]);
+    if (custom==reaction_custom_choices_.end()) return {};
+    auto found=reaction_previews_.find(custom->second);
+    return found==reaction_previews_.end() ? std::string{} : found->second.path;
+}
+
 void TelegramClient::toggleReaction(int64_t id, const std::string& emoji) {
     if (!ready_ || id != reaction_message_ || reaction_pending_) return;
+    if (std::find(reaction_choices_.begin(),reaction_choices_.end(),emoji)==reaction_choices_.end()) return;
+    const auto custom_it=reaction_custom_choices_.find(emoji);
+    const int64_t custom=custom_it==reaction_custom_choices_.end() ? 0 : custom_it->second;
     bool chosen = false;
     for (const auto& message : messages_) if (message.id == id)
-        for (const auto& reaction : message.reactions) if (reaction.emoji == emoji) chosen = reaction.chosen;
-    json_t* request = json_pack("{s:s,s:I,s:I,s:{s:s,s:s}}", "@type", chosen ? "removeMessageReaction" : "addMessageReaction",
-        "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)id, "reaction_type", "@type", "reactionTypeEmoji", "emoji", emoji.c_str());
+        for (const auto& reaction : message.reactions)
+            if (custom ? reaction.custom_emoji_id==custom : !reaction.custom_emoji_id && reaction.emoji==emoji) chosen=reaction.chosen;
+    json_t* request = json_pack("{s:s,s:I,s:I}", "@type", chosen ? "removeMessageReaction" : "addMessageReaction",
+        "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)id);
+    json_object_set_new(request,"reaction_type", custom ? json_pack("{s:s,s:I}","@type","reactionTypeCustomEmoji","custom_emoji_id",(json_int_t)custom) :
+        json_pack("{s:s,s:s}","@type","reactionTypeEmoji","emoji",emoji.c_str()));
     if (!chosen) { json_object_set_new(request, "is_big", json_false()); json_object_set_new(request, "update_recent_reactions", json_true()); }
     json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "reaction_send", "chat", (json_int_t)current_chat_id_, "message", (json_int_t)id));
     reaction_pending_ = true; reaction_status_ = "Отправка..."; sendJson(request);
@@ -1783,12 +3074,16 @@ void TelegramClient::toggleReaction(int64_t id, const std::string& emoji) {
 
 void TelegramClient::leaveChat() {
     current_topic_ = 0; topics_open_ = topics_pending_ = false; topics_.clear(); ++topics_generation_;
-    reaction_message_ = 0; reaction_choices_.clear(); reaction_pending_ = false;
+    reaction_message_ = 0; reaction_choices_.clear(); reaction_custom_choices_.clear(); reaction_previews_.clear(); reaction_pending_ = false;
+    reaction_loading_ = reaction_loaded_ = false;
     ++history_generation_;
     history_pending_ = false;
     history_done_ = true;
     history_items_.clear();
     current_chat_id_ = 0;
+    foreground_until_.store(0);
+    syncOpenedChat();
+    next_update_check_ = 0;
     current_chat_title_.clear();
     messages_.clear();
     input_kind_ = InputKind::None;
@@ -1802,6 +3097,43 @@ void TelegramClient::close() {
 std::string TelegramClient::currentChatAvatar() const {
     for (const auto& chat : known_chats_) if (chat.id == current_chat_id_) return chat.avatar_path;
     return "";
+}
+
+void* TelegramClient::cleanupEntry(void* opaque) {
+    auto* self = static_cast<TelegramClient*>(opaque);
+    cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Parser);
+    self->cleanup_result_ = account_cleanup::purge() ? 1 : -1;
+    return nullptr;
+}
+
+void TelegramClient::clearAccountMemory() {
+    document_downloads_.clear();
+    document_status_.clear();
+    cache_restore_allowed_ = false;
+    ready_ = false; input_kind_ = InputKind::None;
+    connection_ready_ = false; cancelProxyCheck();
+    chats_request_deadline_ = refresh_deadline_ = 0;
+    startup_chat_snapshots_.clear();
+    known_chats_.clear(); chats_.clear(); leaveChat();
+    ui_cache_.clear(); media_cache_.clear();
+    user_names_.clear(); user_photos_.clear(); sender_requests_.clear(); user_presence_.clear(); supergroup_forum_.clear();
+    folder_windows_.clear(); folders_.clear(); selected_folder_ = 0;
+    stickers_.clear(); sticker_packs_.clear(); sticker_set_ids_.clear(); sticker_status_.clear();
+    sticker_packs_fresh_ = false; sticker_icon_retry_.clear();
+    ++sticker_generation_; ++sticker_session_; sticker_items_pending_set_=0;
+    pending_files_.clear(); file_priorities_.clear(); avatar_metadata_retry_.clear(); list_avatar_files_.clear();
+    file_update_times_.clear();
+    read_outbox_.clear(); replaced_message_ids_.clear(); poll_requests_.clear();
+    refresh_before_.clear(); refresh_ids_.clear(); refresh_pending_ = refresh_manual_ = false;
+    chats_pending_ = requested_chats_ = cache_maintenance_ = false;
+    notice_.clear(); chats_error_.clear(); video_note_status_.clear();
+    uploads_ = MediaUploads{};
+    uploads_pending_ = false;
+    upload_log_snapshot_.clear();
+    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    outgoing_.clear(); upload_logs_.clear();
+    sampleQueues();
+    pthread_mutex_unlock(&queue_mutex_);
 }
 
 void TelegramClient::logout() {

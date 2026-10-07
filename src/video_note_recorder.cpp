@@ -1,3 +1,4 @@
+#include "performance.h"
 #include "video_note_recorder.h"
 #include "video_note_frame.h"
 #include "video_note_encoder.h"
@@ -52,6 +53,7 @@ void VideoNoteRecorder::switchCamera() {
     if (state()==State::Preview || state()==State::Recording) switch_=true;
 }
 void VideoNoteRecorder::cancel() {
+    performance::Scope measurement(performance::Metric::VideoCancel);
     cancel_=true; audio_stop_=true;
     if (thread_started_) { pthread_join(thread_,nullptr); thread_started_=false; }
     closeCamera();
@@ -127,7 +129,7 @@ void VideoNoteRecorder::run() {
     cpu_scheduler::Thread role(cpu_scheduler::Role::Video);
     cpu_scheduler::Media workload(cpu_scheduler::Role::Video);
     if (!openCamera(SCE_CAMERA_DEVICE_FRONT)) { state_=State::Error; return; }
-    state_=State::Preview; setStatus("X Начать запись   Triangle Сменить камеру");
+    state_=State::Preview; setStatus("\uE002 Начать запись   \uE000 Сменить камеру");
     std::vector<uint8_t> frame(FrameBytes);
     uint64_t last_frame=UINT64_MAX;
     uint32_t next_capture=0;
@@ -140,7 +142,7 @@ void VideoNoteRecorder::run() {
             if (!openCamera(1-previous)) {
                 if (!openCamera(previous)) { error=true; break; }
                 setStatus("Другая камера недоступна; используется прежняя");
-            } else setStatus(state()==State::Recording ? "Запись..." : "X Начать запись   Triangle Сменить камеру");
+            } else setStatus(state()==State::Recording ? "Запись..." : "\uE002 Начать запись   \uE000 Сменить камеру");
             last_frame=UINT64_MAX;
         }
         if (begin_.exchange(false) && state()==State::Preview) {
@@ -184,7 +186,9 @@ void VideoNoteRecorder::run() {
     if (!frames || samples_<SampleRate) { fail("Запишите кружок длительностью хотя бы 1 секунду"); return; }
     state_=State::Encoding; setStatus("Подготовка MP4...");
     std::string message;
+    performance::Scope encode_measurement(performance::Metric::VideoEncode);
     bool ok=encode_video_note(raw_path_,pcm_path_,path_,samples_,cancel_,progress_,message);
+    encode_measurement.finish();
     std::remove(raw_path_.c_str()); std::remove(pcm_path_.c_str());
     if (cancel_) return;
     if (!ok) { fail("Ошибка видео: "+message); return; }

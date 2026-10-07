@@ -1,7 +1,11 @@
 #pragma once
 #include "media_uploads.h"
+#include "td_event_queue.h"
+#include "poll.h"
+#include <map>
 #include "media_cache.h"
 #include "ui_cache.h"
+#include "media_trash.h"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -45,7 +49,8 @@ struct ChatFolderItem {
 };
 
 struct MessageItem {
-    struct Reaction { std::string emoji; int count = 0; bool chosen = false; };
+    PollData poll;
+    struct Reaction { std::string emoji; int count = 0; bool chosen = false; int64_t custom_emoji_id = 0; };
     std::vector<Reaction> reactions;
     int64_t sender_id = 0;
     bool sender_chat = false;
@@ -56,12 +61,18 @@ struct MessageItem {
     DeliveryState delivery = DeliveryState::Sent;
     std::string send_error;
     std::string text;
+    std::string media_label;
     int32_t media_file_id = 0;
     std::string media_path;
+    bool document = false;
+    std::string document_name;
+    int64_t document_size = 0, document_downloaded = 0;
     bool sticker = false;
     bool animation = false;
     bool video = false, video_note = false; // Shares the animation download/preview fields.
     int video_duration = 0;
+    int video_width = 0, video_height = 0;
+    bool video_alternative = false;
     bool voice = false;
     bool audio = false; // Ordinary audio uses the same download/playback fields as voice.
     std::string audio_title, audio_performer;
@@ -69,6 +80,8 @@ struct MessageItem {
     int32_t voice_file_id = 0;
     int64_t voice_size = 0, voice_downloaded = 0;
     std::string voice_path, voice_error;
+    std::string transcription;
+    bool transcription_pending = false;
     int32_t animation_file_id = 0;
     int64_t animation_size = 0, animation_downloaded = 0;
     std::string animation_path, animation_error;
@@ -90,13 +103,19 @@ public:
     TelegramClient();
     ~TelegramClient();
 
-    bool start();
+    bool start(bool defer_cache_worker = false);
+    bool startCacheWorker(); // UI; also supports offline background restoration.
     void configureProxy(bool enabled, const std::string& server, int port, const std::string& secret);
     const std::string& proxyStatus() const { return proxy_status_; }
+    void checkProxy(const std::string& server, int port, const std::string& secret);
+    void cancelProxyCheck();
+    const std::string& proxyCheckStatus() const { return proxy_check_status_; }
     void setRequestBatchSize(int size) { request_batch_size_.store(std::max(1, std::min(64, size))); }
-    void restoreCache();
+    void restoreCache(); // UI, before pump() and before the cache writer starts.
+    bool restoreCacheAsync(); // Startup: keep UI/TDLib running during cache reads.
     bool canBrowse() const { return ready_ || !known_chats_.empty(); }
-    void pump();
+    void pump(bool interactive = false);
+    void prioritizeInteraction(int64_t now) { interaction_until_.store(now + 150000); }
     void close();
     void logout();
     void optimizeCache(int days, int megabytes);
@@ -112,6 +131,10 @@ public:
     bool closed() const { return closed_; }
     const std::string& status() const { return status_; }
     std::string uploadStatus() const;
+    void dismissStatusNotices() {
+        uploads_.dismissCompleted();
+        notice_.clear(); notice_until_ = 0;
+    }
     std::vector<std::string> uploadDetails() const;
     const std::string& lastError() const { return error_; }
     std::string mediaCacheStatus() { return media_cache_.status(); }
@@ -124,10 +147,13 @@ public:
 
     const std::vector<ChatItem>& chats() const { return chats_; }
     const std::vector<MessageItem>& messages() const { return messages_; }
+    void downloadDocument(const MessageItem& message, const std::string& directory);
+    const std::string& documentStatus() const { return document_status_; }
     int64_t currentChatId() const { return current_chat_id_; }
     const std::string& currentChatTitle() const { return current_chat_title_; }
     std::string currentUserStatus() const;
     bool currentChatIsGroup() const;
+    std::string senderAvatar(const MessageItem& message) const;
     std::string senderName(const MessageItem& message) const;
 
     void refreshChats();
@@ -137,10 +163,12 @@ public:
     std::string updateNotice() const;
     bool takeChatTopRequest() { bool result = refresh_top_; refresh_top_ = false; return result; }
     void loadMoreChats();
-    bool chatsLoading() const { return ready_ && !chats_end_ && chats_error_.empty() && chats_.size() < chats_target_; }
+    bool chatsLoading() const { return ready_ && !chats_end_ && chats_error_.empty() && (chats_.size() < chats_target_ || startup_chat_snapshots_.count(selected_folder_)); }
     bool chatsEnd() const { return chats_end_ && chats_.size() == selected_chat_count_; }
     const std::string& chatsError() const { return chats_error_; }
     void openChat(int64_t chat_id, const std::string& title);
+    bool openTelegramLink(const std::string& url);
+    bool takeLinkChatOpened() { bool opened = link_chat_opened_; link_chat_opened_ = false; return opened; }
     bool topicsOpen() const { return topics_open_; }
     const std::vector<ForumTopicItem>& topics() const { return topics_; }
     const std::string& topicsStatus() const { return topics_status_; }
@@ -155,6 +183,7 @@ public:
     int32_t currentTopicId() const { return current_topic_; }
     bool sendAudioFile(const std::string& path, int duration, int64_t chat, int32_t topic);
     void openStickers();
+    void loadStickerPacks();
     void selectStickerPack(int index);
     void ensureStickerPackIcon(size_t index);
     void ensureSticker(size_t index);
@@ -162,8 +191,15 @@ public:
     const std::vector<SendStickerItem>& stickers() const { return stickers_; }
     const std::vector<ChatFolderItem>& stickerPacks() const { return sticker_packs_; }
     const std::string& stickerStatus() const { return sticker_status_; }
+    bool answerPoll(int64_t message, const std::vector<int>& options);
+    std::string pollStatus(int64_t message) const;
+    bool pollPending(int64_t message) const;
     void loadReactions(int64_t message_id);
+    void viewMessage(int64_t message_id);
+    void messagesPresented();
     void toggleReaction(int64_t message_id, const std::string& emoji);
+    void ensureReactionMedia(size_t index);
+    std::string reactionIcon(size_t index) const;
     const std::vector<std::string>& reactionChoices() const { return reaction_choices_; }
     const std::string& reactionStatus() const { return reaction_status_; }
     void leaveChat();
@@ -175,11 +211,24 @@ public:
     void ensureFullPhoto(size_t message_index, size_t photo_index);
 
 private:
+    void syncOpenedChat();
+    int64_t opened_chat_id_ = 0;
+    bool logging_out_ = false;
+    pthread_t cleanup_thread_{};
+    bool cleanup_started_ = false;
+    std::atomic<int> cleanup_result_{0}; // 0 pending, 1 success, -1 failure.
+    static void* cleanupEntry(void* self);
+    void clearAccountMemory();
+    struct PollRequest { bool pending=false; std::string status; };
+    std::map<std::pair<int64_t,int64_t>, PollRequest> poll_requests_;
     std::string video_note_status_;
 
     bool proxy_enabled_ = false;
     std::string proxy_server_, proxy_secret_, proxy_status_;
     int proxy_port_ = 443, proxy_generation_ = 0;
+    int proxy_check_generation_ = 0;
+    int64_t proxy_check_deadline_ = 0;
+    std::string proxy_check_status_;
     void applyProxy();
     std::vector<ForumTopicItem> topics_;
     std::string topics_status_, forum_title_;
@@ -191,12 +240,25 @@ private:
     std::vector<SendStickerItem> stickers_;
     std::vector<ChatFolderItem> sticker_packs_;
     std::vector<int64_t> sticker_set_ids_;
+    bool sticker_packs_fresh_ = false;
+    std::unordered_map<int64_t, int64_t> sticker_icon_retry_;
+    // supergroup_id -> is_forum from updateSupergroup/getSupergroup; avoids a
+    // TDLib round trip before the first history request of an ordinary group.
+    std::unordered_map<int64_t, bool> supergroup_forum_;
+    int64_t sticker_items_pending_set_ = 0;
+    void applyStickerPackIcon(size_t index, void* set);
     std::string sticker_status_;
     unsigned sticker_generation_ = 0, sticker_session_ = 0;
     std::vector<std::string> reaction_choices_;
+    std::unordered_map<std::string,int64_t> reaction_custom_choices_;
+    struct ReactionPreview { int32_t file=0; std::string path; };
+    std::unordered_map<int64_t,ReactionPreview> reaction_previews_;
+    int64_t viewed_message_=0, viewed_message_at_=0;
+    int64_t chat_open_at_=0;
+    bool chat_present_pending_=false, chat_live_present_pending_=false, chat_live_ready_=false;
     std::string reaction_status_;
-    int64_t reaction_message_ = 0;
-    bool reaction_pending_ = false;
+    int64_t reaction_message_ = 0, reaction_requested_at_ = 0;
+    bool reaction_pending_ = false, reaction_loading_ = false, reaction_loaded_ = false;
     bool cache_maintenance_ = false;
     std::unordered_map<int64_t, std::string> user_names_;
     struct UserPresence { std::string type; int64_t time = 0; bool bot = false; };
@@ -204,7 +266,17 @@ private:
     void parseUserStatus(int64_t id, void* status);
     void restoreStickerCache(void* snapshot);
     void applyStickerResponse(void* root, bool packs);
-    std::unordered_set<std::string> sender_requests_;
+    void applyStickerSlice();
+    int sticker_selected_pack_=-1;
+    bool sticker_selection_pending_=false, sticker_selection_loaded_=false;
+    void* sticker_apply_root_ = nullptr;
+    size_t sticker_apply_offset_ = 0;
+    int64_t sticker_apply_chat_ = 0;
+    unsigned sticker_apply_generation_ = 0, sticker_apply_session_ = 0;
+    struct SenderPhoto { int32_t file=0; std::string path; bool fresh=false; };
+    std::unordered_map<int64_t, SenderPhoto> user_photos_;
+    std::unordered_map<std::string,int64_t> sender_requests_;
+    void ensureSenderMedia(const MessageItem& message);
     void parseUser(void* user);
     MediaCache media_cache_;
     UiCache ui_cache_;
@@ -213,6 +285,11 @@ private:
     std::vector<ChatFolderItem> folders_;
     int32_t selected_folder_ = 0;
     unsigned list_generation_ = 0;
+    unsigned refresh_generation_ = 0;
+    int64_t chats_request_deadline_ = 0, refresh_deadline_ = 0;
+    bool connection_ready_ = false;
+    void resetListRequests(int64_t now);
+    void recoverListRequests(int64_t now);
     size_t selected_chat_count_ = 0;
     void sendListRequest(const char* method, const char* kind, int64_t chat_id = 0);
     void parseFolders(void* update);
@@ -220,6 +297,7 @@ private:
     int32_t active_voice_file_ = 0;
     unsigned voice_download_generation_ = 0;
     unsigned animation_download_generation_ = 0;
+    int64_t animation_started_at_ = 0, animation_progress_ = 0, animation_progress_at_ = 0;
     std::unordered_map<int64_t, int64_t> read_outbox_;
     std::unordered_set<int64_t> replaced_message_ids_;
     void storeMessage(void* message, int64_t old_id = 0);
@@ -229,6 +307,8 @@ private:
     std::vector<int64_t> refresh_before_;
     int64_t next_update_check_ = 0, notice_until_ = 0;
     std::string notice_;
+    unsigned link_generation_ = 0;
+    bool link_chat_opened_ = false;
     std::unordered_set<int64_t> refresh_ids_;
     void checkChatUpdates(bool manual);
     void finishChatRefresh();
@@ -244,28 +324,68 @@ private:
     pthread_t worker_{};
     pthread_t cache_worker_{};
     std::atomic<bool> cache_worker_started_{false};
+    bool restore_on_cache_worker_ = false; // Set before starting that worker.
+    bool cache_restore_allowed_ = true, live_folders_received_ = false; // UI only.
+    void* restored_snapshot_ = nullptr; // Ownership protected by queue_mutex_.
+    bool full_cache_loaded_ = false; // Storage worker only (or synchronous restore).
+    void* applying_snapshot_ = nullptr; // UI owns the incremental snapshot.
+    unsigned cache_apply_stage_ = 0;
+    bool cache_restore_chats_ = false;
+    void beginCacheApply(void* snapshot);
+    void applyCacheSlice();
+    struct CacheDemand { int64_t chat = 0; unsigned history = 0, session = 0, stickers = 0; int index = -1; bool pending = false; };
+    CacheDemand cache_demand_; // Latest on-demand offline history/stickers; queue_mutex_.
+    CacheDemand cache_result_key_;
+    void* cache_result_ = nullptr;
+    void requestCachedDetails(int sticker_index = -1);
+    void applyCachedDetails();
+    void prepareCachedDetails(); // Storage worker.
+    std::deque<int64_t> cached_avatar_requests_; // queue_mutex_, visible offline rows only.
+    std::deque<std::pair<int64_t, std::string>> cached_avatar_results_;
+    std::unordered_set<int64_t> cached_avatar_seen_;
+    void prepareCachedAvatar();
+    void applyCachedAvatar();
+    void* prepareCache(); // Background lightweight index; legacy migration if absent.
+    void applyRestoredCache(void* snapshot); // UI; takes ownership, keeps live data.
     static void* cacheEntry(void* self);
+    static bool cacheLoadProceed(void* self);
+    int64_t cache_service_at_ = 0; // Storage only.
+    int64_t cache_load_slice_ = 0; // Storage only.
     pthread_t parser_{};
     pthread_mutex_t queue_mutex_ = PTHREAD_MUTEX_INITIALIZER;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> worker_started_{false};
     std::atomic<bool> parser_started_{false};
     std::atomic<int> request_batch_size_{16};
-    struct Request { std::string text; int priority; int64_t queued; };
+    struct Request { std::string text; int priority; int64_t queued; bool first_history=false, backlog_exempt=false; int32_t file_id=0; bool forum_check=false; int64_t selected=0; };
     std::deque<Request> outgoing_;
-    std::deque<std::string> incoming_;
-    std::deque<void*> parsed_;
+    struct Incoming { std::string text; int64_t received = 0; bool priority = false; };
+    size_t incoming_priority_ = 0; // Leading priority entries of incoming_; protected by queue_mutex_.
+    std::deque<Incoming> incoming_;
+    size_t incoming_bytes_ = 0, parsed_wire_bytes_ = 0; // Protected by queue_mutex_.
+    void sampleQueues(); // queue_mutex_ held; diagnostics never wait.
+    std::atomic<int64_t> interaction_until_{0};
+    // Set while the open chat waits for its first history page (Worker/Parser).
+    std::atomic<int64_t> foreground_until_{0};
+    media_trash::Sweeper trash_; // Storage thread only.
+    int64_t folder_selected_at_ = 0;
+    bool folder_first_seen_ = false;
+    unsigned folder_requests_ = 0;
+    TdEventQueue parsed_;
+    unsigned event_turn_ = 0; // Fairness survives short pumps and continuous input.
     static void* workerEntry(void* self);
     static void* parserEntry(void* self);
     void runParser();
     void runWorker();
     std::vector<MessageItem> history_items_;
+    std::unordered_map<int64_t, std::vector<MessageItem::Reaction>> cached_reactions_;
     unsigned int history_generation_ = 0;
     bool history_pending_ = false, history_done_ = true, history_end_ = false;
     int history_target_ = 60;
     int64_t history_cursor_ = 0;
     std::string history_error_;
     void requestHistoryPage();
+    void showTopicsList(); // Forum: invalidate history, show the topic list.
     void rebuildHistory();
     void* client_;
     bool ready_;
@@ -280,10 +400,18 @@ private:
     std::vector<ChatItem> chats_;
     std::vector<ChatItem> known_chats_;
     void publishChats();
+    std::map<int32_t, std::vector<ChatItem>> startup_chat_snapshots_;
+    void finishStartupChatList();
     std::vector<MessageItem> messages_;
     std::unordered_set<int32_t> pending_files_;
+    struct DocumentDownload { std::string directory, name; };
+    std::unordered_map<int32_t, DocumentDownload> document_downloads_;
+    std::string document_status_;
+    std::unordered_set<int32_t> list_avatar_files_; // Chat-list avatars requested from TDLib.
     std::unordered_map<int32_t, int> file_priorities_;
+    std::unordered_map<int32_t, int64_t> file_update_times_;
     MediaUploads uploads_;
+    std::atomic<bool> uploads_pending_{false}; // Cache I/O yields to media sends.
     int64_t upload_log_time_ = 0;
     std::string upload_log_snapshot_;
     std::deque<std::string> upload_logs_;
@@ -291,12 +419,13 @@ private:
     void flushUploadLogs();
 
     void sendJson(void* json_root);
-    void sendRaw(const char* json, int priority = 3);
+    void sendRaw(const char* json, int priority = 3, bool first_history=false, bool backlog_exempt=false, int32_t file_id=0, bool forum_check=false);
     void process(void* json_root);
     void processAuth(void* root);
     void parseChat(void* chat_obj);
     MessageItem parseMessage(void* msg_obj);
-    void requestFile(int32_t file_id, int priority = 16);
+    void requestFile(int32_t file_id, int priority = 16, bool visible_avatar=false);
+    void dropListAvatarDownloads();
     void updateFile(void* file_obj);
     void setInput(InputKind kind, const std::string& status);
 };
