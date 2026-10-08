@@ -13,7 +13,7 @@ external/font-tools-venv/
 CMakeFiles/
 
 # test metrics
-docs/*
+docs/
 !docs/controls-analysis.md
 tests/
 

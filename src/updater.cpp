@@ -10,7 +10,7 @@
 #endif
 
 #ifndef VITAGRAM_UPDATE_REPO
-#define VITAGRAM_UPDATE_REPO "ing156/VitaGramm"
+#define VITAGRAM_UPDATE_REPO "ing156/VitaGram"
 #endif
 
 namespace {
