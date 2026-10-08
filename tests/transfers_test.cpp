@@ -741,7 +741,23 @@ int main() {
     auto* transcribed_circle=parse(R"({"content":{"@type":"messageVideoNote","video_note":{"length":240,"video":{"id":120},"speech_recognition_result":{"@type":"speechRecognitionResultText","text":"Видео текст"}}}})");
     assert(speech.parseMessage(transcribed_circle).transcription=="Видео текст");
     json_decref(transcribed_circle);
+    speech.ready_=true; speech.worker_started_=true;
+    speech.process(parse(R"({"@type":"updateNewMessage","message":{"id":502,"chat_id":42,"content":{"@type":"messageVoiceNote","voice_note":{"duration":8,"voice":{"id":51}}}}})"));
+    assert(speech.requestTranscription(502));
+    assert(!speech.requestTranscription(502));
+    auto* recognition_request=parse(speech.outgoing_.back().text.c_str());
+    assert(MediaUploads::string(recognition_request,"@type")=="recognizeSpeech" && MediaUploads::number(recognition_request,"message_id")==502);
+    json_decref(recognition_request);
+    speech.process(parse(R"({"@type":"error","message":"PREMIUM_REQUIRED","@extra":{"kind":"speech_request","chat":42,"message":502}})"));
+    assert(speech.requestTranscription(502));
 
+    speech.process(parse(R"({"@type":"updateMessageContent","chat_id":42,"message_id":502,"new_content":{"@type":"messageVoiceNote","voice_note":{"speech_recognition_result":{"@type":"speechRecognitionResultText","text":""}}}})"));
+    assert(speech.messages_.back().transcription.empty() && speech.messages_.back().transcription_complete);
+    assert(!speech.messages_.back().transcription_pending && !speech.requestTranscription(502));
+    auto* blank_speech=parse(R"({"content":{"@type":"messageVoiceNote","voice_note":{"speech_recognition_result":{"@type":"speechRecognitionResultText","text":" \n\t"}}}})");
+    auto blank_item=speech.parseMessage(blank_speech); json_decref(blank_speech);
+    assert(blank_item.transcription_complete && blank_item.transcription.empty());
+    speech.worker_started_=false;
     tg.ready_=true; tg.outgoing_.clear();
     assert(tg.openTelegramLink("https://t.me/example_channel/123"));
     auto* link_request=parse(tg.outgoing_.back().text.c_str());

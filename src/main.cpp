@@ -22,8 +22,10 @@
 #include "file_download.h"
 #include "download_folder_picker.h"
 #include "proxy_link.h"
+#include "secure_store.h"
 #include "qr_scanner.h"
 #include "photo_view.h"
+#include "updater.h"
 #include <psp2/rtc.h>
 #include <ctime>
 
@@ -226,7 +228,25 @@ static void rounded_rect(float x, float y, float w, float h, unsigned int color)
     vita2d_draw_fill_circle(x+w-r, y+h-r, r, color);
 }
 
-struct PostLine { std::string text; std::string url; };
+struct PostReaction { std::string text; int width; bool chosen; };
+struct PostLine {
+    std::string text, url;
+    std::vector<PostReaction> reactions;
+    PostLine(std::string value, std::string link) : text(std::move(value)), url(std::move(link)) {}
+};
+
+static void draw_post_line(vita2d_pgf* font, int x, int baseline, const PostLine& line,
+                           unsigned int ink, unsigned int accent) {
+    if (line.reactions.empty()) {
+        draw_text(font, x, baseline, line.text, line.url.empty() ? ink : accent, 0.68f);
+        return;
+    }
+    for (const auto& reaction : line.reactions) {
+        if (reaction.chosen) rounded_rect(x, baseline-18, reaction.width, 22, accent);
+        draw_text(font, x+7, baseline, reaction.text, reaction.chosen ? RGBA8(255,255,255,255) : ink, 0.68f);
+        x += reaction.width + 6;
+    }
+}
 
 static std::string message_time(const MessageItem& message, bool full = false) {
     if (message.date <= 0) return "--:--";
@@ -317,13 +337,25 @@ static void draw_delivery(float x, float y, DeliveryState state, unsigned int ba
 
 static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& message) {
     std::vector<PostLine> result;
+    if (message.transcription_complete && message.transcription.empty())
+        result.push_back({tr("post.transcription_empty"), ""});
+    else if (((message.voice && !message.audio) || message.video_note) && message.transcription.empty())
+        result.push_back({message.transcription_pending ? tr("post.transcription_wait") : tr("post.transcribe"),
+            message.transcription_pending ? "" : "vitagram:transcribe/" + std::to_string(message.id)});
     if (message.document) result.push_back({tr("hint.download"), ""});
-    std::string reactions;
+    PostLine reaction_line("", "");
+    int reaction_width = 0;
     for (const auto& reaction : message.reactions) {
-        if (!reactions.empty()) reactions += "   ";
-        reactions += reaction.emoji + " " + std::to_string(reaction.count) + (reaction.chosen ? " *" : "");
+        std::string label = reaction.emoji + " " + std::to_string(reaction.count);
+        int width = rich_text_width(font, 0.68f, label.c_str()) + 14;
+        if (!reaction_line.reactions.empty() && reaction_width + width > 840) {
+            result.push_back(std::move(reaction_line));
+            reaction_line = PostLine("", ""); reaction_width = 0;
+        }
+        reaction_line.reactions.push_back({label, width, reaction.chosen});
+        reaction_width += width + 6;
     }
-    if (!reactions.empty()) for (const auto& line : wrap_text(font, reactions, 840)) result.push_back({line, ""});
+    if (!reaction_line.reactions.empty()) result.push_back(std::move(reaction_line));
     if (message.delivery == DeliveryState::Failed && !message.send_error.empty())
         for (const auto& line : wrap_text(font, message.send_error, 840)) result.push_back({line, ""});
     if (!message.transcription.empty()) {
@@ -389,6 +421,15 @@ static std::string open_web_link(const std::string& url) {
     return tr("link.browser_error", {code});
 }
 
+// Korean and Chinese need their own glyphs; other languages use the standard font chain.
+static void apply_language_font() {
+    const std::string language = i18n::current();
+    const char* path = language == "ko" ? "app0:assets/NotoSansKR-Regular.otf" :
+        language == "zh-Hans" ? "app0:assets/NotoSansSC-Regular.otf" :
+        language == "zh-Hant" ? "app0:assets/NotoSansTC-Regular.otf" : nullptr;
+    rich_text_set_language_font(path);
+}
+
 static void startup_screen(vita2d_pgf* font, const char* stage, int step) {
     vita2d_start_drawing();
     vita2d_clear_screen();
@@ -419,6 +460,13 @@ static std::vector<int> proxy_rows(int type) {
 
 int main() {
     pthread_init();
+    // A staged update is installed now, while almost no memory is in use (see Updater::applyPending).
+    std::string update_failure;
+    switch (Updater::applyPending("ux0:data/vitagram/update", update_failure)) {
+        case Updater::Pending::Applied: sceAppMgrLoadExec("app0:eboot.bin", nullptr, nullptr); sceKernelExitProcess(0); break;
+        case Updater::Pending::Failed: break; // reported in Settings below
+        case Updater::Pending::None: break;
+    }
     const int64_t startup_time = performance::now();
     performance::collector().start(startup_time);
     cpu_scheduler::init();
@@ -435,6 +483,7 @@ int main() {
     AppSettings settings;
     settings.load();
     i18n::init("app0:lang", settings.language);
+    apply_language_font();
 
     vita2d_init();
     vita2d_set_vblank_wait(1);
@@ -460,6 +509,7 @@ int main() {
     tg.configureProxy(settings.proxy_enabled, settings.proxyConfig());
     tg.setRequestBatchSize(settings.request_batch_size);
     startup_screen(font, "3/5  Starting Telegram transport", 3);
+    tg.setDatabaseKey(secure_store::database_key());
     if (net_ok) tg.start(true);
 
     // The main loop can process authorization, navigation and live updates while
@@ -472,6 +522,42 @@ int main() {
     rich_text_set_scale(settings.fontScale());
     bool settings_open = false, confirm_logout = false;
     int settings_row = 0;
+    Updater updater(VITAGRAM_VERSION, "app0:certs/cacert.pem", "ux0:data/vitagram/update");
+    if (!update_failure.empty()) updater.reportStartupFailure(update_failure);
+    else if (FILE* f = std::fopen("ux0:data/vitagram/update/result.txt", "rb")) { // from a failed install at an earlier start
+        char text[160]; size_t n = std::fread(text, 1, sizeof(text) - 1, f); std::fclose(f); text[n] = 0;
+        if (n) updater.reportStartupFailure(text);
+    }
+    const int64_t update_check_due = sceKernelGetSystemTimeWide() + 60000000; // stay out of the way of startup
+    bool update_auto_checked = false, update_auto_install = false, restart_requested = false;
+    int64_t update_installed_at = 0;
+    auto update_error_text = [&](const Updater::Snapshot& u) {
+        switch (u.error) {
+            case Updater::Error::Network: return tr("update.err.network");
+            case Updater::Error::NoRelease: return tr("update.err.no_release");
+            case Updater::Error::BadSignature: return tr("update.err.signature");
+            case Updater::Error::Storage: return tr("update.err.storage");
+            case Updater::Error::Package: return tr("update.err.package");
+            case Updater::Error::Install: return tr("update.err.install");
+            case Updater::Error::Cancelled: return tr("update.err.cancelled");
+            default: return tr("update.err.network");
+        }
+    };
+    auto update_label = [&](const Updater::Snapshot& u) {
+        switch (u.state) {
+            case Updater::State::Idle: return tr("update.idle", {updater.currentVersion()});
+            case Updater::State::Checking: return tr("update.checking");
+            case Updater::State::UpToDate: return tr("update.up_to_date", {updater.currentVersion()});
+            case Updater::State::Available: return tr("update.available", {u.version});
+            case Updater::State::Downloading: return tr("update.downloading", {std::to_string(u.percent)});
+            case Updater::State::Verifying: return tr("update.verifying");
+            case Updater::State::Extracting: return tr("update.extracting", {std::to_string(u.percent)});
+            case Updater::State::Installing: return tr("update.installing");
+            case Updater::State::Installed: return tr("update.installed", {u.version});
+            case Updater::State::Failed: return update_error_text(u);
+        }
+        return std::string();
+    };
     bool proxy_open = false;
     int proxy_input = -1;
     DownloadFolderPicker folder_picker;
@@ -481,6 +567,10 @@ int main() {
     bool proxy_return_to_screen = false, proxy_imported = false;
     std::string pending_proxy_link;
     auto open_link = [&](const std::string& url) -> std::string {
+        if (url.compare(0, 20, "vitagram:transcribe/") == 0) {
+            tg.requestTranscription(std::strtoll(url.c_str() + 20, nullptr, 10));
+            return "";
+        }
         if (is_proxy_link(url)) { pending_proxy_link = url; return ""; }
         if (tg.openTelegramLink(url)) return "";
         return open_web_link(url);
@@ -555,8 +645,6 @@ int main() {
     };
 
     bool startup_ready_measured = false;
-    std::string performance_status = performance::enabled ? tr("diag.performance_collecting") : tr("diag.performance_disabled");
-    int64_t next_performance_display = 0;
     performance::observe(performance::Metric::StartupUi, performance::now()-startup_time);
     while (running) {
         performance::Scope frame_measurement(performance::Metric::Frame);
@@ -564,6 +652,26 @@ int main() {
         performance::SlowScope slow_ui(performance::SlowPhase::Ui,"frame_ui");
         performance::SlowScope pre_input(performance::SlowPhase::Ui,"pre_input");
         int64_t now = sceKernelGetSystemTimeWide();
+        if (!update_auto_checked && now >= update_check_due) {
+            update_auto_checked = true;
+            if (settings.check_updates && net_ok) { update_auto_install = true; updater.check(); }
+        }
+        {
+            // Startup check found a release: install it unattended, then restart into the new version.
+            const Updater::State update_now = updater.snapshot().state;
+            if (update_auto_install && update_now == Updater::State::Available) { update_auto_install = false; updater.install(); }
+            else if (update_auto_install && update_now != Updater::State::Checking) update_auto_install = false;
+            if (update_now == Updater::State::Installed) {
+                if (!update_installed_at) update_installed_at = now;
+                // Wait a moment so the result is visible, and never interrupt typing, recording or an open chat.
+                if (!restart_requested && now - update_installed_at > 3000000 && !kb.active() && !recorder.recording() &&
+                    !recorder.processing() && !circle_recorder.active() && !tg.currentChatId()) {
+                    restart_requested = true;
+                    tg.close();
+                    running = false;
+                }
+            }
+        }
         if (now >= next_network_poll) { net.poll(); next_network_poll = now + 1000000; }
         sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed = pad.buttons & ~old_buttons;
@@ -732,8 +840,8 @@ int main() {
                         }
                     }
                 } else if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (touch_y >= (proxy_open ? 104 : 88) && touch_y < (proxy_open ? 104 + 36 * (int)proxy_rows(proxy_draft.proxy_type).size() : 468)) {
-                    settings_row = proxy_open ? (touch_y - 104) / 36 : (touch_y - 88) / 38;
+                else if (touch_y >= (proxy_open ? 104 : 88) && touch_y < (proxy_open ? 104 + 36 * (int)proxy_rows(proxy_draft.proxy_type).size() : 88 + 32 * 12)) {
+                    settings_row = proxy_open ? (touch_y - 104) / 36 : (touch_y - 88) / 32;
                     pressed |= SCE_CTRL_CROSS;
                 }
             } else if (!tg.currentChatId() && !tg.canBrowse()) {
@@ -999,8 +1107,8 @@ int main() {
             }
         } else if (settings_open) {
             if (pressed & SCE_CTRL_CIRCLE) { if (confirm_logout) confirm_logout = false; else settings_open = false; }
-            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+9)%10; confirm_logout = false; }
-            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%10; confirm_logout = false; }
+            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+11)%12; confirm_logout = false; }
+            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%12; confirm_logout = false; }
             if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                 int direction = (pressed & SCE_CTRL_LEFT) ? -1 : 1;
                 // Row 0 is the language; the remaining rows keep their original order.
@@ -1014,6 +1122,7 @@ int main() {
                     if (at >= choices.size()) at = 0;
                     settings.language = choices[(at + choices.size() + direction) % choices.size()];
                     i18n::select(settings.language);
+                    apply_language_font();
                     settings_error = settings.save() ? "" : tr("settings.save_failed");
                 } else if (row < 4) {
                     confirm_logout = false;
@@ -1035,6 +1144,19 @@ int main() {
                     if (pressed & SCE_CTRL_CROSS) folder_picker.open(settings.download_dir);
                 } else if (row == 7) {
                     if (pressed & SCE_CTRL_CROSS) { proxy_open = true; proxy_return_to_screen = proxy_imported = false; proxy_draft = settings; settings_row = 0; settings_error.clear(); confirm_logout = false; }
+                } else if (row == 8) {
+                    confirm_logout = false;
+                    settings.check_updates = !settings.check_updates;
+                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                } else if (row == 9) {
+                    confirm_logout = false;
+                    if (pressed & SCE_CTRL_CROSS) {
+                        const Updater::Snapshot u = updater.snapshot();
+                        settings_error.clear();
+                        if (u.state == Updater::State::Available) updater.install();
+                        else if (u.busy() && u.state != Updater::State::Installing) updater.cancel();
+                        else if (u.state == Updater::State::Idle || u.state == Updater::State::UpToDate || u.state == Updater::State::Failed) updater.check();
+                    }
                 } else if (pressed & SCE_CTRL_CROSS) {
                     if (!tg.ready()) settings_error = tr("settings.logout_wait");
                     else if (confirm_logout) { tg.logout(); confirm_logout = false; settings_open = false; }
@@ -1125,7 +1247,7 @@ int main() {
                     }
                     int link_line = scrollable_post(messages[message_index]) ? std::max(0, (post_text_scroll-post_text_top(messages[message_index])+62)/24) : post_text_scroll;
                     if (pressed & SCE_CTRL_TRIANGLE) {
-                        if (messages[message_index].video) video_fullscreen = true;
+                        if (messages[message_index].video && !messages[message_index].video_note) video_fullscreen = true;
                         else if (link_line < (int)lines.size() && !lines[link_line].url.empty())
                             browser_error = open_link(lines[link_line].url);
                     }
@@ -1392,7 +1514,8 @@ int main() {
             draw_text(font, 28, 528, tr("proxy.footer"), ink, 0.6f);
         } else if (settings_open) {
             const std::string labels[] = {tr("settings.language"), tr("settings.retention"), tr("settings.cache_size"), tr("settings.theme"),
-                tr("settings.font_size"), tr("settings.show_threads"), tr("settings.batch"), tr("settings.download_dir"), tr("proxy.title"), tr("settings.logout")};
+                tr("settings.font_size"), tr("settings.show_threads"), tr("settings.batch"), tr("settings.download_dir"), tr("proxy.title"),
+                tr("settings.auto_update"), tr("settings.update"), tr("settings.logout")};
             std::string values[] = {
                 language_label(),
                 settings.retention == 4 ? tr("settings.always") : tr("settings.days", {std::to_string(AppSettings::days(settings.retention))}),
@@ -1400,13 +1523,15 @@ int main() {
                 dark ? tr("settings.theme_dark") : tr("settings.theme_light"), std::to_string(90+settings.font*10) + "%",
                 settings.show_threads ? tr("common.yes") : tr("common.no"), std::to_string(settings.request_batch_size),
                 settings.download_dir, settings.proxy_enabled ? tr("common.enabled") : tr("common.disabled"),
+                settings.check_updates ? tr("common.yes") : tr("common.no"), update_label(updater.snapshot()),
                 confirm_logout ? tr("settings.confirm_logout") : ""};
-            for (int row=0; row<10; ++row) {
-                rounded_rect(24, 88+row*38, 912, 35, row == settings_row ? selected : white);
-                draw_text(font, 40, 112+row*38, labels[row], ink, 0.65f);
-                draw_text(font, 520, 112+row*38, fit_text(font, values[row], 400, 0.6f), ink, 0.6f);
+            for (int row=0; row<12; ++row) {
+                rounded_rect(24, 88+row*32, 912, 30, row == settings_row ? selected : white);
+                draw_text(font, 40, 109+row*32, labels[row], ink, 0.62f);
+                draw_text(font, 520, 109+row*32, fit_text(font, values[row], 400, 0.58f), ink, 0.58f);
             }
-            draw_text(font, 30, 484, settings_error, ink, 0.5f);
+            { const Updater::Snapshot u = updater.snapshot();
+              draw_text(font, 30, 484, fit_text(font, !settings_error.empty() ? settings_error : u.state == Updater::State::Failed ? u.detail : std::string(), 900, 0.5f), ink, 0.5f); }
             draw_text(font, 28, 528, tr("settings.footer"), ink, 0.6f);
         } else if (!net_ok) {
             draw_text(font, 30, 115, tr("net.init_failed"), ink, 0.85f);
@@ -1546,7 +1671,7 @@ int main() {
                     int baseline = text_y+line*24;
                     if (baseline < 38) continue;
                     if (baseline-22 >= 481) break;
-                    draw_text(font, 38, baseline, lines[line].text, lines[line].url.empty() ? ink : accent, 0.68f);
+                    draw_post_line(font, 38, baseline, lines[line], ink, accent);
                 }
                 vita2d_disable_clipping();
                 int maximum = post_scroll_max(message, lines.size());
@@ -1603,8 +1728,8 @@ int main() {
                 post_text_scroll = std::max(0, std::min(post_text_scroll,
                     std::max(0, (int)text_lines.size() - available_lines)));
                 for (int line = 0; line < available_lines && post_text_scroll + line < (int)text_lines.size(); ++line)
-                    draw_text(font, 38, text_y + line * 24, text_lines[post_text_scroll + line].text,
-                        text_lines[post_text_scroll + line].url.empty() ? (message.outgoing ? outgoing : ink) : accent, 0.68f);
+                    draw_post_line(font, 38, text_y + line * 24, text_lines[post_text_scroll + line],
+                        message.outgoing ? outgoing : ink, accent);
                 draw_text(font, 28, 528, tr("hint.post_photo"), ink, 0.6f);
                 draw_text(font, 390, 528, message.document ? tr("hint.download_file") :
                     (message.voice || message.video) ? tr("hint.play_pause") : tr("hint.link_photo"), ink, 0.65f);
@@ -1732,8 +1857,10 @@ int main() {
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
             const std::string progress = tr("chats.status", {tg.chatsLoading() ? tr("chats.state_loading") : tr("chats.state_ready"),
                 std::to_string(chats.size()), tg.chatsEnd() ? tr("chats.all_loaded") : tr("chats.tap_more")});
+            const Updater::Snapshot update_state = updater.snapshot();
+            const std::string update_hint = update_state.state == Updater::State::Available ? tr("update.hint", {update_state.version}) + "   " : "";
             draw_text(font, 28, 494, !update_notice.empty() ? fit_text(font, update_notice, 900, 0.48f) :
-                tg.chatsError().empty() ? progress : tr("chats.retry", {tg.chatsError()}), ink, 0.48f);
+                fit_text(font, update_hint + (tg.chatsError().empty() ? progress : tr("chats.retry", {tg.chatsError()})), 900, 0.48f), ink, 0.48f);
             if (tg.chatsLoading()) {
                 float position = (float)((now / 2000) % 840);
                 vita2d_draw_rectangle(position, 497, 120, 2, accent);
@@ -1793,24 +1920,6 @@ int main() {
         if (!settings_open && !tg.currentChatId() && !tg.uploadStatus().empty()) {
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
             draw_text(font, 28, 494, fit_text(font, tg.uploadStatus(), 900, 0.48f), ink, 0.48f);
-        }
-        if (!settings_open && (pad.buttons & SCE_CTRL_SELECT) && !kb.active()) {
-            auto transfers = tg.uploadDetails();
-            size_t count = std::min<size_t>(8, transfers.size());
-            size_t pages = (transfers.size() + 7) / 8;
-            size_t first = pages ? ((now / 8000000) % pages) * 8 : 0;
-            if (now >= next_performance_display) {
-                performance::readDisplay(performance_status); next_performance_display = now + 1000000;
-            }
-            vita2d_draw_rectangle(0, 78, 960, 76 + (transfers.empty() ? 0 : 24 * (count + 1)), RGBA8(20,35,50,240));
-            draw_text(font, 20, 99, cpu_scheduler::status(), header_text, 0.6f);
-            draw_text(font, 20, 123, tg.mediaCacheStatus(), header_text, 0.6f);
-            draw_text(font, 20, 147, performance_status, header_text, 0.48f);
-            if (!transfers.empty()) {
-                draw_text(font, 20, 171, tr("diag.transfers"), header_text, 0.55f);
-                for (size_t i = first; i < transfers.size() && i < first + 8; ++i)
-                    draw_text(font, 20, 195 + (i-first)*24, fit_text(font, transfers[i], 920, 0.53f), header_text, 0.53f);
-            }
         }
         if (!settings_open && !tg.ready() && tg.canBrowse() && !kb.active()) {
             vita2d_draw_rectangle(0, 78, 960, 26, RGBA8(20,35,50,240));
@@ -1961,6 +2070,7 @@ int main() {
     tg.stopWorker();
     net.shutdown();
     sceAppUtilShutdown();
+    if (restart_requested) sceAppMgrLoadExec("app0:eboot.bin", nullptr, nullptr);
     sceKernelExitProcess(0);
     return 0;
 }

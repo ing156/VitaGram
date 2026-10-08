@@ -25,6 +25,5 @@ private:
 void init(); // UI, before starting workers; asynchronous CPU3 probe.
 void tick(); // UI; samples at most once per second.
 bool videoActive(); // Background storage must yield while video is decoding.
-std::string status(); // UI; measured system load, not an estimated app percentage.
 std::string threadStatus(); // UI; registered application-owned threads by role.
 }

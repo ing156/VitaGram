@@ -66,13 +66,16 @@ int main() {
         auto* pending = file();
         cache.resolve(pending, false);
         assert(!json_is_true(json_object_get(json_object_get(pending, "local"), "is_downloading_completed")));
-        json_decref(pending); cache.status(); cache.clear();
+        json_decref(pending); cache.clear();
     });
     bool responsive = ui.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
     released = true; ui.get();
     assert(responsive && !worker.get()); // clear cancels in-flight publication
     json_decref(root); blocked = false;
-    assert(cache.status().find("index: 0") != std::string::npos);
+    auto* cleared = file();
+    assert(cache.resolve(cleared, false));
+    assert(!json_is_true(json_object_get(json_object_get(cleared, "local"), "is_downloading_completed")));
+    json_decref(cleared);
 
     auto* valid = file(); assert(cache.resolve(valid)); json_decref(valid);
     assert(!unlink(path)); cache.invalidate();

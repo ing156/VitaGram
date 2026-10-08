@@ -852,6 +852,27 @@ void TelegramClient::configureProxy(bool enabled, const ProxyConfig& proxy) {
     if (worker_started_ && tdlib_parameters_sent_) applyProxy();
 }
 
+namespace {
+const char* const kDatabaseMarker = VITAGRAM_DB_DIR "/.encrypted-v1";
+}
+
+bool TelegramClient::databaseEncrypted() const {
+    if (database_key_.empty()) return false;
+    FILE* f = std::fopen(kDatabaseMarker, "rb");
+    if (f) std::fclose(f);
+    return f != nullptr;
+}
+
+// Existing installs start unencrypted; re-key the database once, then remember it with a marker
+// that lives inside the database directory (so logout cleanup removes both together).
+void TelegramClient::migrateDatabaseKey() {
+    if (database_key_.empty() || database_key_migrating_ || databaseEncrypted()) return;
+    database_key_migrating_ = true;
+    auto* request = json_pack("{s:s,s:s}", "@type", "setDatabaseEncryptionKey", "new_encryption_key", database_key_.c_str());
+    json_object_set_new(request, "@extra", json_pack("{s:s}", "kind", "db_key"));
+    sendJson(request);
+}
+
 void TelegramClient::applyProxy() {
     json_t* request;
     if (proxy_enabled_) {
@@ -1023,7 +1044,8 @@ void TelegramClient::processAuth(void* opaque) {
         json_object_set_new(params, "use_test_dc", json_false());
         json_object_set_new(params, "database_directory", json_string(VITAGRAM_DB_DIR));
         json_object_set_new(params, "files_directory", json_string(VITAGRAM_FILES_DIR));
-        json_object_set_new(params, "database_encryption_key", json_string(""));
+        json_object_set_new(params, "database_encryption_key", json_string(databaseEncrypted() ? database_key_.c_str() : ""));
+        json_object_set_new(params, "@extra", json_pack("{s:s}", "kind", "tdlib_params"));
         json_object_set_new(params, "use_file_database", json_false());
         json_object_set_new(params, "use_chat_info_database", json_false());
         json_object_set_new(params, "use_message_database", json_false());
@@ -1038,7 +1060,11 @@ void TelegramClient::processAuth(void* opaque) {
         sendJson(params);
         status_ = tr("tg.initializing");
     } else if (!std::strcmp(type, "authorizationStateWaitEncryptionKey")) {
-        sendRaw("{\"@type\":\"checkDatabaseEncryptionKey\",\"encryption_key\":\"\"}");
+        {
+            json_t* check = json_pack("{s:s,s:s}", "@type", "checkDatabaseEncryptionKey", "encryption_key",
+                                      databaseEncrypted() ? database_key_.c_str() : "");
+            sendJson(check);
+        }
     } else if (!std::strcmp(type, "authorizationStateWaitPhoneNumber")) {
         cache_restore_allowed_ = false;
         startup_chat_snapshots_.clear();
@@ -1054,6 +1080,7 @@ void TelegramClient::processAuth(void* opaque) {
     } else if (!std::strcmp(type, "authorizationStateWaitOtherDeviceConfirmation")) {
         status_ = std::string("Confirm login on another device: ") + json_str(state, "link");
     } else if (!std::strcmp(type, "authorizationStateReady")) {
+        migrateDatabaseKey();
         ready_ = true;
         error_.clear();
         status_ = tr("status.online");
@@ -1244,8 +1271,10 @@ static void parse_transcription(MessageItem& message, json_t* note) {
     json_t* result = json_object_get(note, "speech_recognition_result");
     const char* type = json_str(result, "@type");
     message.transcription_pending = !std::strcmp(type, "speechRecognitionResultPending");
+    message.transcription_complete = !std::strcmp(type, "speechRecognitionResultText");
     message.transcription = !std::strcmp(type, "speechRecognitionResultText") ? json_str(result, "text") :
         message.transcription_pending ? json_str(result, "partial_text") : "";
+    if (message.transcription.find_first_not_of(" \t\r\n") == std::string::npos) message.transcription.clear();
 }
 
 
@@ -1585,9 +1614,6 @@ void TelegramClient::downloadDocument(const MessageItem& message, const std::str
 std::string TelegramClient::uploadStatus() const {
     return uploads_.summary(sceKernelGetSystemTimeWide(), currentChatId());
 }
-std::vector<std::string> TelegramClient::uploadDetails() const {
-    return uploads_.lines(sceKernelGetSystemTimeWide());
-}
 void TelegramClient::logUploads(bool force) {
     uploads_pending_.store(std::any_of(uploads_.items().begin(), uploads_.items().end(),
         [](const MediaUploads::Item& item) { return !item.terminal; }));
@@ -1888,6 +1914,15 @@ void TelegramClient::process(void* opaque) {
         retire_td_json(root,wire_bytes); return;
     }
     json_t* extra = json_object_get(root, "@extra");
+    if (!std::strcmp(json_str(extra, "kind"), "speech_request")) {
+        if (!std::strcmp(type, "error") && json_i53(extra, "chat") == current_chat_id_) {
+            for (auto& item : history_items_) if (item.id == json_i53(extra, "message")) item.transcription_pending = false;
+            rebuildHistory();
+            notice_ = tr("post.transcription_failed", {json_str(root, "message")});
+            notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "public_link")) {
         if (json_i53(extra, "generation") == link_generation_) {
             if (!std::strcmp(type, "chat")) {
@@ -1931,6 +1966,19 @@ void TelegramClient::process(void* opaque) {
                 std::snprintf(result, sizeof(result), "%.0f", json_number_value(json_object_get(root, "seconds")) * 1000);
                 proxy_check_status_ = tr("proxy.check.ok", {result});
             } else proxy_check_status_ = tr("proxy.check.fail");
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "db_key")) {
+        database_key_migrating_ = false;
+        if (!std::strcmp(type, "ok")) {
+            if (FILE* f = std::fopen(kDatabaseMarker, "wb")) { std::fputs("1", f); std::fclose(f); }
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "tdlib_params")) {
+        if (!std::strcmp(type, "error") && databaseEncrypted()) {
+            status_ = tr("tg.db_key_error"); error_ = status_;
         }
         retire_td_json(root,wire_bytes); return;
     }
@@ -2787,6 +2835,19 @@ void TelegramClient::openTopic(size_t index) {
 void TelegramClient::backToTopics() {
     current_topic_ = 0; topics_open_ = true; current_chat_title_ = forum_title_;
     ++history_generation_; history_pending_ = false; history_done_ = true; history_items_.clear(); messages_.clear();
+}
+
+bool TelegramClient::requestTranscription(int64_t message_id) {
+    if (!ready_ || !worker_started_ || !current_chat_id_) return false;
+    auto found = std::find_if(history_items_.begin(), history_items_.end(), [&](const MessageItem& item) { return item.id == message_id; });
+    if (found == history_items_.end() || !((found->voice && !found->audio) || found->video_note) ||
+        found->transcription_pending || found->transcription_complete || !found->transcription.empty()) return false;
+    found->transcription_pending = true;
+    rebuildHistory();
+    auto* request = json_pack("{s:s,s:I,s:I}", "@type", "recognizeSpeech", "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)message_id);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "speech_request", "chat", (json_int_t)current_chat_id_, "message", (json_int_t)message_id));
+    sendJson(request);
+    return true;
 }
 
 void TelegramClient::storeMessage(void* opaque, int64_t old_id) {

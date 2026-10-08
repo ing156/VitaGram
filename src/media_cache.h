@@ -24,7 +24,6 @@ public:
     bool validateNext(bool (*proceed)(void*) = nullptr, void* context = nullptr); // Storage worker.
     json_t* takeValidated(); // UI owns result; only pass to updateFile, never process.
     void flush(bool (*proceed)(void*) = nullptr, void* context = nullptr); // Cache worker only.
-    std::string status();
 private:
     pthread_mutex_t mutex_ = PTHREAD_MUTEX_INITIALIZER;
     // Diagnostics: who holds the mutex, so a 50+ ms wait or hold names its owner.
@@ -35,7 +34,6 @@ private:
     void unlockHeld();
     json_t* index_ = nullptr;
     uint64_t revision_ = 0, saved_ = 0;
-    uint64_t hits_ = 0;
     uint64_t generation_ = 0;
     struct Validation { bool valid; int64_t checked; };
     std::unordered_map<std::string, Validation> validated_;

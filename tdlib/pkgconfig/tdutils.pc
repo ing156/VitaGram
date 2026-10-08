@@ -1,0 +1,9 @@
+prefix=/usr/local/vitasdk/arm-vita-eabi
+
+Name: tdutils
+Description: Telegram Library - Utils
+Version: 1.7.8
+
+CFlags: -I"${prefix}/include"
+Libs: -L"${prefix}/lib" -ltdutils
+Libs.private: -lpthread -L"/usr/local/vitasdk/arm-vita-eabi/lib" -l:libcrypto.a -L"/usr/local/vitasdk/arm-vita-eabi/lib" -l:libz.a

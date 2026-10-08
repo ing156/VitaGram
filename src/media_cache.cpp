@@ -73,7 +73,7 @@ void MediaCache::clearPending() {
 void MediaCache::clear() {
     lockAs(__func__, __LINE__);
     if (index_) json_decref(index_);
-    index_ = json_object(); hits_ = 0; ++revision_; ++generation_; validated_.clear();
+    index_ = json_object(); ++revision_; ++generation_; validated_.clear();
     clearPending();
     unlockHeld();
 }
@@ -343,7 +343,6 @@ void MediaCache::walk(json_t* root, unsigned depth) {
             int64_t size = json_integer_value(json_object_get(old, "size"));
             int64_t expected = json_integer_value(json_object_get(root, "size"));
             if (old && (!expected || expected == size) && checked(path, size)) {
-                ++hits_;
                 json_object_set_new(local, "path", json_string(path));
                 json_object_set_new(local, "is_downloading_completed", json_true());
                 json_object_set_new(local, "is_downloading_active", json_false());
@@ -374,11 +373,4 @@ void MediaCache::flush(bool (*proceed)(void*), void* context) {
         lockAs(__func__, __LINE__); saved_ = revision; unlockHeld();
     } else if (result != cache_writer::Result::Interrupted)
         std::fprintf(stderr, "Media cache: index write failed; existing index retained\n");
-}
-std::string MediaCache::status() {
-    lockAs(__func__, __LINE__);
-    std::string result = "Media index: " + std::to_string(index_ ? json_object_size(index_) : 0) +
-        " | reused: " + std::to_string(hits_) + (revision_ != saved_ ? " | saving" : " | saved");
-    unlockHeld();
-    return result;
 }

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <vector>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -48,16 +49,29 @@ int main() {
     const std::string dir = VITAGRAM_LANG_DIR;
 
     // Shipped catalogs: same keys, same placeholders, no raw icon glyphs, and every icon token is a known one.
+    i18n::init(dir, "en");
     auto en = read_entries(dir + "/en.lang");
-    auto ru = read_entries(dir + "/ru.lang");
     assert(!en.empty());
-    for (const auto& entry : en) {
-        assert(ru.count(entry.first) && "key missing in ru.lang");
-        assert(placeholders(entry.second) == placeholders(ru[entry.first]) && "placeholders differ between languages");
+    std::vector<std::map<std::string, std::string>> catalogs{en};
+    std::vector<std::string> names{"en"};
+    for (const auto& language : i18n::languages()) {
+        if (language.code == "en") continue;
+        catalogs.push_back(read_entries(dir + "/" + language.code + ".lang"));
+        names.push_back(language.code);
     }
-    for (const auto& entry : ru) assert(en.count(entry.first) && "key missing in en.lang");
-    for (const auto* catalog : {&en, &ru})
-        for (const auto& entry : *catalog) {
+    for (size_t c = 1; c < catalogs.size(); ++c) {
+        for (const auto& entry : en) {
+            auto it = catalogs[c].find(entry.first);
+            if (it == catalogs[c].end()) { std::fprintf(stderr, "%s.lang: missing key %s\n", names[c].c_str(), entry.first.c_str()); return 1; }
+            if (placeholders(entry.second) != placeholders(it->second)) {
+                std::fprintf(stderr, "%s.lang: placeholders differ for %s\n", names[c].c_str(), entry.first.c_str()); return 1;
+            }
+        }
+        for (const auto& entry : catalogs[c])
+            if (!en.count(entry.first)) { std::fprintf(stderr, "%s.lang: unknown key %s\n", names[c].c_str(), entry.first.c_str()); return 1; }
+    }
+    for (const auto& catalog : catalogs)
+        for (const auto& entry : catalog) {
             for (size_t i = 0; i + 2 < entry.second.size(); ++i)  // U+E000..U+E0FF is EE 80..EE 83 xx
                 assert(!((unsigned char)entry.second[i] == 0xEE && (unsigned char)entry.second[i + 1] >= 0x80 &&
                          (unsigned char)entry.second[i + 1] <= 0x83) && "icon glyph typed instead of {token}");
@@ -72,6 +86,21 @@ int main() {
                 rest.erase(0, close + 1);
             }
         }
+    // Icon tokens in a hint must be identical in every language (only the text may differ).
+    i18n::init(dir, "en");
+    auto icons = [](const std::string& s) { std::string r; for (size_t i = 0; i + 2 < s.size(); ++i) if ((unsigned char)s[i] == 0xEE) r += s.substr(i, 3); return r; };
+    for (const auto& language : i18n::languages()) {
+        i18n::select(language.code);
+        for (const auto& entry : en) {
+            std::string localized = tr(entry.first.c_str());
+            i18n::select("en");
+            std::string reference = tr(entry.first.c_str());
+            i18n::select(language.code);
+            if (icons(reference) != icons(localized)) {
+                std::fprintf(stderr, "%s.lang: icons differ for %s\n", language.code.c_str(), entry.first.c_str()); return 1;
+            }
+        }
+    }
     // The icon token for the same hint is substituted identically in every language.
     i18n::init(dir, "en");
     std::string english = tr("hint.back");

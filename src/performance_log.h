@@ -2,7 +2,6 @@
 #include "performance.h"
 #include "td_diagnostics.h"
 #include <cstdio>
-#include <string>
 #include <sys/stat.h>
 #ifdef __vita__
 #include <psp2/power.h>
@@ -10,25 +9,6 @@
 #endif
 
 namespace performance {
-struct Display {
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-    std::array<char, 240> text{};
-    int64_t updated = 0;
-};
-inline Display& display() { static Display value; return value; }
-// UI keeps its previous text if the writer is publishing; never waits on it.
-inline void readDisplay(std::string& text) {
-    auto& value = display();
-    if (pthread_mutex_trylock(&value.mutex)) return;
-    char copy[240]; std::copy(value.text.begin(), value.text.end(), copy);
-    const int64_t updated = value.updated;
-    pthread_mutex_unlock(&value.mutex);
-    if (!copy[0]) return;
-    text = copy;
-    char age[40];
-    std::snprintf(age, sizeof(age), " | age %.0fs", std::max<int64_t>(0, now()-updated)/1000000.0);
-    text += age;
-}
 inline void writeSnapshot(FILE* file, const Snapshot& snapshot, const char* version) {
     std::fprintf(file, "perf version=%s from_us=%lld until_us=%lld dropped_samples=%llu\n", version,
         (long long)snapshot.from, (long long)snapshot.until, (unsigned long long)snapshot.dropped);
@@ -57,17 +37,6 @@ inline void writeSnapshot(FILE* file, const Snapshot& snapshot, const char* vers
 inline bool flush(const char* path, const char* previous, const char* version, int64_t time) {
     if (!enabled) return true;
     auto snapshot = collector().take(time);
-    const auto& frame = snapshot.get(Metric::Frame);
-    const auto& event = snapshot.get(Metric::EventWait);
-    char summary[240];
-    char event_text[32];
-    if (event.count) std::snprintf(event_text, sizeof(event_text), "<=%.1f", event.percentile(95)/1000.0);
-    else std::snprintf(event_text, sizeof(event_text), "n/a");
-    std::snprintf(summary, sizeof(summary), "Frame p95<=%.1f max %.1f ms | Events %s ms | Q %llu/%llu/%llu",
-        frame.percentile(95)/1000.0, frame.maximum/1000.0, event_text,
-        (unsigned long long)snapshot.gauges[0].current,
-        (unsigned long long)snapshot.gauges[2].current,
-        (unsigned long long)snapshot.gauges[4].current);
     struct stat info{};
     bool ok = true;
     if (!stat(path, &info) && info.st_size >= 1024*1024) ok = std::rename(path, previous) == 0;
@@ -88,12 +57,6 @@ inline bool flush(const char* path, const char* previous, const char* version, i
             if (std::fclose(file)) ok = false;
         } else ok = false;
     }
-    if (!ok) std::snprintf(summary, sizeof(summary), "Performance log: write failed | Frame max %.1f ms", frame.maximum/1000.0);
-    auto& value = display();
-    pthread_mutex_lock(&value.mutex);
-    std::snprintf(value.text.data(), value.text.size(), "%s", summary);
-    value.updated = time;
-    pthread_mutex_unlock(&value.mutex);
     return ok;
 }
 }

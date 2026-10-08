@@ -10,9 +10,11 @@ external/rlottie-vita/install/
 external/font-tools-venv/
 /assets/NotoColorEmoji-64.ttf
 /assets/NotoSansJP-JIS.otf
+CMakeFiles/
 
 # test metrics
-docs/
+docs/*
+!docs/controls-analysis.md
 tests/
 
 # executables and package outputs
@@ -38,3 +40,5 @@ tests/
 *.swo
 *.log
 .DS_Store
+/assets/cacert.pem
+/release/

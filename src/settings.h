@@ -1,5 +1,6 @@
 #pragma once
 #include "proxy_config.h"
+#include "secure_store.h"
 #include <jansson.h>
 #include <cstdio>
 #include <algorithm>
@@ -8,6 +9,7 @@
 struct AppSettings {
     int retention = 2, capacity = 2, theme = 0, font = 1, request_batch_size = 32; // Оптимизация: увеличил с 16 до 32 для более быстрой загрузки
     bool show_threads = false;
+    bool check_updates = true; // look for a newer GitHub release shortly after startup
     bool proxy_enabled = false;
     std::string proxy_server, proxy_secret;
     int proxy_port = 443;
@@ -45,6 +47,7 @@ struct AppSettings {
         request_batch_size = value("request_batch_size", 16, 64);
         cache_storage = value("cache_storage", 0, 1);
         show_threads = json_is_true(json_object_get(root, "show_threads"));
+        if (json_t* v = json_object_get(root, "check_updates")) check_updates = json_is_true(v);
         proxy_enabled = json_is_true(json_object_get(root, "proxy_enabled"));
         proxy_port = value("proxy_port", 443, 65535);
         proxy_type = value("proxy_type", 0, 2);
@@ -53,25 +56,35 @@ struct AppSettings {
             return std::string(v ? v : "");
         };
         proxy_server = string_value("proxy_server");
-        proxy_secret = string_value("proxy_secret");
-        proxy_username = string_value("proxy_username");
-        proxy_password = string_value("proxy_password");
+        // Secrets are encrypted at rest; plain-text values from older versions are re-saved encrypted.
+        bool migrate = false;
+        auto secret_value = [&](const char* key) {
+            std::string stored = string_value(key), plain;
+            secure_store::reveal(stored, plain); // Undecryptable value (other console): forget it.
+            if (!stored.empty() && !secure_store::is_protected(stored) && secure_store::available()) migrate = true;
+            return plain;
+        };
+        proxy_secret = secret_value("proxy_secret");
+        proxy_username = secret_value("proxy_username");
+        proxy_password = secret_value("proxy_password");
         language = string_value("language");
         std::string saved_download_dir = string_value("download_dir");
         if (!saved_download_dir.empty() && saved_download_dir != "ux0:download/vitagram" &&
             saved_download_dir != "ux0:/download/vitagram") download_dir = saved_download_dir;
         json_decref(root);
+        if (migrate) save();
     }
     bool save() const {
         json_t* root = json_pack("{s:i,s:i,s:i,s:i,s:i,s:b}", "retention", retention, "capacity", capacity,
             "theme", theme, "font", font, "request_batch_size", request_batch_size, "show_threads", show_threads);
+        json_object_set_new(root, "check_updates", json_boolean(check_updates));
         json_object_set_new(root, "proxy_enabled", json_boolean(proxy_enabled));
         json_object_set_new(root, "proxy_server", json_string(proxy_server.c_str()));
         json_object_set_new(root, "proxy_port", json_integer(proxy_port));
-        json_object_set_new(root, "proxy_secret", json_string(proxy_secret.c_str()));
+        json_object_set_new(root, "proxy_secret", json_string(secure_store::protect(proxy_secret).c_str()));
         json_object_set_new(root, "proxy_type", json_integer(proxy_type));
-        json_object_set_new(root, "proxy_username", json_string(proxy_username.c_str()));
-        json_object_set_new(root, "proxy_password", json_string(proxy_password.c_str()));
+        json_object_set_new(root, "proxy_username", json_string(secure_store::protect(proxy_username).c_str()));
+        json_object_set_new(root, "proxy_password", json_string(secure_store::protect(proxy_password).c_str()));
         json_object_set_new(root, "cache_storage", json_integer(cache_storage));
         json_object_set_new(root, "download_dir", json_string(download_dir.c_str()));
         json_object_set_new(root, "language", json_string(language.c_str()));

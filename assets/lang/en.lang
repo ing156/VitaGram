@@ -129,9 +129,6 @@ delivery.sent = Sent to Telegram
 
 # --- diag ---
 diag.cached_waiting = Cached data - waiting for Telegram
-diag.performance_collecting = Performance: collecting...
-diag.performance_disabled = Performance: disabled
-diag.transfers = Transfers — pages change every 8 s
 
 # --- doc ---
 doc.already = The file is already downloading
@@ -278,6 +275,10 @@ poll.your_answer = " (your answer)"
 
 # --- post ---
 post.transcription = Transcription:
+post.transcription_empty = No transcription detected
+post.transcribe = {triangle} Transcribe
+post.transcription_wait = Transcription requested…
+post.transcription_failed = Transcription failed: {0}
 post.transcription_pending = Transcription (in progress):
 
 # --- presence ---
@@ -463,6 +464,7 @@ sticker.title = Stickers
 # --- tg ---
 tg.closed = TDLib closed
 tg.created_waiting = TDLib created; waiting for response...
+tg.db_key_error = The database is encrypted for another console. Delete ux0:data/vitagram/db and sign in again.
 tg.initializing = Initializing Telegram...
 tg.worker_failed = Telegram worker creation failed
 
@@ -589,3 +591,24 @@ voice.start_failed = Cannot start audio worker
 voice.unavailable = Audio file unavailable or exceeds size limit
 voice.unsupported_codec = Unsupported audio codec: {0}
 voice.worker = Cannot start audio output worker
+
+# --- update ---
+settings.auto_update = Check and install updates at startup
+settings.update = Update
+update.idle = {cross}: check (version {0})
+update.checking = Checking...
+update.up_to_date = Up to date ({0})
+update.available = {0} available - {cross}: install
+update.downloading = Downloading {0}% - {cross}: cancel
+update.verifying = Verifying signature...
+update.extracting = Unpacking {0}%
+update.installing = Installing...
+update.installed = {0} installed - restarting...
+update.hint = Update {0} available: {start} Settings
+update.err.network = Cannot reach GitHub - {cross}: retry
+update.err.no_release = No signed release found - {cross}: retry
+update.err.signature = Signature check failed, update rejected
+update.err.storage = Write error or storage full
+update.err.package = The update package is damaged
+update.err.install = Install failed, VPK saved in ux0:data/vitagram/update
+update.err.cancelled = Cancelled - {cross}: retry

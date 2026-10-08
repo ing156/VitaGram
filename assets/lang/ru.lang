@@ -129,9 +129,6 @@ delivery.sent = Отправлено в Telegram
 
 # --- diag ---
 diag.cached_waiting = Данные из кэша — ожидание Telegram
-diag.performance_collecting = Производительность: сбор данных...
-diag.performance_disabled = Производительность: выключено
-diag.transfers = Отправки — страницы меняются каждые 8 с
 
 # --- doc ---
 doc.already = Файл уже загружается
@@ -278,6 +275,10 @@ poll.your_answer = " (ваш ответ)"
 
 # --- post ---
 post.transcription = Расшифровка:
+post.transcription_empty = Не обнаружена расшифровка
+post.transcribe = {triangle} Расшифровать
+post.transcription_wait = Запрошена расшифровка…
+post.transcription_failed = Не удалось расшифровать: {0}
 post.transcription_pending = Расшифровка (в процессе):
 
 # --- presence ---
@@ -463,6 +464,7 @@ sticker.title = Стикеры
 # --- tg ---
 tg.closed = TDLib закрыта
 tg.created_waiting = TDLib создана; ожидание ответа...
+tg.db_key_error = База зашифрована для другой консоли. Удалите ux0:data/vitagram/db и войдите заново.
 tg.initializing = Инициализация Telegram...
 tg.worker_failed = Не удалось создать рабочий поток Telegram
 
@@ -589,3 +591,24 @@ voice.start_failed = Не удалось запустить поток ауди�
 voice.unavailable = Аудиофайл недоступен или превышает лимит размера
 voice.unsupported_codec = Неподдерживаемый аудиокодек: {0}
 voice.worker = Не удалось запустить поток аудиовывода
+
+# --- update ---
+settings.auto_update = Проверять и ставить обновления при запуске
+settings.update = Обновление
+update.idle = {cross}: проверить (версия {0})
+update.checking = Проверка...
+update.up_to_date = Актуальная версия ({0})
+update.available = Доступна {0} - {cross}: установить
+update.downloading = Загрузка {0}% - {cross}: отмена
+update.verifying = Проверка подписи...
+update.extracting = Распаковка {0}%
+update.installing = Установка...
+update.installed = Установлена {0} - перезапуск...
+update.hint = Доступно обновление {0}: {start} Настройки
+update.err.network = Нет связи с GitHub - {cross}: повторить
+update.err.no_release = Подписанный релиз не найден - {cross}: повторить
+update.err.signature = Подпись не прошла проверку, обновление отклонено
+update.err.storage = Ошибка записи или нет места
+update.err.package = Пакет обновления повреждён
+update.err.install = Не удалось установить, VPK сохранён в ux0:data/vitagram/update
+update.err.cancelled = Отменено - {cross}: повторить

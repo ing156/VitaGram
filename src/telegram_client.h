@@ -83,6 +83,7 @@ struct MessageItem {
     std::string voice_path, voice_error;
     std::string transcription;
     bool transcription_pending = false;
+    bool transcription_complete = false;
     int32_t animation_file_id = 0;
     int64_t animation_size = 0, animation_downloaded = 0;
     std::string animation_path, animation_error;
@@ -118,6 +119,8 @@ public:
         checkProxy(proxy);
     }
     void cancelProxyCheck();
+    // Call before start(). An existing unencrypted database is re-keyed once TDLib is running.
+    void setDatabaseKey(const std::string& key) { database_key_ = key; }
     const std::string& proxyCheckStatus() const { return proxy_check_status_; }
     void setRequestBatchSize(int size) { request_batch_size_.store(std::max(1, std::min(64, size))); }
     void restoreCache(); // UI, before pump() and before the cache writer starts.
@@ -144,9 +147,7 @@ public:
         uploads_.dismissCompleted();
         notice_.clear(); notice_until_ = 0;
     }
-    std::vector<std::string> uploadDetails() const;
     const std::string& lastError() const { return error_; }
-    std::string mediaCacheStatus() { return media_cache_.status(); }
 
     InputKind inputKind() const { return input_kind_; }
     std::string inputPrompt() const;
@@ -187,6 +188,7 @@ public:
     bool inTopic() const { return current_topic_ != 0; }
     void refreshHistory();
     void requestCompose();
+    bool requestTranscription(int64_t message_id);
     bool sendVideoNoteFile(const std::string& path, int duration, int64_t chat, int32_t topic);
     const std::string& videoNoteStatus() const { return video_note_status_; }
     int32_t currentTopicId() const { return current_topic_; }
@@ -240,6 +242,10 @@ private:
     int64_t proxy_check_deadline_ = 0;
     std::string proxy_check_status_;
     void applyProxy();
+    std::string database_key_;      // Derived key for TDLib's database; empty = leave the database unencrypted.
+    bool database_key_migrating_ = false;
+    bool databaseEncrypted() const;
+    void migrateDatabaseKey();
     std::vector<ForumTopicItem> topics_;
     std::string topics_status_, forum_title_;
     bool topics_open_ = false, topics_pending_ = false, topics_end_ = false;

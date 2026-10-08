@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "35.01")
-set(VITAGRAM_VERSION "0.35.1")
+set(VITA_VERSION  "36.00")
+set(VITAGRAM_VERSION "0.36.0")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 
@@ -36,6 +36,9 @@ find_library(WEBP_LIBRARY NAMES webp)
 if(NOT WEBP_INCLUDE_DIR OR NOT WEBP_LIBRARY)
   message(FATAL_ERROR "VitaSDK libwebp is required for stickers. Install the VitaSDK libwebp package first.")
 endif()
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/cacert.pem")
+  message(FATAL_ERROR "Missing assets/cacert.pem (update checks need it). Run bash scripts/fetch-ca-bundle.sh first.")
+endif()
 foreach(EMOJI_ASSET NotoColorEmoji.ttf Emoji-LICENSE.txt NotoSans-Regular.ttf NotoSans-LICENSE.txt NotoSansCoptic-Regular.ttf NotoSansCoptic-LICENSE.txt NotoSansJP-Regular.otf NotoSansJP-LICENSE.txt NotoSansMath-Regular.ttf NotoSansMath-LICENSE.txt NotoSansSymbols2-Regular.ttf NotoSansSymbols2-LICENSE.txt)
   if(NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/${EMOJI_ASSET}")
     message(FATAL_ERROR "Missing assets/${EMOJI_ASSET}. Run bash scripts/fetch-emoji-font.sh and bash scripts/fetch-fallback-fonts.sh first.")
@@ -53,6 +56,14 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${JAPANESE_FONT}")
   message(WARNING "Packaging the full Japanese font (+~1.6 MB). Run bash scripts/shrink-fonts.sh and reconfigure.")
   set(JAPANESE_FONT "assets/NotoSansJP-Regular.otf")
 endif()
+
+foreach(CJK_FONT KR SC TC)
+  set(CJK_${CJK_FONT}_FONT "assets/NotoSans${CJK_FONT}-Subset.otf")
+  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${CJK_${CJK_FONT}_FONT}")
+    message(WARNING "Packaging the full-size NotoSans${CJK_FONT} font. Run bash scripts/fetch-fallback-fonts.sh and bash scripts/shrink-fonts.sh, then reconfigure.")
+    set(CJK_${CJK_FONT}_FONT "assets/NotoSans${CJK_FONT}-Regular.otf")
+  endif()
+endforeach()
 
 set(JANSSON_BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared jansson" FORCE)
 set(JANSSON_EXAMPLES OFF CACHE BOOL "Build jansson examples" FORCE)
@@ -114,15 +125,19 @@ add_executable(${PROJECT_NAME}
   src/telegram_client.cpp
   src/keyboard.cpp
   src/proxy_link.cpp
+  src/secure_store.cpp
   src/qr_scanner.cpp
   src/video_note_encoder.cpp
   src/video_note_recorder.cpp
   src/vita_net.cpp
+  src/update_core.cpp
+  src/https_client.cpp
+  src/updater.cpp
   ${CMAKE_SOURCE_DIR}/external/tdlib-vita/vitaports/td_missing_func_placeholder.cpp
 )
 set_source_files_properties(src/download_folder_picker.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS "-Os")
-set_source_files_properties(src/portrait_video.cpp src/video_note_encoder.cpp src/qr_scanner.cpp
+set_source_files_properties(src/portrait_video.cpp src/video_note_encoder.cpp src/qr_scanner.cpp src/update_core.cpp src/https_client.cpp src/updater.cpp
   PROPERTIES COMPILE_OPTIONS "-Os")
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -203,6 +218,7 @@ target_link_libraries(${PROJECT_NAME}
   SceCommonDialog_stub
   SceNet_stub
   SceNetCtl_stub
+  ScePromoterUtil_stub
 )
 
 vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
@@ -212,6 +228,7 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE external/minih264/LICENSE assets/minih264-LICENSE.txt
   FILE external/quirc/LICENSE assets/quirc-LICENSE.txt
   FILE assets/icon0.png sce_sys/icon0.png
+  FILE assets/cacert.pem certs/cacert.pem
   FILE assets/controller-icons/triangle.png assets/controller-icons/triangle.png
   FILE assets/controller-icons/square.png assets/controller-icons/square.png
   FILE assets/controller-icons/cross.png assets/controller-icons/cross.png
@@ -227,6 +244,9 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE assets/NotoSansCoptic-LICENSE.txt assets/NotoSansCoptic-LICENSE.txt
   FILE ${JAPANESE_FONT} assets/NotoSansJP-Regular.otf
   FILE assets/NotoSansJP-LICENSE.txt assets/NotoSansJP-LICENSE.txt
+  FILE ${CJK_KR_FONT} assets/NotoSansKR-Regular.otf
+  FILE ${CJK_SC_FONT} assets/NotoSansSC-Regular.otf
+  FILE ${CJK_TC_FONT} assets/NotoSansTC-Regular.otf
   FILE assets/NotoSansMath-Regular.ttf assets/NotoSansMath-Regular.ttf
   FILE assets/NotoSansMath-LICENSE.txt assets/NotoSansMath-LICENSE.txt
   FILE assets/NotoSansSymbols2-Regular.ttf assets/NotoSansSymbols2-Regular.ttf

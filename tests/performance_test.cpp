@@ -199,10 +199,7 @@ int main(int argc, char** argv) {
     char buffer[8192]{}; auto bytes = std::fread(buffer, 1, sizeof(buffer)-1, f); std::fclose(f);
     assert(bytes && std::string(buffer).find("version=test") != std::string::npos);
     assert(std::string(buffer).find("frame_us n=1") != std::string::npos);
-    std::string display_text; readDisplay(display_text);
-    assert(display_text.find("Frame p95<=18.0") != std::string::npos);
     assert(!flush((path+"/missing").c_str(), previous.c_str(), "test", 3000));
-    readDisplay(display_text); assert(display_text.find("write failed") != std::string::npos);
     assert(!collector().take(4000).get(Metric::Frame).count);
     std::puts("Performance tests passed");
 }

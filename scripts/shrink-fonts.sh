@@ -5,18 +5,23 @@ cd "$(dirname "$0")/.."
 # in assets/; CMake packages each result under the upstream name.
 #   NotoColorEmoji-64.ttf: 64 px emoji strike instead of 136 px.
 #   NotoSansJP-JIS.otf:    kanji limited to JIS X 0208, JIS X 0213 plane 1, CP932.
+#   NotoSans{KR,SC,TC}-Subset.otf: Hangul (KS X 1001), GB2312, Big5 level 1 + the characters of the .lang file.
 jobs=(
     "assets/NotoColorEmoji.ttf assets/NotoColorEmoji-64.ttf scripts/shrink-emoji-font.py scripts/fetch-emoji-font.sh"
     "assets/NotoSansJP-Regular.otf assets/NotoSansJP-JIS.otf scripts/subset-japanese-font.py scripts/fetch-fallback-fonts.sh"
+    "assets/NotoSansKR-Regular.otf assets/NotoSansKR-Subset.otf scripts/subset-cjk-font.py scripts/fetch-fallback-fonts.sh ko assets/lang/ko.lang"
+    "assets/NotoSansSC-Regular.otf assets/NotoSansSC-Subset.otf scripts/subset-cjk-font.py scripts/fetch-fallback-fonts.sh zh-Hans assets/lang/zh-Hans.lang"
+    "assets/NotoSansTC-Regular.otf assets/NotoSansTC-Subset.otf scripts/subset-cjk-font.py scripts/fetch-fallback-fonts.sh zh-Hant assets/lang/zh-Hant.lang"
 )
 pending=()
 for job in "${jobs[@]}"; do
-    read -r source destination tool fetch <<<"$job"
+    read -r source destination tool fetch language langfile <<<"$job"
     if ! test -s "$source"; then
         echo "Missing $source. Run bash $fetch first." >&2
         exit 1
     fi
-    if ! { test -s "$destination" && test "$destination" -nt "$source" && test "$destination" -nt "$tool"; }; then
+    if ! { test -s "$destination" && test "$destination" -nt "$source" && test "$destination" -nt "$tool" &&
+           { test -z "$langfile" || test "$destination" -nt "$langfile"; }; }; then
         pending+=("$job")
     fi
 done
@@ -36,9 +41,11 @@ if ! "$tools/bin/python" -c "import fontTools, PIL, imagequant" 2>/dev/null; the
     "$tools/bin/python" -m pip install --quiet fonttools pillow imagequant
 fi
 for job in "${pending[@]}"; do
-    read -r source destination tool fetch <<<"$job"
+    read -r source destination tool fetch language langfile <<<"$job"
     temporary=$(mktemp "${destination}.tmp.XXXXXX")
-    if "$tools/bin/python" "$tool" "$source" "$temporary"; then
+    args=()
+    if test -n "$language"; then args=("$language" --lang-file "$langfile"); fi
+    if "$tools/bin/python" "$tool" "$source" "$temporary" "${args[@]}"; then
         chmod 644 -- "$temporary"
         mv -- "$temporary" "$destination"
     else

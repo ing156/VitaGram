@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-// Select-first is the diagnostics overlay, where PS+Start takes a screenshot.
+// Select-first must not arm exit, including during a system screenshot.
 // Deliberate exit: hold Start, then press Select, hold both for two seconds.
 class ExitGesture {
 public:

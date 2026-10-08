@@ -26,3 +26,7 @@ fetch notosanssymbols2/OFL.txt assets/NotoSansSymbols2-LICENSE.txt
 base=https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004
 fetch Sans/SubsetOTF/JP/NotoSansJP-Regular.otf assets/NotoSansJP-Regular.otf
 fetch LICENSE assets/NotoSansJP-LICENSE.txt
+# Korean and Chinese interface languages; shrink-fonts.sh cuts them down to the needed characters.
+fetch Sans/SubsetOTF/KR/NotoSansKR-Regular.otf assets/NotoSansKR-Regular.otf
+fetch Sans/SubsetOTF/SC/NotoSansSC-Regular.otf assets/NotoSansSC-Regular.otf
+fetch Sans/SubsetOTF/TC/NotoSansTC-Regular.otf assets/NotoSansTC-Regular.otf

@@ -1,0 +1,9 @@
+prefix=/usr/local/vitasdk/arm-vita-eabi
+
+Name: tdactor
+Description: Telegram Library - Actor
+Version: 1.7.8
+
+CFlags: -I"${prefix}/include"
+Libs: -L"${prefix}/lib" -ltdactor
+Requires.private: tdutils

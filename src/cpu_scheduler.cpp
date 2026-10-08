@@ -187,30 +187,6 @@ bool videoActive() {
     pthread_mutex_unlock(&mutex);
     return active;
 }
-std::string status() {
-    pthread_mutex_lock(&mutex);
-    std::string result = "CPU ";
-    for (int core = 0; core < 3; ++core)
-        result += std::to_string(core) + ":" + (load[core] < 0 ? "?" : std::to_string(load[core]) + "%") + " ";
-    int state = fourth.load();
-    char detail[100];
-    if (state == Confirmed) result += "3:OK " + (load[3] < 0 ? std::string("?") : std::to_string(load[3]) + "%");
-    else if (state == Checking) result += "3:checking";
-    else if (state == Timeout) result += "3:timeout (not confirmed)";
-    else if (state == WrongCore) result += "3:ran on CPU" + std::to_string(observed_core.load());
-    else {
-        const char* step = state == CreateFailed ? "create" : state == StartFailed ? "start" : "affinity";
-        std::snprintf(detail, sizeof(detail), "3:%s 0x%08X", step, (unsigned)probe_error.load());
-        result += detail;
-    }
-    result += " try " + std::to_string(probe_attempts) + "/3";
-    if (probe_info_error) {
-        std::snprintf(detail, sizeof(detail), " info/cleanup:0x%08X", (unsigned)probe_info_error);
-        result += detail;
-    }
-    pthread_mutex_unlock(&mutex);
-    return result;
-}
 std::string threadStatus() {
     pthread_mutex_lock(&mutex);
     int ui = 0, audio = 0, video = 0, network = 0, parser = 0, storage = 0;

@@ -25,15 +25,20 @@ FT_Face face = nullptr;
 // app0 through many small seeks, which made cold text measurement take seconds.
 // vita2d_load_font_mem keeps a pointer to the buffer, so it must outlive font.
 struct TextFace { FT_Face coverage=nullptr; vita2d_font* font=nullptr; std::vector<unsigned char> data; };
-std::array<TextFace,5> text_faces;
+std::array<TextFace,6> text_faces;
+// Slot 2 holds the font of the interface language (Korean/Chinese) and is placed ahead of the
+// Japanese font so shared Han characters use the glyph shapes of that language. It has no fixed
+// path: rich_text_set_language_font() fills it.
+constexpr size_t language_slot = 2;
 const char* const text_paths[] = {"app0:assets/NotoSans-Regular.ttf",
-    "app0:assets/NotoSansCoptic-Regular.ttf", "app0:assets/NotoSansJP-Regular.otf", "app0:assets/NotoSansMath-Regular.ttf", "app0:assets/NotoSansSymbols2-Regular.ttf"};
+    "app0:assets/NotoSansCoptic-Regular.ttf", nullptr, "app0:assets/NotoSansJP-Regular.otf", "app0:assets/NotoSansMath-Regular.ttf", "app0:assets/NotoSansSymbols2-Regular.ttf"};
+std::string language_font_path;
 const char* const emoji_path = "app0:assets/NotoColorEmoji.ttf";
 // Fallback fonts and the emoji font (~11 MB) are read off the UI thread after
 // the main font; only the UI thread creates FreeType faces and vita2d fonts.
 struct FontLoader {
     pthread_t thread{}; bool started=false;
-    std::array<std::vector<unsigned char>,5> text;
+    std::array<std::vector<unsigned char>,6> text;
     std::vector<unsigned char> emoji;
     std::atomic<bool> done{false}; std::atomic<bool> stop{false};
     bool adopted=false; uint64_t started_at=0;
@@ -150,7 +155,7 @@ bool read_file(const char* path, std::vector<unsigned char>& out) {
 
 void* load_fallback_fonts(void*) {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Storage);
-    for (size_t i=1; i<loader.text.size() && !loader.stop; ++i) read_file(text_paths[i],loader.text[i]);
+    for (size_t i=1; i<loader.text.size() && !loader.stop; ++i) if (text_paths[i]) read_file(text_paths[i],loader.text[i]);
     if (!loader.stop) read_file(emoji_path,loader.emoji);
     loader.done=true;
     return nullptr;
@@ -163,7 +168,7 @@ bool adopt_text_face(size_t index, std::vector<unsigned char>&& data) {
         text.coverage=nullptr; std::vector<unsigned char>().swap(text.data); return false;
     }
     text.font = vita2d_load_font_mem(text.data.data(), static_cast<unsigned int>(text.data.size()));
-    if (!text.font) std::fprintf(stderr, "Unable to load text font: %s\n", text_paths[index]);
+    if (!text.font) std::fprintf(stderr, "Unable to load text font: %s\n", text_paths[index] ? text_paths[index] : language_font_path.c_str());
     return text.font != nullptr;
 }
 }
@@ -187,6 +192,10 @@ bool rich_text_init() {
     loader.started = pthread_create(&loader.thread, &attributes, load_fallback_fonts, nullptr) == 0;
     pthread_attr_destroy(&attributes);
     if (!loader.started) load_fallback_fonts(nullptr); // Synchronous fallback.
+    if (!language_font_path.empty()) {
+        std::vector<unsigned char> data;
+        if (read_file(language_font_path.c_str(), data)) adopt_text_face(language_slot, std::move(data));
+    }
     // Keep the text font usable even when the emoji asset cannot be opened.
     return text_faces[0].font && face;
 }
@@ -194,7 +203,7 @@ void rich_text_poll() {
     if (loader.adopted || !loader.done) return;
     if (loader.started) { pthread_join(loader.thread, nullptr); loader.started=false; }
     loader.adopted=true;
-    for (size_t i=1; i<text_faces.size(); ++i) adopt_text_face(i,std::move(loader.text[i]));
+    for (size_t i=1; i<text_faces.size(); ++i) if (text_paths[i]) adopt_text_face(i,std::move(loader.text[i]));
     if (!loader.emoji.empty()) {
         FT_Face memory=nullptr;
         if (!FT_New_Memory_Face(library,loader.emoji.data(),static_cast<FT_Long>(loader.emoji.size()),0,&memory) &&
@@ -209,6 +218,20 @@ void rich_text_poll() {
     performance::observe(performance::Metric::FontsFallback, performance::now()-loader.started_at);
 }
 unsigned rich_text_revision() { return font_revision; }
+void rich_text_set_language_font(const char* path) {
+    const std::string wanted = path ? path : "";
+    if (wanted == language_font_path) return;
+    language_font_path = wanted;
+    if (!library) return; // rich_text_init() applies it.
+    auto& slot = text_faces[language_slot];
+    vita2d_wait_rendering_done(); // The old font's glyph textures may still be in flight.
+    if (slot.font) vita2d_free_font(slot.font);
+    if (slot.coverage) FT_Done_Face(slot.coverage);
+    slot = {};
+    std::vector<unsigned char> data;
+    if (!wanted.empty() && read_file(wanted.c_str(), data)) adopt_text_face(language_slot, std::move(data));
+    widths.clear(); run_widths.clear(); font_choices={}; ++font_revision;
+}
 void emoji_load_one() {
     if (!face || requested.empty()) return;
     performance::Scope measurement(performance::Metric::EmojiDecode);

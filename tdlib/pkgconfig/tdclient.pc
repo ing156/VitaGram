@@ -1,0 +1,9 @@
+prefix=/usr/local/vitasdk/arm-vita-eabi
+
+Name: tdclient
+Description: Telegram Library - C++ Interface
+Version: 1.7.8
+
+CFlags: -I"${prefix}/include"
+Libs: -L"${prefix}/lib" -ltdclient
+Requires.private: tdapi tdcore

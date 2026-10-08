@@ -1,0 +1,9 @@
+prefix=/usr/local/vitasdk/arm-vita-eabi
+
+Name: tddb
+Description: Telegram Library - Database
+Version: 1.7.8
+
+CFlags: -I"${prefix}/include"
+Libs: -L"${prefix}/lib" -ltddb
+Requires.private: tdactor tdutils tdsqlite

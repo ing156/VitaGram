@@ -205,8 +205,8 @@ int main() {
     std::puts("Startup index: sorted lightweight snapshot, atomic interruption, clear and legacy fallback passed");
 
     ExitGesture exit;
-    assert(!exit.update(false,true,true,false,100)); // Overlay first.
-    assert(!exit.update(true,true,false,false,1000)); // PS+Start while viewing it.
+    assert(!exit.update(false,true,true,false,100)); // Select first.
+    assert(!exit.update(true,true,false,false,1000)); // Start while Select is held must not arm exit.
     assert(!exit.update(true,true,false,false,4000000));
     assert(!exit.update(false,false,false,false,5000000));
     assert(!exit.update(true,false,false,false,6000000));

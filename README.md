@@ -5,11 +5,12 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.35**. VPK package version: **35.00**. This project is under development.
+Source version: **0.36**. VPK package version: **36.00**. This project is under development.
 
-0.33.0 starts the performance work with bounded diagnostics: hold ![Select](assets/controller-icons/select.svg) for frame/event latency and queue depth;
-aggregated measurements are written in the background to `ux0:data/vitagram/performance.log`.
-See the [measurement guide](docs/performance-release-0.33.0.md). Subsequent optimization releases use 0.33.x.
+**0.36 is the first public release.**
+
+Performance measurements are written in the background to `ux0:data/vitagram/performance.log`.
+The Select diagnostics window has been removed; Select alone has no action.
 
 ## Features
 
@@ -27,6 +28,7 @@ See the [measurement guide](docs/performance-release-0.33.0.md). Subsequent opti
 - Forum groups: topic lists, separate topic history, text and sticker sending to the selected topic.
 - Light/dark themes, font size, cache retention settings, interface language and account logout.
 - Connection indicator, HTTP(S) links opened in the browser, and a startup screen showing initialization stages.
+- Self-update from GitHub Releases (Start → *Update*; also checked automatically about a minute after launch). The release `.vpk` is verified against a built-in public key before it is installed — see the Russian section «Обновление через GitHub» below.
 - Proxy support: MTProxy, SOCKS5 and HTTPS (HTTP CONNECT) — Start → Proxy; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials are stored in plain text in `settings.json`.
 
 A feature being present in the source does not mean every scenario has been tested on hardware.
@@ -34,13 +36,14 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 
 ## Controls
 
+The current bindings and proposed improvements are reviewed in [the control audit](docs/controls-analysis.md) (Russian).
+
 ### Main menu
 
 - **![D-pad](assets/controller-icons/dpad.svg) / touch** — select and scroll; **![X](assets/controller-icons/cross.svg) / tap** — open a chat.
 - **L / R** — switch folders; folder tabs also support touch and horizontal scrolling.
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh the list.
 - **![Start](assets/controller-icons/start.svg)** — settings.
-- **Hold ![Select](assets/controller-icons/select.svg)** — CPU and cache diagnostics.
 - **Hold ![Start](assets/controller-icons/start.svg), then press ![Select](assets/controller-icons/select.svg) and hold both for 2 seconds** — exit the application.
 
 ### Chat
@@ -50,7 +53,8 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - **Short press ![Square](assets/controller-icons/square.svg)** — compose text; the keyboard opens after releasing the button.
 - **Hold ![Square](assets/controller-icons/square.svg) for at least 0.55 seconds** — open the sticker picker.
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh history.
-- **R** — start/stop microphone recording and send the recorded audio message.
+- **L** — open the video-note recorder.
+- **R** — start/stop microphone recording; the recorded audio is sent automatically after preparation.
 - **![O](assets/controller-icons/circle.svg)** — go back; inside a forum topic, return to the topic list.
 
 ### Forum topics
@@ -79,10 +83,10 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 
 ### Sticker picker
 
-- **L / R** — switch sets; tapping the left/right half of the heading also switches sets.
+- The picker opens a list of sets: **Up / Down** — select a set; **![X](assets/controller-icons/cross.svg) / tap** — open it.
 - **![D-pad](assets/controller-icons/dpad.svg)** — select a sticker and move between pages.
 - **![X](assets/controller-icons/cross.svg) / tap a sticker** — immediately send it to the current chat or topic.
-- **![O](assets/controller-icons/circle.svg) / ![Square](assets/controller-icons/square.svg)** — close the picker.
+- In a sticker grid, **![O](assets/controller-icons/circle.svg)** — return to sets; **![Square](assets/controller-icons/square.svg)** — close the picker. In the set list, **![O](assets/controller-icons/circle.svg)** — close the picker.
 - Up to 18 stickers per page; only visible previews are downloaded. Animated stickers use static thumbnails in the picker.
 
 ## Languages
@@ -90,12 +94,13 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 The interface language follows the console's system language; if no matching language file exists, English is used.
 Press ![Start](assets/controller-icons/start.svg) on the main screen and change **Language** (the first row) to pick a language manually or return to *Automatic*.
 The choice is stored in `settings.json` (`language`; empty means automatic).
-Shipped languages: English (`en`) and Russian (`ru`).
+Shipped languages: all official PS Vita system languages — English, Russian, German, French, Spanish, Italian, Dutch, Portuguese (Portugal and Brazil), Swedish, Danish, Norwegian, Finnish, Polish, Turkish, Japanese, Korean, Simplified and Traditional Chinese (British English uses the English file). The Portuguese (Portugal) and Traditional Chinese texts were adapted from the Brazilian and Simplified versions and deserve a native review.
+Korean and Chinese use their own font (`assets/NotoSans{KR,SC,TC}-Regular.otf`, subsets built by `scripts/shrink-fonts.sh`), loaded only while that interface language is selected; Korean/Chinese text in chats is therefore drawn only in those languages.
 
 All texts live in `assets/lang/<code>.lang` and are packaged as `app0:lang/`. To add or fix a language, copy `assets/lang/en.lang`, translate the values and rebuild — no code changes are needed, and the new language appears in the menu automatically.
 Missing keys fall back to English. Controller buttons are written as tokens such as `{cross}`, `{circle}` or `{dpad}` and are replaced by the icons when the file is loaded, so translations change only the text, never the icons. `{0}`, `{1}`… are values inserted by the program.
 New texts in code use `tr("key")` / `tr("key", {args})` from `src/i18n.h`; add the key to every `.lang` file. `bash tests/run-i18n-tests.sh` checks that all catalogs have the same keys and placeholders and that every key used in the sources exists.
-Characters outside the packaged fonts (for example Chinese or Arabic) need a suitable font from `assets/` first. The very first startup screen and developer diagnostics (hold ![Select](assets/controller-icons/select.svg): CPU, threads, performance) stay in English.
+Characters outside the packaged fonts (for example Arabic) need a suitable font from `assets/` first. The very first startup screen stays in English.
 
 ## Building
 
@@ -175,6 +180,7 @@ export PATH="$VITASDK/bin:$PATH"
 
 bash scripts/fetch-emoji-font.sh
 bash scripts/fetch-fallback-fonts.sh
+bash scripts/fetch-ca-bundle.sh
 bash scripts/shrink-fonts.sh
 bash scripts/build-hardware-video-decoder.sh
 bash scripts/build-sticker-renderer.sh
@@ -269,7 +275,9 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.35**, версия пакета VPK: **35.00**. Проект находится в разработке.
+Версия исходников: **0.36**, версия пакета VPK: **36.00**. Проект находится в разработке.
+
+**0.36 — первый публичный релиз.**
 
 ## Возможности
 
@@ -292,13 +300,15 @@ When distributing the application, retain notices and comply with dependency lic
 
 ## Управление
 
+Окно диагностики на Select удалено; отдельное нажатие Select ничего не делает.
+[Анализ текущего управления и варианты развития](docs/controls-analysis.md).
+
 ### Главное меню
 
 - **![Стрелки](assets/controller-icons/dpad.svg) / тач** — выбор и прокрутка; **![X](assets/controller-icons/cross.svg) / тап** — открыть чат.
 - **L / R** — переключить папку; закладки также поддерживают тач и горизонтальную прокрутку.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить список.
 - **![Start](assets/controller-icons/start.svg)** — настройки.
-- **![Select](assets/controller-icons/select.svg) (удерживать)** — диагностика CPU и кэша.
 - **Зажать ![Start](assets/controller-icons/start.svg), затем нажать ![Select](assets/controller-icons/select.svg) и держать обе кнопки 2 секунды** — выход из приложения.
 
 ### Переписка
@@ -308,6 +318,8 @@ When distributing the application, retain notices and comply with dependency lic
 - **![Квадрат](assets/controller-icons/square.svg), короткое нажатие** — ввод текста; клавиатура открывается после отпускания кнопки.
 - **![Квадрат](assets/controller-icons/square.svg), удержание от 0,55 секунды** — меню отправки стикеров.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить историю.
+- **L** — открыть запись видеокружка.
+- **R** — начать/остановить запись голоса; после подготовки запись отправляется автоматически.
 - **![O](assets/controller-icons/circle.svg)** — назад; из топика возвращает к списку тем.
 
 ### Темы форумной группы
@@ -336,10 +348,10 @@ When distributing the application, retain notices and comply with dependency lic
 
 ### Меню стикеров
 
-- **L / R** — переключить набор; тап по левой/правой половине заголовка также меняет набор.
+- Сначала открывается список наборов: **вверх / вниз** — выбрать набор; **![X](assets/controller-icons/cross.svg) / тап** — открыть его.
 - **![Стрелки](assets/controller-icons/dpad.svg)** — выбрать стикер, перейти на следующую страницу.
 - **![X](assets/controller-icons/cross.svg) / тап по стикеру** — сразу отправить в текущий чат или топик.
-- **![O](assets/controller-icons/circle.svg) / ![квадрат](assets/controller-icons/square.svg)** — закрыть меню.
+- В сетке **![O](assets/controller-icons/circle.svg)** — вернуться к наборам; **![квадрат](assets/controller-icons/square.svg)** — закрыть меню. В списке наборов **![O](assets/controller-icons/circle.svg)** закрывает меню.
 - На странице до 18 стикеров; загружаются только видимые превью. Анимированные стикеры в меню представлены статичными миниатюрами.
 
 ## Языки
@@ -347,12 +359,13 @@ When distributing the application, retain notices and comply with dependency lic
 Язык интерфейса выбирается по системному языку консоли; если подходящего языкового файла нет, используется английский.
 На главном экране нажмите ![Start](assets/controller-icons/start.svg) и измените **Язык** (первая строка), чтобы выбрать язык вручную или вернуться к *Автоматически*.
 Выбор хранится в `settings.json` (`language`; пустое значение — автоматически).
-Поставляются английский (`en`) и русский (`ru`).
+Поставляются все официальные системные языки PS Vita: английский, русский, немецкий, французский, испанский, итальянский, нидерландский, португальский (Португалия и Бразилия), шведский, датский, норвежский, финский, польский, турецкий, японский, корейский, китайский упрощённый и традиционный (британский английский использует английский файл). Тексты для португальского (Португалия) и традиционного китайского адаптированы из бразильского и упрощённого вариантов и требуют проверки носителями.
+Корейский и китайский используют собственный шрифт (`assets/NotoSans{KR,SC,TC}-Regular.otf`, подмножества собирает `scripts/shrink-fonts.sh`), который загружается только при выбранном этом языке интерфейса; поэтому корейский и китайский текст в чатах рисуется только в этих языках.
 
 Все тексты находятся в `assets/lang/<код>.lang` и упаковываются в `app0:lang/`. Чтобы добавить или поправить язык, скопируйте `assets/lang/en.lang`, переведите значения и пересоберите пакет — менять код не нужно, новый язык появится в меню сам.
 Недостающие ключи берутся из английского файла. Кнопки консоли записаны токенами вроде `{cross}`, `{circle}`, `{dpad}` и заменяются значками при загрузке файла, поэтому перевод меняет только текст, но не значки. `{0}`, `{1}`… — значения, которые подставляет программа.
 Новые тексты в коде пишутся через `tr("ключ")` / `tr("ключ", {аргументы})` из `src/i18n.h`; ключ добавляется во все `.lang`. `bash tests/run-i18n-tests.sh` проверяет совпадение ключей и подстановок во всех каталогах и наличие каждого используемого в коде ключа.
-Для символов вне упакованных шрифтов (например, китайский или арабский) сначала нужен подходящий шрифт в `assets/`. Самая первая заставка и диагностика для разработчиков (удержание ![Select](assets/controller-icons/select.svg): CPU, потоки, производительность) остаются на английском.
+Для символов вне упакованных шрифтов (например, арабский) сначала нужен подходящий шрифт в `assets/`. Самая первая заставка остаётся на английском.
 
 ## Сборка
 
@@ -432,6 +445,7 @@ export PATH="$VITASDK/bin:$PATH"
 
 bash scripts/fetch-emoji-font.sh
 bash scripts/fetch-fallback-fonts.sh
+bash scripts/fetch-ca-bundle.sh
 bash scripts/shrink-fonts.sh
 bash scripts/build-hardware-video-decoder.sh
 bash scripts/build-sticker-renderer.sh
@@ -485,7 +499,6 @@ cmake --build build-modern -j$(nproc)
 Для каждой отправки показываются объём, процент, скорость и приблизительное оставшееся
 время. После 5 секунд без изменения объёма отображается время без прогресса;
 загрузка файла и подтверждение отправки Telegram — разные этапы.
-Удерживайте **![SELECT](assets/controller-icons/select.svg)** для подробностей всех отправок, включая точное число байтов.
 Журнал: `ux0:data/vitagram/media-upload.log` (с ротацией примерно после 1 МиБ).
 Аудио сохраняет исходный чат и тему даже при переходе в другой чат во время конвертации.
 
@@ -521,13 +534,18 @@ cmake --build build-modern -j$(nproc)
 Кнопка ![Circle](assets/controller-icons/circle.svg) возвращает назад без сохранения новых изменений.
 
 Настройки сохраняются в `ux0:data/vitagram/settings.json` и применяются при следующем запуске автоматически.
-Secret скрыт на экране, но хранится в файле настроек открытым текстом.
+Secret скрыт на экране и хранится в файле настроек в зашифрованном виде (см. «Защита секретов»).
 ### SOCKS5 и HTTPS-прокси
 
 Помимо MTProxy поддерживаются **SOCKS5** и **HTTPS** (HTTP CONNECT) прокси. В настройках прокси строка **Тип** переключает MTProxy / SOCKS5 / HTTPS (**![X](assets/controller-icons/cross.svg)** или ←/→).
 Для SOCKS5 и HTTPS вместо secret показываются необязательные поля **Логин** и **Пароль**; пароль скрыт на экране, но хранится в `settings.json` открытым текстом (`proxy_type`, `proxy_username`, `proxy_password`).
 Ссылки `tg://socks?server=…&port=…&user=…&pass=…` и `https://t.me/socks?…` (в сообщениях и QR) импортируются как SOCKS5. Для HTTPS-прокси ссылок Telegram нет — введите данные вручную.
 «Проверить подключение» (`pingProxy`) работает для всех типов. Для проверки на Linux: `bash tests/run-proxy-tests.sh`.
+
+### Защита секретов
+
+`proxy_secret`, `proxy_username` и `proxy_password` в `settings.json` хранятся зашифрованными (AES-256-GCM, префикс `enc1:`), ключ выводится из OpenPSID консоли. Старые открытые значения шифруются при первом запуске. База TDLib тоже шифруется ключом консоли: существующая база перешифровывается один раз после входа, признак — файл `db/.encrypted-v1`.
+Это защищает от копирования файлов на другое устройство (бэкап, пересылка, утёкший архив), но не от кода, запущенного на этой же консоли. Если идентификатор консоли недоступен, значения остаются открытыми. После переноса `db` на другую консоль TDLib не откроется: удалите `ux0:data/vitagram/db` и войдите заново. Проверки: `bash tests/run-secure-tests.sh`.
 
 Статус «MTProxy включён» означает, что TDLib приняла настройку; доступность сервера определяется при подключении.
 
@@ -537,6 +555,20 @@ Secret скрыт на экране, но хранится в файле нас�
 Проверяются разбор ссылок и распознавание тестового QR (включая зеркальный), отмена,
 повторное открытие и освобождение ресурсов при ошибках камеры. В этих тестах вызовы
 камеры и GPU заменены заглушками; работа на физической Vita проверяется отдельно.
+
+## Обновление через GitHub
+
+**Start → Обновление** проверяет последний релиз репозитория `ing156/VitaGramm` (`VITAGRAM_UPDATE_REPO`). Если версия новее установленной, **![X](assets/controller-icons/cross.svg)** скачивает и устанавливает её; во время загрузки тот же пункт отменяет её. Строка «Проверять и ставить обновления при запуске» (включена по умолчанию) через ~1 минуту после старта сама проверяет релиз, скачивает, проверяет подпись и устанавливает его, затем перезапускает приложение (через 3 с после установки и только когда открыт список чатов: не во время ввода, записи или в открытом чате). Ручная проверка из настроек тоже перезапускает приложение после установки. Сама установка выполняется при следующем запуске, пока занято минимум памяти (установщик в работающем приложении падал с `0x8001000C` = нехватка памяти); при сбое причина показывается в настройках. Автоустановка пробуется один раз за запуск; при ошибке в настройках появится причина. Настройки и база не затрагиваются.
+
+Безопасность: соединение проверяется по сертификатам из `app0:certs/cacert.pem` (`scripts/fetch-ca-bundle.sh`). Независимо от TLS, пакет принимается только с подписью ECDSA P-256 (`*.vpk.sig`), проверяемой встроенным открытым ключом `src/update_key.h`; подписывается версия + содержимое VPK, поэтому старый подписанный пакет нельзя выдать за новый. Релиз без `.vpk.sig`, черновики и pre-release игнорируются. Если установка не удалась, проверенный VPK остаётся в `ux0:data/vitagram/update/update.vpk` — его можно поставить через VitaShell.
+
+Выпуск релиза:
+
+1. Поднимите `VITA_VERSION` и `VITAGRAM_VERSION` в `CMakeLists.txt`, соберите VPK.
+2. `bash scripts/sign-release.sh build-modern/vitagram.vpk 0.36.0` — создаст `vitagram.vpk.sig` (закрытый ключ по умолчанию: `~/.vitagram-release/update-signing.pem`; **не кладите его в Git** и сохраните резервную копию — без него клиенты уже не примут обновления; смена ключа требует выпуска вручную).
+3. Создайте **публичный** релиз с тегом `v0.36.0` и приложите оба файла: `*.vpk` и `*.vpk.sig`. Приложение не имеет токена GitHub, поэтому приватный репозиторий и его релизы недоступны.
+
+Установка использует `ScePromoterUtil` и `sce_sys/package/head.bin` уже установленной копии, поэтому работает, если приложение само было установлено через VPK-установщик. Проверки логики (версии, разбор релиза, HTTP, подпись, распаковка): `bash tests/run-update-tests.sh`. Установка на самой Vita требует проверки на устройстве.
 
 ## Кэш и приватные данные
 
@@ -584,11 +616,6 @@ TDLib, VitaSDK, vita2d, FFmpeg, rlottie, шрифты и другие завис
 При распространении сохраняйте уведомления и соблюдайте требования лицензий зависимостей, включая предоставление исходников и возможность перелинковки там, где это требуется.
 
 
-Анализ запуска, загрузки чатов и распределения потоков:
-[docs/performance-analysis-0.31.2.md](docs/performance-analysis-0.31.2.md).
-Результаты анализа кода не являются замерами скорости на физической PS Vita.
-
-
 ## Опросы
 
 Откройте сообщение с опросом кнопкой **![X](assets/controller-icons/cross.svg)**. **↑/↓** выбирают строку, **![X](assets/controller-icons/cross.svg)** отмечает
@@ -630,119 +657,17 @@ Noto Sans JP Regular. Поддерживаются смешанные имена
 в кэше; устаревшие идентификаторы файлов не используются после перезапуска.
 
 
-WebM-стикеры и видео VP8/VP9 разрешены в проигрывателе (начиная с 0.31.6).
+WebM-стикеры и видео VP8/VP9 разрешены в проигрывателе.
 Исправлен `Open: -22 Invalid argument`: контейнер Matroska/WebM раньше отсутствовал
 в списке разрешённых форматов, хотя демультиплексор и декодеры уже входили в FFmpeg.
 Аудиопроигрыватель видео также принимает WebM с Opus/Vorbis. Существующие ограничения
 размера файла и разрешения остаются в силе.
 
 
-При выходе из аккаунта (0.31.8) приложение закрывает TDLib и фоновые записи кэша,
+При выходе из аккаунта приложение закрывает TDLib и фоновые записи кэша,
 затем удаляет базу аккаунта, кэш чатов и медиа, скачанные файлы, записи голосовых
 сообщений и журналы отправки. Поздние ответы не восстанавливают старый кэш.
 Дождитесь сообщения об окончании удаления; при прерывании очистка повторяется
 при следующем запуске до загрузки кэша. Настройки приложения и MTProxy сохраняются.
 
-Шрифт Noto Sans Math добавляет отображение математических алфавитов в никах, включая **𝕭𝖆𝖉𝕯𝖗𝖊𝖆𝖒**, с сохранением начертания символов.
-
-Декодер текста vita2d заменён на UTF-8 с поддержкой четырёхбайтовых символов; это исправляет и отрисовку, и расчёт ширины таких имён.
-
-В 0.31.9 кэшированный список чатов сохраняется до окончания первой загрузки каждой папки и заменяется целиком. Ошибка подключения сохраняет видимый кэш. Noto Sans Symbols 2 добавляет символ ✧, в том числе в имени «✧Hehestl | *interrogative hehe*».
-
-В 0.31.10 иконки наборов используют статичную обложку или миниатюру первого подходящего стикера. При отсутствии обложки метаданные набора запрашиваются только для видимых строк; TGS/WebM не передаются декодеру статичных изображений. Список наборов обновляется после запуска, чтобы не использовать старые ID файлов.
-
-В 0.32.0 добавлена проверка MTProxy без сохранения настроек. Обновления списка чатов восстанавливаются после таймаута и переподключения; нижняя строка сбрасывает завершённые события при новом действии.
-
-В 0.32.1 исправлены состояния отправки и скорость в статистике: стикеры отслеживаются отдельно, завершённые события не перекрывают текущие задачи, скорость учитывает время получения событий. Переключения меню приостанавливают новые фоновые запросы и запись кэша на 150 мс; обработка подтверждений отправки получает приоритет.
-
-В 0.33.0 начат первый этап оптимизации — измерения производительности. При удержании Select видны длительность кадров, задержка событий, размеры очередей и возраст показателей. Фоновый журнал `ux0:data/vitagram/performance.log` содержит агрегаты по UI, TDLib, кешу, запуску и отмене/подготовке медиа; тексты сообщений и секреты в него не записываются. [Описание метрик и сценарии проверки](docs/performance-release-0.33.0.md). Следующие этапы получают версии 0.33.1, 0.33.2 и далее.
-
-В 0.33.1 по результатам замеров на Vita переработано сохранение кеша: неизменяемые записи в снимке вместо полного глубокого копирования под блокировкой, блочная запись с прерыванием и отдельный приоритет Storage. Сохранение откладывается при отправке медиа, активном вводе и большой очереди событий; завершение приложения сохраняет последний готовый снимок без нового полного flush. Список чатов копирует только нужное окно, обычные события получают обработку и при постоянном касании. Выход требует Start → Select с удержанием 2 секунды, поэтому Start при уже удерживаемом Select не закрывает приложение во время системного скриншота. [Разбор логов и проверка](docs/performance-release-0.33.1.md).
-
-В 0.33.2 добавлены мягкий бюджет обработки очередей TDLib и измерения текущего этапа сетевого потока для зависшей отправки. [Изменения, ограничения и проверка на Vita](docs/performance-release-0.33.2.md).
-
-В 0.33.3 отключено подробное синхронное логирование TDLib, устранены повторные попытки записи в недоступный stderr на Vita, исправлен статус при 100% без подтверждения и расширены измерения файлового I/O, вывода логов и подключения сокетов. [Результаты нового прогона](docs/performance-release-0.33.3.md).
-
-В 0.33.4 стартовый кеш восстанавливается в фоне, файловые проверки медиакеша вынесены из UI и выполняются без удержания его mutex. Повторные проверки объединяются, свежие данные Telegram имеют приоритет над поздним снимком. [Изменения и проверка](docs/performance-release-0.33.4.md).
-
-В 0.33.5 файловые проверки также убраны из последовательного парсера событий: ограниченная очередь на потоке Storage обновляет только медиафайлы, не задерживая разбор новых сообщений. [Изменения и проверка](docs/performance-release-0.33.5.md).
-
-В 0.33.6 список чатов восстанавливается из отдельного компактного индекса и применяется порциями. Истории и стикеры не входят в стартовый снимок; добавлены отдельные замеры чтения, JSON-разбора и объединения кеша. [Изменения и проверка](docs/performance-release-0.33.6.md).
-
-В 0.33.7 исправлены регрессии загрузчика кеша: восстановлены позиции чатов, приоритет живых данных и отмена после очистки. Повреждённый стартовый индекс перестраивается автоматически. [Изменения и проверка](docs/performance-release-0.33.7.md).
-
-В 0.33.8 фоновая загрузка кеша уступает вводу и очереди событий, объединение данных вынесено из общей блокировки, а обновления статусов пользователей больше не вызывают публикацию списка чатов. [Изменения и проверка](docs/performance-release-0.33.8.md).
-
-В 0.33.9 декодирование PNG/JPEG/WebP перенесено из кадра интерфейса в фоновый поток с ограниченной очередью и отменой устаревших результатов. [Изменения и проверка](docs/performance-release-0.33.9.md).
-
-В 0.33.10 добавлена ограниченная диагностика типов и размеров медленных событий, операций UI-кеша и пауз фоновой загрузки без записи содержимого сообщений. [Описание и проверка](docs/performance-release-0.33.10.md).
-
-В 0.33.11 исправлены счётчики диагностики на Vita и передача размера JSON; добавлены замеры обработчиков ввода, рисования и переключения медиаплееров. [Описание и проверка](docs/performance-release-0.33.11.md).
-
-В 0.33.12 кешируются повторные измерения текста и выбор fallback-шрифта; длинные строки обрезаются двоичным поиском по границам UTF-8. [Описание и проверка](docs/performance-release-0.33.12.md).
-
-В 0.33.13 проверка востребованных файлов выполняется во время загрузки полного кеша; видимые файлы получают приоритет с сохранением фонового обслуживания. [Описание и проверка](docs/performance-release-0.33.13.md).
-
-В 0.33.14 ответы для обложек стикерпаков сокращаются до одного превью; открытая сетка применяется порциями с отменой при переключении. [Описание и проверка](docs/performance-release-0.33.14.md).
-
-В 0.33.15 неиспользуемые updateStickerSet сокращаются на Parser до передачи на UI; добавлены замеры освобождения JSON. [Описание и проверка](docs/performance-release-0.33.15.md).
-
-В 0.33.16 локальные аватары доступны через лёгкий стартовый индекс; видимые иконки проверяются во время загрузки полного кеша. [Описание и проверка](docs/performance-release-0.33.16.md).
-
-В 0.33.17 события открытого чата обрабатываются приоритетно; стикеры открываются на избранном, полные наборы не загружаются ради обложек. Добавлены кастомные реакции со статическими превью. [Описание и проверка](docs/performance-release-0.33.17.md).
-
-В 0.33.18 возвращено меню стикеров с приоритетом недавних; неиспользуемые обновления стикеров разбираются без полного дерева, повышен приоритет входа в чат и добавлено обновление данных просматриваемого поста. [Описание и проверка](docs/performance-release-0.33.18.md).
-
-В 0.33.23 запасные шрифты и шрифт эмодзи загружаются в фоне (запуск снова не ждёт ~11 МБ шрифтов), а медленные open/stat TDLib записываются с каталогом файла. [Описание и проверка](docs/performance-release-0.33.23.md).
-
-В 0.33.24 раздутые каталоги кэша (аватарки, миниатюры, фото, временные файлы) один раз заменяются пустыми перед стартом TDLib, старые копии удаляются в фоне; TDLib создаёт файлы с именами-счётчиками, аватарки списка не скачиваются заново, пока проверяется сохранённая копия; открытый чат и выбранная папка получают приоритет. [Описание и проверка](docs/performance-release-0.33.24.md).
-
-В 0.33.25 обрезка кэша пользователей и чатов идёт небольшими порциями (без двухсекундного фриза при старте), а фоновое удаление корзины останавливается, когда удаление одного файла занимает дольше 250 мс — остаток `*.trash*` можно удалить с ПК. [Описание и проверка](docs/performance-release-0.33.25.md).
-
-В 0.33.26 ответ со списком наборов стикеров сокращается в потоке Parser (остаются id, название и одна миниатюра), поэтому открытие панели стикеров не вызывает кадра в ~0,3 с. [Описание и проверка](docs/performance-release-0.33.26.md).
-
-В 0.33.27 длинное видео удерживает фоновые загрузки, пока скачивается, зависшая загрузка перезапускается через 20 с без прогресса, а список реакций запрашивается при открытии сообщения. Добавлены метрики `video_ready_us` и `reaction_response_us`. [Описание](docs/performance-release-0.33.27.md).
-
-В 0.33.28 очистка старых каталогов `*.trash*` останавливается при удалении дольше 100 мс (раньше 250 мс) и работает только в окне 20–60 с после старта: в 0.33.26 долгие удаления на 120–170 мс замедляли TDLib и открытие чата до ~1 с. Остатки лучше удалить с ПК. [Описание](docs/performance-release-0.33.28.md).
-
-В 0.33.29 ответ `stickerSets` (~300 КБ) сжимается ещё до разбора JSON: Parser пропускает обложки на уровне грамматики и оставляет только id, название и один превью-файл на набор. В 0.33.28 разбор и освобождение этого ответа занимали 0,4–1,6 с и тормозили TDLib при открытии панели стикеров. [Описание](docs/performance-release-0.33.29.md).
-
-В 0.33.41 новые фото профиля, миниатюры и фото TDLib складывает в подпапки `b<N>/` по 32 файла: на exFAT создание файла сканирует всю папку, и `td_file_meta` рос с ~70 до ~145 мс по мере накопления файлов. Старые плоские каталоги один раз переименовываются в `.trash`, иконки скачиваются заново. [Описание](docs/performance-release-0.33.41.md).
-
-В 0.33.42 ответы `stickerSet`/`stickers` сжимаются до разбора JSON (контуры и списки эмодзи пропускаются), а кэш текстур учитывает реальные 256 КиБ CDRAM на блок и ограничен 32 МиБ: в логах 0.33.41 свободная CDRAM падала с 90 до 31 МБ, а открытие набора стикеров давало подвисания до 200 мс. [Описание](docs/performance-release-0.33.42.md).
-
-В 0.33.45 ответы открытого чата (`history`, `reaction_*`, `forum_*`) обгоняют поток обновлений запуска ещё на входе Parser: поток TDLib определяет их по хвосту сырой строки (`@extra`) и ставит в начало очереди разбора. Раньше первая история ждала разбора ~1500 обновлений (`first_history_raw_wait` до 1,6 с). Не проверено на устройстве.
-
-В 0.33.46 сжатие ответов `stickerSet`/`stickers` собирает файловые объекты стикеров по членам (остаются только читаемые поля `local`/`remote`): в 0.33.45 оно сохраняло по два полных файла на стикер, и парс (~220 мс на 66 КБ) почти не ускорился. Добавлена метрика `sticker_compact_miss` для ответов, отвергнутых сжатием. Не проверено на устройстве.
-
-В 0.33.47 разбор имён ключей и простых значений в сжатии `stickerSet`/`stickers`/`stickerSets` не вызывает Jansson (на каждый ключ шёл `json_loadb`, а ключей тысячи). Не проверено на устройстве.
-
-В 0.33.48 подрезка кэша пользователей и чатов до лимитов (1024 и 2000) выполняется один раз при загрузке на потоке Storage. Раньше кэш на диске был выше лимита, и каждое `updateUser` на старте удаляло по 16 записей на UI-потоке (55–78 мс). Не проверено на устройстве.
-
-В 0.33.49 освобождение деревьев выносилось на поток Storage, но замедляло старт (общий замок `malloc`), в 0.33.50 вынос убран.
-
-В 0.33.50 ответы `updateChatLastMessage`/`updateChatDraftMessage` сжимаются до разбора JSON (остаются только `chat_id`, `positions`, id и `is_outgoing` последнего сообщения), а лишняя кэшированная история выселяется порциями по 8 сообщений вместо одного удара на 100–250 мс. Не проверено на устройстве.
-
-В 0.34.51 ответы `messages` (страницы истории по 30–165 КБ) сжимаются до разбора JSON: из каждого сообщения остаются только читаемые клиентом и кэшем члены верхнего уровня, а из `content` вырезаются `minithumbnail`, `waveform`, `outline`, `link_preview`. Любое отклонение формата идёт прежним путём Jansson. Не проверено на устройстве.
-
-В 0.34.52 добавлены метрики `messages_compact_hit` и `messages_compact_miss` (размер ответа в байтах): по ним в следующем логе видно, срабатывает ли сжатие `messages`. Поведение не менялось.
-
-В 0.34.53 стикеры (`db_stickers`) разложены по подкаталогам `b<N>/` (как фото и миниатюры), старый плоский каталог один раз уходит в корзину при обновлении: поиск файла в каталоге из 150+ записей давал 50–145 мс на вызов. Добавлены метрики `messages_compact_us` (время сжатия ответа `messages`) и `messages_remember_us` (фаза `remember` только для `messages`).
-
-В 0.34.54 сжатие `messages` сужает типизированные медиа: у фото оставлены только `type/width/height/photo`, у `alternative_videos` — `codec/width/height/video`, у файлов — `id/size/expected_size/local/remote`, а `local` — только читаемые поля. Метрика `td_file_meta_us` разделена на `td_file_meta_sticker_us` и `td_file_meta_other_us`, чтобы понять, почему поиск стикера всё ещё ~4 мс.
-
-В 0.34.55 только диагностика: `td_file_meta_other_us` разбит по каталогам (`td_file_meta_temp_us`, `_photos_`, `_thumbs_`, `_db_`), чтобы найти источник медианы ~4 мс; этап `draw` разбит на подэтапы `draw_begin`, `draw_header`, `draw_chat`, `draw_overlays`, `draw_end` (медленные события >50 мс), чтобы найти причину разовых зависаний кадра на 1.3–2.4 с.
-
-В 0.34.56 фоновая загрузка деталей кэша на старте стала мягче: при 8+ событиях в очередях Parser/UI она работает с половинной скважностью (2 мс работы, 2 мс отдыха вместо 80%), а полная пауза включается с 32 событий (было 64). Для `folder_ready_us` добавлены `folder_first_row_us` (время до первой строки) и `folder_requests` (число запросов loadChats), чтобы понять, откуда берутся 37 с при смене папки.
-В 0.34.58 убраны три длинных кадровых затыка из лога 0.34.56: (1) `wrap_text` больше не измеряет каждую строку-кандидат целиком (это было квадратично, до 105 мс на длинный пост) — ширина считается суммой ширин слов, а полное измерение остаётся только у границы ±12 px, поэтому кернинг и запасные шрифты решают пограничные случаи как раньше; кэш разметки вырос с 16 до 48 записей; (2) JSON ответов TDLib от 16 КБ на UI-потоке освобождается порциями по ~2.5 мс за кадр (до 8 мс при большой очереди), а не за один раз (`release` 86–91 мс для `messages`/`stickerSet`); освобождение остаётся на том же потоке, чтобы не повторить проблему 0.33.49 с общим замком malloc; (3) снимок UI-кэша пишется не чаще раза в 90 с вместо 30 (запись занимала 1.7–1.9 с на карте, общей с TDLib). Цена: при аварийном выходе теряются изменения кэша за последние до 90 с.
-В 0.34.59: (1) сохранение ответа `messages` в UI-кэш (глубокие копии ~1.7 мс/КБ, до 150 мс на UI-потоке) перенесено в поток Parser (`UiCache::rememberMessages`): копии делаются без мьютекса, под ним только вставка и вытеснение, оставляются 60 новейших сообщений чата; UI пропускает такой ответ по метке `@ui_remembered`; при выходе из аккаунта Parser не сохраняет; (2) диагностика замка медиакэша: ожидание или удержание ≥50 мс даёт slow_event `mlw_<функция>_<строка>_by_<владелец>_<строка>` / `mlh_<функция>_<строка>` (для поиска 142 мс `media_lock_us`); (3) сметалка мусора больше не останавливается на первом удалении >100 мс: стоп только при одном удалении >400 мс или трёх подряд >150 мс (раньше каждый запуск чистил один файл).
-
-В 0.34.60: (1) освобождение больших JSON-ответов делится глубже (глубина 3 → 6), чтобы `release stickerSets` не занимал до 310 мс одним кадром; (2) копия списка наборов стикеров в UI-кэш (`saveStickerPacks`, до 139 мс) выполняется на Parser вне мьютекса, UI пропускает повтор по метке `@ui_saved`; (3) `AnimationPlayer::upload` не пишет `video-hardware.log` на SD из UI-потока (раз в 60 кадров и при первом кадре, под мьютексом) — вероятная причина 813 мс `animationplayer_upload`; (4) в строку `device` лога добавлены `cdram_images`, `cdram_glyphs`, `cdram_video` для различения заполнения кэшей и утечки CDRAM.
-
-В 0.33.22 группа больше не ждёт проверки форума перед первой историей (признак форума берётся из обновлений TDLib, неизвестная группа проверяется параллельно), текстовые шрифты загружаются в память, файловый I/O TDLib разделён на sync, open/stat и чтение/запись. [Описание и проверка](docs/performance-release-0.33.22.md).
-
-В 0.33.21 добавлены замеры отправки и получения ответа первой истории, её разбора и проверки форума. [Описание и проверка](docs/performance-release-0.33.21.md).
-
-В 0.33.20 события несут готовые метаданные, бюджет pump растёт при фоновой перегрузке, а loadChats и видимые аватары продолжают загружаться. Добавлены замеры первого отображения сообщений из кеша и сети. [Описание и проверка](docs/performance-release-0.33.20.md).
-
-В 0.33.19 приоритетные события выбираются через индексы без обхода готовой очереди. Добавлены отдельные замеры первого ответа истории. [Описание и проверка](docs/performance-release-0.33.19.md).
+Шрифт Noto Sans Math добавляет отображение математических алфавитов в никах.

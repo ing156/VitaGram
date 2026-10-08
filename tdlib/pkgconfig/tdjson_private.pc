@@ -1,0 +1,9 @@
+prefix=/usr/local/vitasdk/arm-vita-eabi
+
+Name: tdjson_private
+Description: Telegram Library - JSON interface (private)
+Version: 1.7.8
+
+CFlags: -I"${prefix}/include"
+Libs: -L"${prefix}/lib" -ltdjson_private
+Requires.private: tdclient tdutils
