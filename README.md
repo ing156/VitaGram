@@ -36,8 +36,6 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 
 ## Controls
 
-The current bindings and proposed improvements are reviewed in [the control audit](docs/controls-analysis.md) (Russian).
-
 ### Main menu
 
 - **![D-pad](assets/controller-icons/dpad.svg) / touch** — select and scroll; **![X](assets/controller-icons/cross.svg) / tap** — open a chat.
@@ -301,7 +299,6 @@ When distributing the application, retain notices and comply with dependency lic
 ## Управление
 
 Окно диагностики на Select удалено; отдельное нажатие Select ничего не делает.
-[Анализ текущего управления и варианты развития](docs/controls-analysis.md).
 
 ### Главное меню
 
