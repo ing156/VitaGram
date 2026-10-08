@@ -731,6 +731,33 @@ int main() {
     assert(rich_item.animation && rich_item.video && rich_item.animation_file_id==203);
     assert(rich_item.links.size()==1 && rich_item.links[0]=="https://example.org/hidden");
     std::puts("Rich messages: nested text, multiple photos and video passed");
+    auto* pin_message=parse(R"({"id":601,"content":{"@type":"messagePinMessage","message_id":501}})");
+    auto pin_item=tg.parseMessage(pin_message); json_decref(pin_message);
+    assert(pin_item.text=="Закреплено сообщение" && pin_item.media_label.empty());
+    assert(pin_item.pin_message && pin_item.pinned_message_id==501);
+    assert(pin_item.service_message);
+    auto* joined_message=parse(R"({"id":602,"sender_id":{"@type":"messageSenderUser","user_id":5},"content":{"@type":"messageChatJoinByLink"}})");
+    auto joined_item=tg.parseMessage(joined_message); json_decref(joined_message);
+    assert(joined_item.service_message && !joined_item.pin_message && !joined_item.pinned_message_id);
+    assert(joined_item.text.find("Вступление по ссылке: ")==0 && joined_item.text.find(tg.senderName(joined_item))!=std::string::npos);
+    {
+        TelegramClient pins;
+        pins.current_chat_id_=42; pins.ready_=true; pins.worker_started_=true;
+        pins.process(parse(R"({"@type":"updateNewMessage","message":{"id":501,"chat_id":42,"content":{"@type":"messageText","text":{"text":"Pinned text"}}}})"));
+        assert(pins.openPinnedMessage(501) && pins.takeMessageJump()==501);
+        assert(pins.outgoing_.empty() && pins.takeMessageJump()==0);
+        assert(pins.openPinnedMessage(502));
+        auto* request=parse(pins.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request,"@type")=="getMessage" && MediaUploads::number(request,"message_id")==502);
+        json_decref(request);
+        pins.process(parse(R"({"@type":"message","id":502,"chat_id":42,"content":{"@type":"messageText","text":{"text":"Fetched pinned text"}},"@extra":{"kind":"pin_target","chat":42,"generation":0}})"));
+        assert(pins.takeMessageJump()==502);
+        pins.process(parse(R"({"@type":"message","id":503,"chat_id":42,"content":{"@type":"messageText","text":{"text":"Stale"}},"@extra":{"kind":"pin_target","chat":42,"generation":99}})"));
+        assert(pins.takeMessageJump()==0 && pins.messages_.size()==2);
+        pins.process(parse(R"({"@type":"error","message":"MESSAGE_NOT_FOUND","@extra":{"kind":"pin_target","chat":42,"generation":0}})"));
+        assert(pins.takeMessageJump()==0 && !pins.updateNotice().empty());
+        pins.worker_started_=false;
+    }
 
     TelegramClient speech;
     speech.current_chat_id_=42;
@@ -870,6 +897,22 @@ int main() {
         assert(reactions.outgoing_.size()==requests);
         reactions.process(parse(R"({"@type":"stickers","stickers":[{"full_type":{"custom_emoji_id":900000000000},"format":{"@type":"stickerFormatWebp"},"sticker":{"@type":"file","id":306,"local":{"is_downloading_completed":true,"path":"reaction.webp"}}}],"@extra":{"kind":"reaction_icons","chat":42,"message":55}})"));
         assert(reactions.reactionIcon(0)=="reaction.webp");
+        assert(reactions.customReactionIcon(900000000000LL)=="reaction.webp");
+        reactions.ensureMessageReactionMedia();
+        icons=parse(reactions.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(icons,"@type")=="getCustomEmojiStickers");
+        // Existing reactions need icons even when absent from the choices.
+        assert(json_array_size(json_object_get(icons,"custom_emoji_ids"))==62);json_decref(icons);
+        requests=reactions.outgoing_.size();reactions.ensureMessageReactionMedia();
+        assert(reactions.outgoing_.size()==requests);
+        reactions.process(parse(R"({"@type":"stickers","stickers":[{"full_type":{"custom_emoji_id":900000000063},"format":{"@type":"stickerFormatTgs"},"thumbnail":{"format":{"@type":"thumbnailFormatWebp"},"file":{"id":307,"local":{"is_downloading_completed":false,"path":""}}}}],"@extra":{"kind":"reaction_icons","chat":42,"message":55}})"));
+        assert(reactions.customReactionIcon(900000000063LL).empty());
+        reactions.ensureMessageReactionMedia();
+        auto* download=parse(reactions.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(download,"@type")=="downloadFile");
+        assert(MediaUploads::number(download,"file_id")==307);json_decref(download);
+        reactions.process(parse(R"({"@type":"updateFile","file":{"id":307,"local":{"is_downloading_completed":true,"path":"custom-thumbnail.webp"}}})"));
+        assert(reactions.customReactionIcon(900000000063LL)=="custom-thumbnail.webp");
         reactions.process(parse(R"({"@type":"updateFile","file":{"id":306,"local":{"is_downloading_completed":false,"path":""}}})"));
         assert(reactions.reactionIcon(0).empty());
         reactions.toggleReaction(55,reactions.reaction_choices_[0]);
@@ -889,6 +932,9 @@ int main() {
         assert(reactions.messages_[0].reactions.empty());
         reactions.process(parse(R"({"@type":"availableReactions","top_reactions":[{"type":{"@type":"reactionTypeCustomEmoji","custom_emoji_id":999},"needs_premium":true}],"@extra":{"kind":"reaction_choices","chat":42,"message":55}})"));
         assert(reactions.reaction_choices_.empty() && reactions.reaction_status_.find("Premium")!=std::string::npos);
+        assert(reactions.customReactionIcon(900000000063LL)=="custom-thumbnail.webp");
+        reactions.loadReactions(56);
+        assert(reactions.customReactionIcon(900000000063LL).empty());
         reactions.worker_started_=false;
     }
     std::puts("Reactions: large custom lists, choices, deduplication, send/remove and updates passed");

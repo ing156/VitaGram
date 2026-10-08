@@ -101,6 +101,8 @@ bool reveal(const std::string& stored, std::string& plain) {
     return true;
 }
 
+bool console_binding(unsigned char out[32]) { return derive("VitaGram-vault-bind-v1", out); }
+
 std::string database_key() {
     unsigned char key[32];
     return derive("VitaGram-tdlib-v1", key) ? to_hex(key, 32) : "";

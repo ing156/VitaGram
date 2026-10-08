@@ -13,6 +13,8 @@
 #include "config.h"
 #include "performance_log.h"
 #include "file_download.h"
+#include "secure_store.h"
+#include "vault.h"
 #include "rich_message.h"
 
 #include <td/telegram/td_json_client.h>
@@ -285,7 +287,7 @@ void TelegramClient::prepareCachedAvatar() {
         struct stat info{};
         const auto expected=json_i53(file,"size");
         if (path.empty() || stat(path.c_str(),&info) || !S_ISREG(info.st_mode) ||
-            info.st_size<=0 || (expected>0 && info.st_size!=expected)) path.clear();
+            info.st_size<=0 || (expected>0 && info.st_size!=expected && info.st_size!=vault::sealed_size(expected))) path.clear();
         performance::lock(&queue_mutex_, performance::Metric::QueueLock);
         if (!stopping_) cached_avatar_results_.emplace_back(id, std::move(path));
         pthread_mutex_unlock(&queue_mutex_);
@@ -408,6 +410,7 @@ void TelegramClient::stopWorker() {
     if (worker_running) pthread_join(worker_, nullptr);
     if (parser_running) pthread_join(parser_, nullptr);
     if (cache_running) pthread_join(cache_worker_, nullptr);
+    sealer_.stop();
     media_cache_.invalidate(); // Never reuse late file jobs with a new TD session.
     if (applying_snapshot_) json_decref(static_cast<json_t*>(applying_snapshot_));
     applying_snapshot_ = nullptr;
@@ -807,6 +810,7 @@ bool TelegramClient::start(bool defer_cache_worker) {
         return false;
     }
     if (!defer_cache_worker && !startCacheWorker()) { stopWorker(); return false; }
+    sealer_.start(); // seals media as TDLib finishes downloading it (vault on only)
     status_ = tr("tg.created_waiting");
     sendRaw("{\"@type\":\"getAuthorizationState\",\"@extra\":\"startup_probe\"}");
     return true;
@@ -853,23 +857,50 @@ void TelegramClient::configureProxy(bool enabled, const ProxyConfig& proxy) {
 }
 
 namespace {
-const char* const kDatabaseMarker = VITAGRAM_DB_DIR "/.encrypted-v1";
-}
-
-bool TelegramClient::databaseEncrypted() const {
-    if (database_key_.empty()) return false;
-    FILE* f = std::fopen(kDatabaseMarker, "rb");
+const char* const kMarkerConsole = VITAGRAM_DB_DIR "/.encrypted-v1";
+const char* const kMarkerVault = VITAGRAM_DB_DIR "/.encrypted-v2";
+bool marker_exists(const char* path) {
+    FILE* f = std::fopen(path, "rb");
     if (f) std::fclose(f);
     return f != nullptr;
 }
+}
 
-// Existing installs start unencrypted; re-key the database once, then remember it with a marker
-// that lives inside the database directory (so logout cleanup removes both together).
+int TelegramClient::databaseMarker() const {
+    return marker_exists(kMarkerVault) ? 2 : marker_exists(kMarkerConsole) ? 1 : 0;
+}
+
+int TelegramClient::targetDatabaseMarker() const {
+    if (vault::enabled() && !vault::disabling()) return 2;
+    return secure_store::database_key().empty() ? 0 : 1;
+}
+
+std::string TelegramClient::currentDatabaseKey() const {
+    switch (databaseMarker()) {
+        case 2: return vault::database_key();
+        case 1: return secure_store::database_key();
+        default: return std::string();
+    }
+}
+
+std::string TelegramClient::targetDatabaseKey() const {
+    return targetDatabaseMarker() == 2 ? vault::database_key() : secure_store::database_key();
+}
+
+bool TelegramClient::databaseKeyCurrent() const {
+    return !database_key_migrating_ && databaseMarker() == targetDatabaseMarker();
+}
+
+// Re-keys the database once: new installs and updates start unencrypted (or under the console
+// key), and the vault switches the key when it is turned on or off. The marker lives inside the
+// database directory so logout cleanup removes both together.
 void TelegramClient::migrateDatabaseKey() {
-    if (database_key_.empty() || database_key_migrating_ || databaseEncrypted()) return;
+    if (database_key_migrating_ || databaseMarker() == targetDatabaseMarker()) return;
+    const int target = targetDatabaseMarker();
+    if (target == 2 && !vault::unlocked()) return;
     database_key_migrating_ = true;
-    auto* request = json_pack("{s:s,s:s}", "@type", "setDatabaseEncryptionKey", "new_encryption_key", database_key_.c_str());
-    json_object_set_new(request, "@extra", json_pack("{s:s}", "kind", "db_key"));
+    auto* request = json_pack("{s:s,s:s}", "@type", "setDatabaseEncryptionKey", "new_encryption_key", targetDatabaseKey().c_str());
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:i}", "kind", "db_key", "marker", target));
     sendJson(request);
 }
 
@@ -968,6 +999,41 @@ std::string TelegramClient::inputPrompt() const {
     }
 }
 
+bool TelegramClient::canResendCode() const {
+    return input_kind_ == InputKind::Code && auth_can_resend_ && sceKernelGetSystemTimeWide() >= auth_resend_at_;
+}
+
+std::string TelegramClient::authResendInfo() const {
+    if (input_kind_ != InputKind::Code || !auth_can_resend_) return std::string();
+    int64_t left = (auth_resend_at_ - sceKernelGetSystemTimeWide() + 999999) / 1000000;
+    return left > 0 ? tr("auth.resend_wait", {auth_next_via_, std::to_string(left)}) : tr("auth.resend_ready", {auth_next_via_});
+}
+
+void TelegramClient::requestQr() {
+    if (!canRequestQr()) return;
+    const InputKind previous = input_kind_;
+    input_kind_ = InputKind::None;
+    auth_detail_.clear(); auth_can_resend_ = false;
+    status_ = tr("auth.qr_requesting");
+    // A failure puts the sign-in prompt back (see the auth_input handler).
+    sendJson(json_pack("{s:s,s:[],s:{s:s,s:i}}", "@type", "requestQrCodeAuthentication", "other_user_ids",
+                       "@extra", "kind", "auth_input", "input", (int)previous));
+}
+
+void TelegramClient::backInput() {
+    // TDLib accepts a new phone number while it waits for the code, password or name.
+    if (!canGoBackInput()) return;
+    auth_detail_.clear(); auth_can_resend_ = false;
+    setInput(InputKind::Phone, tr("auth.prompt.phone"));
+}
+
+void TelegramClient::resendCode() {
+    if (!canResendCode()) return;
+    auth_can_resend_ = false;
+    status_ = tr("auth.sending_code");
+    sendJson(json_pack("{s:s}", "@type", "resendAuthenticationCode"));
+}
+
 void TelegramClient::cancelInput() {
     if (input_kind_ == InputKind::Message) input_kind_ = InputKind::None;
 }
@@ -1025,6 +1091,8 @@ void TelegramClient::submitInput(const std::string& value) {
         status_ = tr("common.sending");
     }
 
+    if (root && kind != InputKind::Message)
+        json_object_set_new(root, "@extra", json_pack("{s:s,s:i}", "kind", "auth_input", "input", (int)kind));
     if (root) sendJson(root);
 }
 
@@ -1033,6 +1101,7 @@ void TelegramClient::processAuth(void* opaque) {
     json_t* state = json_object_get(root, "authorization_state");
     if (!json_is_object(state)) state = root;
     const char* type = json_str(state, "@type");
+    if (std::strcmp(type, "authorizationStateWaitOtherDeviceConfirmation")) qr_link_.clear();
 
     if (!std::strcmp(type, "authorizationStateWaitTdlibParameters")) {
         // Both the unsolicited update and our startup probe can report this state.
@@ -1044,7 +1113,7 @@ void TelegramClient::processAuth(void* opaque) {
         json_object_set_new(params, "use_test_dc", json_false());
         json_object_set_new(params, "database_directory", json_string(VITAGRAM_DB_DIR));
         json_object_set_new(params, "files_directory", json_string(VITAGRAM_FILES_DIR));
-        json_object_set_new(params, "database_encryption_key", json_string(databaseEncrypted() ? database_key_.c_str() : ""));
+        json_object_set_new(params, "database_encryption_key", json_string(currentDatabaseKey().c_str()));
         json_object_set_new(params, "@extra", json_pack("{s:s}", "kind", "tdlib_params"));
         json_object_set_new(params, "use_file_database", json_false());
         json_object_set_new(params, "use_chat_info_database", json_false());
@@ -1062,23 +1131,44 @@ void TelegramClient::processAuth(void* opaque) {
     } else if (!std::strcmp(type, "authorizationStateWaitEncryptionKey")) {
         {
             json_t* check = json_pack("{s:s,s:s}", "@type", "checkDatabaseEncryptionKey", "encryption_key",
-                                      databaseEncrypted() ? database_key_.c_str() : "");
+                                      currentDatabaseKey().c_str());
             sendJson(check);
         }
     } else if (!std::strcmp(type, "authorizationStateWaitPhoneNumber")) {
+        auth_detail_.clear(); auth_can_resend_ = false;
+        // Re-keying waits for sign-in so the first login steps run exactly as before; only switching
+        // the vault off must not wait, or the vault key could never be dropped without a login.
+        if (vault::disabling()) migrateDatabaseKey();
         cache_restore_allowed_ = false;
         startup_chat_snapshots_.clear();
         ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); supergroup_forum_.clear(); user_photos_.clear(); sender_requests_.clear();
         folder_windows_.clear(); folders_.clear(); selected_folder_ = 0; user_presence_.clear();
         setInput(InputKind::Phone, tr("auth.prompt.phone"));
     } else if (!std::strcmp(type, "authorizationStateWaitCode")) {
+        json_t* info = json_object_get(state, "code_info");
+        std::string phone = json_str(info, "phone_number");
+        while (!phone.empty() && phone[0] == '+') phone.erase(0, 1); // TDLib echoes the number as typed
+        auto via_of = [](const char* kind) {
+            return !std::strcmp(kind, "authenticationCodeTypeTelegramMessage") ? "auth.via.app" :
+                !std::strcmp(kind, "authenticationCodeTypeCall") || !std::strcmp(kind, "authenticationCodeTypeFlashCall") ||
+                !std::strcmp(kind, "authenticationCodeTypeMissedCall") ? "auth.via.call" : "auth.via.sms";
+        };
+        auth_detail_ = phone.empty() ? std::string()
+            : tr("auth.code_sent", {"+" + phone, tr(via_of(json_str(json_object_get(info, "type"), "@type")))});
+        json_t* next = json_object_get(info, "next_type");
+        auth_can_resend_ = json_is_object(next);
+        auth_next_via_ = auth_can_resend_ ? tr(via_of(json_str(next, "@type"))) : std::string();
+        auth_resend_at_ = sceKernelGetSystemTimeWide() + json_i53(info, "timeout") * 1000000;
         setInput(InputKind::Code, tr("auth.prompt.code"));
     } else if (!std::strcmp(type, "authorizationStateWaitPassword")) {
         setInput(InputKind::Password, tr("auth.prompt.password"));
     } else if (!std::strcmp(type, "authorizationStateWaitRegistration")) {
         setInput(InputKind::FirstName, tr("auth.prompt.first_name"));
     } else if (!std::strcmp(type, "authorizationStateWaitOtherDeviceConfirmation")) {
-        status_ = std::string("Confirm login on another device: ") + json_str(state, "link");
+        // TDLib refreshes the link about every 30 s; the screen shows the newest one as a QR code.
+        qr_link_ = json_str(state, "link");
+        input_kind_ = InputKind::None;
+        status_ = tr("auth.qr_waiting");
     } else if (!std::strcmp(type, "authorizationStateReady")) {
         migrateDatabaseKey();
         ready_ = true;
@@ -1530,6 +1620,16 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         std::string caption = json_str(json_object_get(content, "caption"), "text");
         if (!caption.empty()) out.text += "\n" + caption;
     }
+    else if (!std::strcmp(type, "messagePinMessage")) {
+        out.pin_message = true;
+        out.service_message = true;
+        out.pinned_message_id = json_i53(content, "message_id");
+        out.text = tr("service.message_pinned");
+    }
+    else if (!std::strcmp(type, "messageChatJoinByLink")) {
+        out.service_message = true;
+        out.text = tr("service.joined_by_link", {senderName(out)});
+    }
     else out.text = type[0] ? std::string("[") + type + "]" : "[" + tr("media.message") + "]";
     auto add_link = [&](const std::string& url) {
         std::string normalized = url;
@@ -1654,6 +1754,7 @@ void TelegramClient::updateFile(void* opaque) {
     json_t* local = json_object_get(file, "local");
     const char* path = json_is_object(local) ? json_str(local, "path") : "";
     if (id <= 0) return;
+    if (path[0] && json_is_true(json_object_get(local, "is_downloading_completed"))) sealer_.enqueue(path);
     auto document_job = document_downloads_.find(id);
     if (document_job != document_downloads_.end() && json_is_true(json_object_get(local, "is_downloading_completed")) && path[0]) {
         std::string result;
@@ -1914,6 +2015,18 @@ void TelegramClient::process(void* opaque) {
         retire_td_json(root,wire_bytes); return;
     }
     json_t* extra = json_object_get(root, "@extra");
+    if (!std::strcmp(json_str(extra, "kind"), "pin_target")) {
+        if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "generation") == history_generation_) {
+            if (!std::strcmp(type, "message") && json_i53(root, "chat_id") == current_chat_id_ && matchesTopic(root)) {
+                storeMessage(root);
+                openPinnedMessage(json_i53(root, "id"));
+            } else {
+                notice_ = tr("link.open_failed", {json_str(root, "message", tr("link.chat_unavailable").c_str())});
+                notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+            }
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "speech_request")) {
         if (!std::strcmp(type, "error") && json_i53(extra, "chat") == current_chat_id_) {
             for (auto& item : history_items_) if (item.id == json_i53(extra, "message")) item.transcription_pending = false;
@@ -1972,12 +2085,28 @@ void TelegramClient::process(void* opaque) {
     if (!std::strcmp(json_str(extra, "kind"), "db_key")) {
         database_key_migrating_ = false;
         if (!std::strcmp(type, "ok")) {
-            if (FILE* f = std::fopen(kDatabaseMarker, "wb")) { std::fputs("1", f); std::fclose(f); }
+            const int marker = (int)json_i53(extra, "marker");
+            // Write the new marker before dropping the old one: a crash in between must never
+            // leave the database looking unencrypted.
+            const char* paths[] = {nullptr, kMarkerConsole, kMarkerVault};
+            if (paths[marker]) if (FILE* f = std::fopen(paths[marker], "wb")) { std::fputs("1", f); std::fclose(f); }
+            for (int i = 1; i <= 2; ++i) if (i != marker) std::remove(paths[i]);
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "auth_input")) {
+        // A rejected number/code/password must not leave the sign-in screen without a prompt.
+        if (!std::strcmp(type, "error")) {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), "%s (%lld)", json_str(root, "message"), (long long)json_i53(root, "code"));
+            const auto kind = static_cast<InputKind>(json_i53(extra, "input"));
+            setInput(kind, buf);
+            error_.clear();
         }
         retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "tdlib_params")) {
-        if (!std::strcmp(type, "error") && databaseEncrypted()) {
+        if (!std::strcmp(type, "error") && databaseMarker()) {
             status_ = tr("tg.db_key_error"); error_ = status_;
         }
         retire_td_json(root,wire_bytes); return;
@@ -2092,7 +2221,7 @@ void TelegramClient::process(void* opaque) {
             }
             if (!std::strcmp(type, "error")) reaction_status_ = json_str(root, "message");
             else if (!std::strcmp(type, "availableReactions")) {
-                reaction_choices_.clear(); reaction_custom_choices_.clear(); reaction_previews_.clear();
+                reaction_choices_.clear(); reaction_custom_choices_.clear();
                 auto add_custom=[&](int64_t id) {
                     if (id<=0) return;
                     for (const auto& entry:reaction_custom_choices_) if (entry.second==id) return;
@@ -2837,6 +2966,23 @@ void TelegramClient::backToTopics() {
     ++history_generation_; history_pending_ = false; history_done_ = true; history_items_.clear(); messages_.clear();
 }
 
+bool TelegramClient::openPinnedMessage(int64_t message_id) {
+    if (!current_chat_id_ || message_id <= 0) return false;
+    for (const auto& item : history_items_) if (item.id == message_id) {
+        for (const auto& displayed : messages_) if (displayed.id == message_id ||
+            (item.media_album_id && displayed.media_album_id == item.media_album_id)) {
+            message_jump_ = displayed.id;
+            message_jump_generation_ = history_generation_;
+            return true;
+        }
+    }
+    if (!ready_ || !worker_started_) return false;
+    auto* request = json_pack("{s:s,s:I,s:I}", "@type", "getMessage", "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)message_id);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:i}", "kind", "pin_target", "chat", (json_int_t)current_chat_id_, "generation", (int)history_generation_));
+    sendJson(request);
+    return true;
+}
+
 bool TelegramClient::requestTranscription(int64_t message_id) {
     if (!ready_ || !worker_started_ || !current_chat_id_) return false;
     auto found = std::find_if(history_items_.begin(), history_items_.end(), [&](const MessageItem& item) { return item.id == message_id; });
@@ -3125,7 +3271,32 @@ std::string TelegramClient::reactionIcon(size_t index) const {
     if (index>=reaction_choices_.size()) return {};
     auto custom=reaction_custom_choices_.find(reaction_choices_[index]);
     if (custom==reaction_custom_choices_.end()) return {};
-    auto found=reaction_previews_.find(custom->second);
+    return customReactionIcon(custom->second);
+}
+
+void TelegramClient::ensureMessageReactionMedia() {
+    if (!ready_ || !reaction_message_) return;
+    auto* ids=json_array();
+    for (const auto& message:messages_) if (message.id==reaction_message_)
+        for (const auto& reaction:message.reactions) {
+            if (!reaction.custom_emoji_id) continue;
+            auto found=reaction_previews_.find(reaction.custom_emoji_id);
+            if (found!=reaction_previews_.end()) {
+                if (found->second.path.empty()) requestFile(found->second.file,32);
+            } else if (json_array_size(ids)<100) {
+                reaction_previews_[reaction.custom_emoji_id]={};
+                json_array_append_new(ids,json_integer(reaction.custom_emoji_id));
+            }
+        }
+    if (!json_array_size(ids)) { json_decref(ids);return; }
+    auto* request=json_pack("{s:s}","@type","getCustomEmojiStickers");
+    json_object_set_new(request,"custom_emoji_ids",ids);
+    json_object_set_new(request,"@extra",json_pack("{s:s,s:I,s:I}","kind","reaction_icons","chat",(json_int_t)current_chat_id_,"message",(json_int_t)reaction_message_));
+    sendJson(request);
+}
+
+std::string TelegramClient::customReactionIcon(int64_t custom_emoji_id) const {
+    auto found=reaction_previews_.find(custom_emoji_id);
     return found==reaction_previews_.end() ? std::string{} : found->second.path;
 }
 

@@ -1,6 +1,7 @@
 #include "performance.h"
 #include "utf8_decode.h"
 #include "media_render.h"
+#include "vault.h"
 #include "font_fallback.h"
 #include "text_layout_cache.h"
 #include <array>
@@ -299,15 +300,9 @@ void rich_text_draw(vita2d_pgf* font, int x, int baseline, unsigned int color, f
 }
 
 vita2d_texture* load_webp(const char* path) {
-    FILE* file = std::fopen(path, "rb");
-    if (!file) return nullptr;
-    if (std::fseek(file, 0, SEEK_END)) { std::fclose(file); return nullptr; }
-    long size = std::ftell(file);
-    if (size <= 0 || size > 4 * 1024 * 1024) { std::fclose(file); return nullptr; }
-    std::rewind(file);
-    std::vector<unsigned char> data(static_cast<size_t>(size));
-    bool read = std::fread(data.data(), 1, data.size(), file) == data.size();
-    std::fclose(file);
+    std::string bytes; // sealed files are decrypted here
+    const bool read = vault::read_file(path, 4 * 1024 * 1024, bytes) && !bytes.empty();
+    std::vector<unsigned char> data(bytes.begin(), bytes.end());
     int w = 0, h = 0;
     if (!read || !WebPGetInfo(data.data(), data.size(), &w, &h) || w <= 0 || h <= 0 || w > 1024 || h > 1024) return nullptr;
     vita2d_texture* texture = vita2d_create_empty_texture(w, h);

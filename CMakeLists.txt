@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "36.00")
-set(VITAGRAM_VERSION "0.36.0")
+set(VITA_VERSION  "36.03")
+set(VITAGRAM_VERSION "0.36.3")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 
@@ -39,17 +39,17 @@ endif()
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/cacert.pem")
   message(FATAL_ERROR "Missing assets/cacert.pem (update checks need it). Run bash scripts/fetch-ca-bundle.sh first.")
 endif()
-foreach(EMOJI_ASSET NotoColorEmoji.ttf Emoji-LICENSE.txt NotoSans-Regular.ttf NotoSans-LICENSE.txt NotoSansCoptic-Regular.ttf NotoSansCoptic-LICENSE.txt NotoSansJP-Regular.otf NotoSansJP-LICENSE.txt NotoSansMath-Regular.ttf NotoSansMath-LICENSE.txt NotoSansSymbols2-Regular.ttf NotoSansSymbols2-LICENSE.txt)
+foreach(EMOJI_ASSET NotoColorEmoji_b.ttf Emoji-LICENSE.txt NotoSans-Regular.ttf NotoSans-LICENSE.txt NotoSansCoptic-Regular.ttf NotoSansCoptic-LICENSE.txt NotoSansJP-Regular.otf NotoSansJP-LICENSE.txt NotoSansMath-Regular.ttf NotoSansMath-LICENSE.txt NotoSansSymbols2-Regular.ttf NotoSansSymbols2-LICENSE.txt)
   if(NOT EXISTS "${CMAKE_SOURCE_DIR}/assets/${EMOJI_ASSET}")
     message(FATAL_ERROR "Missing assets/${EMOJI_ASSET}. Run bash scripts/fetch-emoji-font.sh and bash scripts/fetch-fallback-fonts.sh first.")
   endif()
 endforeach()
 # Smaller font copies from scripts/shrink-fonts.sh: 64 px emoji strike (the UI
 # draws emoji at about 31 px at most) and JIS-only kanji for the Japanese font.
-set(EMOJI_FONT "assets/NotoColorEmoji-64.ttf")
+set(EMOJI_FONT "assets/NotoColorEmoji_b-64.ttf")
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${EMOJI_FONT}")
   message(WARNING "Packaging the full-size emoji font (+~5 MB). Run bash scripts/shrink-fonts.sh and reconfigure.")
-  set(EMOJI_FONT "assets/NotoColorEmoji.ttf")
+  set(EMOJI_FONT "assets/NotoColorEmoji_b.ttf")
 endif()
 set(JAPANESE_FONT "assets/NotoSansJP-JIS.otf")
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${JAPANESE_FONT}")
@@ -126,7 +126,13 @@ add_executable(${PROJECT_NAME}
   src/keyboard.cpp
   src/proxy_link.cpp
   src/secure_store.cpp
+  src/vault_crypto.cpp
+  src/vault.cpp
+  src/vault_sweep.cpp
+  src/vault_avio.cpp
+  src/vault_ui.cpp
   src/qr_scanner.cpp
+  src/qr_encode.cpp
   src/video_note_encoder.cpp
   src/video_note_recorder.cpp
   src/vita_net.cpp
@@ -135,6 +141,8 @@ add_executable(${PROJECT_NAME}
   src/updater.cpp
   ${CMAKE_SOURCE_DIR}/external/tdlib-vita/vitaports/td_missing_func_placeholder.cpp
 )
+# Decryption runs while video plays: keep the ChaCha20/Poly1305 loops fully optimized.
+set_source_files_properties(src/vault_crypto.cpp PROPERTIES COMPILE_OPTIONS "-O3")
 set_source_files_properties(src/download_folder_picker.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/portrait_video.cpp src/video_note_encoder.cpp src/qr_scanner.cpp src/update_core.cpp src/https_client.cpp src/updater.cpp

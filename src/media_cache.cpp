@@ -2,6 +2,7 @@
 #include "cache_writer.h"
 #include "media_cache.h"
 #include "config.h"
+#include "vault.h"
 #include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
@@ -31,7 +32,9 @@ bool valid_path(const char* path, int64_t size) {
     }
     if (!allowed || std::strstr(path, "..") || std::strchr(path, '\\')) return false;
     struct stat info{};
-    return size > 0 && !stat(path, &info) && S_ISREG(info.st_mode) && info.st_size == size;
+    // A sealed copy is larger than the plain size TDLib reports by a fixed, computable amount.
+    return size > 0 && !stat(path, &info) && S_ISREG(info.st_mode) &&
+           (info.st_size == size || info.st_size == vault::sealed_size(size));
 }
 }
 void MediaCache::lockAs(const char* who, int line) {
@@ -82,11 +85,11 @@ void MediaCache::load() {
     if (generation_ != 0) { unlockHeld(); return; }
     const auto generation = generation_;
     unlockHeld();
-    struct stat info{};
     json_error_t error{};
     json_t* loaded = nullptr;
-    if (!stat(index_path, &info) && info.st_size > 0 && info.st_size <= 4 * 1024 * 1024)
-        loaded = json_load_file(index_path, 0, &error);
+    std::string text; // the index is sealed with the rest of the cache when the vault is on
+    if (vault::read_file(index_path, 4 * 1024 * 1024, text) && !text.empty())
+        loaded = json_loadb(text.data(), text.size(), 0, &error);
     if (!json_is_object(loaded) || json_object_size(loaded) > 8192) { if (loaded) json_decref(loaded); loaded = json_object(); }
     lockAs(__func__, __LINE__);
     if (generation == generation_) {

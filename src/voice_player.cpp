@@ -3,6 +3,8 @@
 #include "voice_player.h"
 #include "media_decode_policy.h"
 #include "cpu_scheduler.h"
+#include "vault.h"
+#include "vault_avio.h"
 #include <psp2/audioout.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
@@ -78,6 +80,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     cpu_scheduler::Media reservation(cpu_scheduler::Role::Audio);
     struct ProbeJob { VoicePlayer* player; unsigned generation; } probe{this, gen};
     AVFormatContext* format = nullptr;
+    VaultAvio sealed_input;
     AVCodecContext* codec = nullptr;
     SwrContext* resampler = nullptr;
     AVPacket* packet = av_packet_alloc();
@@ -180,8 +183,8 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         return true;
     };
     do {
-        struct stat info{};
-        if (stat(path.c_str(), &info) || info.st_size <= 0 || info.st_size > ((video || music) ? 128 : 20) * 1024 * 1024) { error = tr("voice.unavailable"); break; }
+        const int64_t file_size = vault::plain_size(path); // sealed files report their plain size
+        if (file_size <= 0 || file_size > ((video || music) ? 128 : 20) * 1024 * 1024) { error = tr("voice.unavailable"); break; }
         if (!packet || !frame || !audio_buffers) { error = tr("voice.memory"); break; }
         if (music || video) {
             format = avformat_alloc_context();
@@ -196,7 +199,10 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         AVDictionary* options = nullptr;
         av_dict_set(&options, "protocol_whitelist", "file", 0);
         av_dict_set(&options, "format_whitelist", music ? "mp3,aac,mov,mp4,m4a,3gp,3g2,mj2,ogg,flac,wav" : video ? media_decode::video_formats : "ogg", 0);
-        result = avformat_open_input(&format, ("file:" + path).c_str(), nullptr, &options);
+        if (!format && vault::is_sealed(path)) format = avformat_alloc_context();
+        const int sealed = format ? sealed_input.attach(format, path) : 0; // decrypts on the fly
+        result = sealed < 0 ? AVERROR(EIO)
+                            : avformat_open_input(&format, sealed ? path.c_str() : ("file:" + path).c_str(), nullptr, &options);
         av_dict_free(&options);
         if (result < 0) break;
         if (music) {
@@ -213,6 +219,11 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         for (unsigned i = 0; i < format->nb_streams; ++i)
             if (format->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) { stream = i; break; }
         if (stream < 0) { if (!video) error = tr("voice.no_stream"); break; }
+        // The video's audio runs beside the video decoder, which already reads the picture data.
+        // Telling the demuxer to skip the other streams stops it from reading (and, for sealed
+        // files, decrypting) the whole file a second time.
+        if (video) for (unsigned i = 0; i < format->nb_streams; ++i)
+            if ((int)i != stream) format->streams[i]->discard = AVDISCARD_ALL;
         AVCodecID id = format->streams[stream]->codecpar->codec_id;
         bool supported = id == AV_CODEC_ID_OPUS || ((video || music) && (id == AV_CODEC_ID_AAC || id == AV_CODEC_ID_VORBIS));
         if (music) supported = supported || id == AV_CODEC_ID_MP3 || id == AV_CODEC_ID_FLAC || id == AV_CODEC_ID_VORBIS ||
@@ -369,6 +380,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     std::free(audio_buffers);
     swr_free(&resampler); av_frame_free(&frame); av_packet_free(&packet);
     avcodec_free_context(&codec); avformat_close_input(&format);
+    sealed_input.release();
     pthread_mutex_lock(&mutex_);
     if (generation_ == gen && !stop_) {
         if (clock_ready_) clock_us_ = audio_start_us + samples_.load() * 1000000 / 48000;

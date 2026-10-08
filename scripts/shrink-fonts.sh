@@ -3,11 +3,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # Smaller packaged copies of the largest fonts. Upstream files stay unchanged
 # in assets/; CMake packages each result under the upstream name.
-#   NotoColorEmoji-64.ttf: 64 px emoji strike instead of 136 px.
+#   NotoColorEmoji_b-64.ttf: 64 px emoji strike instead of 136 px.
 #   NotoSansJP-JIS.otf:    kanji limited to JIS X 0208, JIS X 0213 plane 1, CP932.
 #   NotoSans{KR,SC,TC}-Subset.otf: Hangul (KS X 1001), GB2312, Big5 level 1 + the characters of the .lang file.
 jobs=(
-    "assets/NotoColorEmoji.ttf assets/NotoColorEmoji-64.ttf scripts/shrink-emoji-font.py scripts/fetch-emoji-font.sh"
+    "assets/NotoColorEmoji_b.ttf assets/NotoColorEmoji_b-64.ttf scripts/shrink-emoji-font.py scripts/fetch-emoji-font.sh"
     "assets/NotoSansJP-Regular.otf assets/NotoSansJP-JIS.otf scripts/subset-japanese-font.py scripts/fetch-fallback-fonts.sh"
     "assets/NotoSansKR-Regular.otf assets/NotoSansKR-Subset.otf scripts/subset-cjk-font.py scripts/fetch-fallback-fonts.sh ko assets/lang/ko.lang"
     "assets/NotoSansSC-Regular.otf assets/NotoSansSC-Subset.otf scripts/subset-cjk-font.py scripts/fetch-fallback-fonts.sh zh-Hans assets/lang/zh-Hans.lang"

@@ -3,6 +3,8 @@
 #include "animation_player.h"
 #include "media_decode_policy.h"
 #include "portrait_video.h"
+#include "vault.h"
+#include "vault_avio.h"
 #include "cpu_scheduler.h"
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
@@ -376,18 +378,30 @@ void AnimationPlayer::run() {
 
 void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
 #ifdef VITAGRAM_RLOTTIE
-    gzFile input = gzopen(path.c_str(), "rb");
-    if (!input) { setStatus(generation, tr("anim.tgs_open")); return; }
+    std::string packed;
+    if (!vault::read_file(path, 2*1024*1024, packed)) { setStatus(generation, tr("anim.tgs_open")); return; }
     std::string data;
-    char block[8192]; int bytes = 0;
-    while (!stopping_ && generation == generation_ && (bytes = gzread(input, block, sizeof(block))) > 0) {
-        data.append(block, bytes);
-        if (data.size() > 2*1024*1024) break;
-    }
-    int closed = gzclose(input);
-    if (stopping_ || generation != generation_) return;
-    if (bytes < 0 || closed != Z_OK || data.empty() || data.size() > 2*1024*1024) {
-        setStatus(generation, tr("anim.tgs_invalid")); return;
+    {
+        // TGS is gzip; inflate from memory so a sealed file never has to exist in plain text.
+        z_stream stream{};
+        bool ok = inflateInit2(&stream, 16 + MAX_WBITS) == Z_OK;
+        int status = Z_OK;
+        char block[8192];
+        stream.next_in = reinterpret_cast<Bytef*>(&packed[0]);
+        stream.avail_in = (uInt)packed.size();
+        while (ok && status != Z_STREAM_END && !stopping_ && generation == generation_) {
+            stream.next_out = reinterpret_cast<Bytef*>(block);
+            stream.avail_out = sizeof(block);
+            status = inflate(&stream, Z_NO_FLUSH);
+            if (status != Z_OK && status != Z_STREAM_END) { ok = false; break; }
+            data.append(block, sizeof(block) - stream.avail_out);
+            if (data.size() > 2*1024*1024) break;
+        }
+        if (ok) inflateEnd(&stream);
+        if (stopping_ || generation != generation_) return;
+        if (!ok || status != Z_STREAM_END || data.empty() || data.size() > 2*1024*1024) {
+            setStatus(generation, tr("anim.tgs_invalid")); return;
+        }
     }
     Lottie_Animation* animation = lottie_animation_from_data(data.c_str(), path.c_str(), "");
     if (!animation) { setStatus(generation, tr("anim.tgs_parse")); return; }
@@ -469,24 +483,24 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         audio_.setPlaying(!paused_);
         setStatus(generation,tr("anim.play"));
     }
-    FILE* file = std::fopen(path.c_str(), "rb");
-    if (!file) { early_error(tr("anim.media_open")); return; }
+    vault::Reader file;
+    if (!file.open(path)) { early_error(tr("anim.media_open")); return; }
     unsigned char signature[2]{};
-    size_t signature_size = std::fread(signature, 1, 2, file);
+    size_t signature_size = file.read(signature, 2) == 2 ? 2 : 0;
     if (!video && signature_size == 2 && signature[0] == 0x1f && signature[1] == 0x8b) {
-        std::fclose(file); decodeTgs(path, generation); return;
+        file.close(); decodeTgs(path, generation); return;
     }
-    int seek_rc = std::fseek(file, 0, SEEK_END);
-    long file_size = std::ftell(file);
+    int seek_rc = 0;
+    long file_size = (long)file.size();
     auto sample_crc = [&](long offset, size_t length) {
         uLong crc = crc32(0, Z_NULL, 0);
-        if (std::fseek(file, offset, SEEK_SET)) return crc;
+        if (file.seek(offset, SEEK_SET) < 0) return crc;
         unsigned char block[8192];
         while (length) {
-            size_t count = std::fread(block, 1, std::min(length, sizeof(block)), file);
-            if (!count) break;
-            crc = crc32(crc, block, count);
-            length -= count;
+            int64_t count = file.read(block, std::min(length, sizeof(block)));
+            if (count <= 0) break;
+            crc = crc32(crc, block, (size_t)count);
+            length -= (size_t)count;
         }
         return crc;
     };
@@ -495,11 +509,12 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         head_crc = sample_crc(0, std::min<long>(file_size, 65536));
         tail_crc = sample_crc(std::max<long>(0, file_size - 65536), std::min<long>(file_size, 65536));
     }
-    std::fclose(file);
+    file.close();
     if (seek_rc || file_size <= 0 || file_size > (video ? 128 : 20) * 1024 * 1024) {
         early_error(video ? tr("anim.limit_video") : tr("anim.limit_gif")); return;
     }
     AVFormatContext* format = avformat_alloc_context();
+    VaultAvio sealed_input; // decrypts on the fly when the file is sealed
     AVCodecContext* codec = nullptr;
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
@@ -520,6 +535,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         reordered_frames.clear();
         sws_freeContext(scaler); av_frame_free(&frame); av_packet_free(&packet);
         avcodec_free_context(&codec); avformat_close_input(&format);
+        sealed_input.release();
     };
     auto fail = [&](const std::string& message) {
         // Closing/switching a post is not a decoder error.
@@ -541,7 +557,9 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     av_dict_set(&options, "protocol_whitelist", "file", 0);
     av_dict_set(&options, "ignore_loop", "1", 0); // Loop explicitly after draining the decoder.
     // ux0: is a Vita mount, not an FFmpeg protocol.
-    int rc = avformat_open_input(&format, ("file:" + path).c_str(), nullptr, &options);
+    const int sealed = sealed_input.attach(format, path);
+    int rc = sealed < 0 ? AVERROR(EIO)
+                        : avformat_open_input(&format, sealed ? path.c_str() : ("file:" + path).c_str(), nullptr, &options);
     av_dict_free(&options);
     // GIF/MOV/WebM headers provide stream parameters; do not decode probe frames before validating dimensions.
     if (rc < 0) { fail(decoder_error("Open", rc)); return; }

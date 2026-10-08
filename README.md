@@ -5,7 +5,7 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.36**. VPK package version: **36.00**. This project is under development.
+Source version: **0.36.3**. VPK package version: **36.03**. This project is under development.
 
 **0.36 is the first public release.**
 
@@ -29,6 +29,7 @@ The Select diagnostics window has been removed; Select alone has no action.
 - Light/dark themes, font size, cache retention settings, interface language and account logout.
 - Connection indicator, HTTP(S) links opened in the browser, and a startup screen showing initialization stages.
 - Self-update from GitHub Releases (Start → *Update*; also checked automatically about a minute after launch). The release `.vpk` is verified against a built-in public key before it is installed — see the Russian section «Обновление через GitHub» below.
+- Optional encryption of everything on the memory card (database, photos, videos, stickers, caches, settings) with a key made of console buttons — Start → *Data encryption*; see «Data encryption» below.
 - Proxy support: MTProxy, SOCKS5 and HTTPS (HTTP CONNECT) — Start → Proxy; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials are stored in plain text in `settings.json`.
 
 A feature being present in the source does not mean every scenario has been tested on hardware.
@@ -189,7 +190,7 @@ rlottie is built in `external/rlottie-vita/install` and is needed for TGS animat
 Fonts and license notices are included in the VPK.
 `shrink-fonts.sh` creates smaller packaged copies of the two largest fonts; the upstream files are not modified:
 
-- `assets/NotoColorEmoji-64.ttf`: emoji bitmaps reduced from 136 to 64 px (the UI draws them at about 31 px at most). About 5 MB smaller in the VPK and about 53 KiB less texture memory per emoji.
+- `assets/NotoColorEmoji_b-64.ttf` (from `assets/NotoColorEmoji_b.ttf`, Noto Color Emoji 2.051): emoji bitmaps reduced from 136 to 64 px (the UI draws them at about 31 px at most). About 5 MB smaller in the VPK and about 53 KiB less texture memory per emoji.
 - `assets/NotoSansJP-JIS.otf`: kanji limited to JIS X 0208, JIS X 0213 plane 1 and the Windows CP932 extensions (7788 characters, modern Japanese including names); kana, punctuation, full-width forms and symbols are kept. About 1.6 MB smaller. Rarer kanji and Chinese-only hanzi of the upstream font are no longer displayed.
 
 The script installs fontTools, Pillow and imagequant into `external/font-tools-venv` (Python 3 and internet access required) and skips results that are up to date. Without these files CMake packages the full-size fonts and prints a warning. Rerun CMake configuration after creating them.
@@ -219,11 +220,41 @@ Rerun CMake configuration after adding rlottie.
 - **rlottie patch failure** — preserve local changes and inspect the build script output; do not blindly reset the dependency tree.
 - **UPDATE_APP_TO_LOGIN** — the old TDLib fork may be incompatible with Telegram login; use the prepared modern TDLib.
 
+## Data encryption
+
+On the first launch (and after updating from a version without it) VitaGram asks whether to encrypt your data. If you agree, you choose how to unlock: a **text passphrase** typed with the system keyboard (at least 10 characters; the stronger option — a multi-word phrase with digits or symbols gives far more resistance to guessing than any button sequence; the strength shown is a deliberately cautious estimate, and accented letters can be entered in different ways, so plain characters are safer) or a **key from console buttons** — the D-pad directions, ✕ ○ △ □ (8 buttons, 3 bits each; at least 8 presses, at most 32; Start confirms, L deletes the last press, R clears, Select cancels). The key is entered twice and is entered again at every start. It is never shown (one dot per press) and never stored.
+The setting lives in Start → *Data encryption* (turn on/off) and *Change key*. Turning it on or off restarts the app, because existing files are converted before TDLib starts; the conversion shows its progress and can be skipped with ○ (it resumes at the next start).
+
+What is encrypted: the TDLib database (with TDLib's own database encryption), every downloaded photo, video, voice message, sticker, thumbnail and avatar, the UI/media cache indexes (`ui-cache.json`, `ui-startup.json`, `media-cache.json`), the transcoded portrait videos and `settings.json` (proxy credentials included).
+
+**Cryptography**
+
+| Part | Choice | Why |
+| --- | --- | --- |
+| Key stretching | scrypt, N=2¹⁴, r=8, p=2 (16 MiB, ≈1–2 s on the Vita), random 256-bit salt | memory-hard, so GPUs/ASICs gain far less than with PBKDF2 |
+| Device binding | key = HKDF-SHA256(scrypt output ‖ hash of the console's OpenPSID) | a copied memory card alone cannot be attacked offline |
+| Key wrapping | random 256-bit master key, wrapped with ChaCha20-Poly1305 under the derived key (`ux0:data/vitagram/vault.json`) | changing the key re-wraps 48 bytes instead of re-encrypting gigabytes; a wrong key is detected by the authentication tag |
+| File encryption | ChaCha20-Poly1305 (RFC 8439), 64 KiB chunks, per-file key = HMAC(file key, random 16-byte salt) | the Vita's Cortex-A9 has no AES instructions: software AES would be about twice as slow and uses key-dependent table lookups; ChaCha20 is add/rotate/xor only, constant-time and fast without special hardware |
+| Container integrity | nonce = chunk number + "last chunk" flag, header authenticated | chunks cannot be reordered, cut off, appended or moved between files unnoticed; fixed chunks give O(1) seeking for video |
+| TDLib database | 256-bit HKDF subkey of the master key as `database_encryption_key` | independent of the file key |
+
+OpenSSL 1.0.2 shipped with VitaSDK has neither ChaCha20-Poly1305 nor scrypt, so both are implemented in `src/vault_crypto.cpp` and verified against the RFC 8439 / 7914 / 5869 vectors and against OpenSSL 3 (`bash tests/run-vault-tests.sh`, also under AddressSanitizer/UBSan).
+Sealed files are decrypted in memory while they are used: images are decoded from RAM, FFmpeg reads through a decrypting `AVIOContext` (`src/vault_avio.cpp`), TGS stickers are inflated from RAM. Plain files keep using FFmpeg's normal file protocol, so installs without encryption are not affected. New downloads are sealed in the background as soon as TDLib reports them complete.
+
+**Honest limits**
+
+- A button key is short: 8 presses are 24 bits, 12 presses 36 bits. The scrypt cost and the console binding make guessing expensive, but an attacker who has both the card **and** the console's OpenPSID (for example a stolen console running homebrew) can try keys offline. Use 12 or more presses and different buttons; the strength bar turns green at 36 bits. Repeated wrong keys only slow down the in-app prompt (30 s and more after five failures) — that cannot stop an offline attack.
+- **Forgot the key = data lost.** The unlock screen offers to erase everything and start over (you sign in to Telegram again). A vault made on one console does not open on another (the binding).
+- Not hidden: file names, sizes, counts and timestamps; the existence of the vault. Files and the key hierarchy are authenticated per file, but a sealed file is not bound to its path.
+- Plain text necessarily exists briefly: while a file is still being downloaded by TDLib and for a moment afterwards; recordings (voice, video notes) until TDLib has uploaded them; the transcoding scratch file; files you save to the download folder (those are your explicit export). Performance/diagnostic logs are not encrypted. Anyone who controls the running app or the console's RAM sees everything.
+- Decryption keys live in RAM only while the app runs (wiped on lock).
+
 ## Cache and private data
 
 - `ux0:data/vitagram/db` — TDLib data, session and media cache index.
 - `ux0:data/vitagram/files` — downloaded media.
 - `ux0:data/vitagram/settings.json` — application settings.
+- `ux0:data/vitagram/vault.json` — data-encryption key parameters and the wrapped master key (no secrets in the clear).
 
 TDLib stores some thumbnails and stickers in subdirectories of `db`; the client handles these paths.
 The media cache matches files by their persistent Telegram identifier, checks file existence and size, and saves its index across launches.
@@ -256,6 +287,7 @@ The additional CPU core is used only after a successful access check; installing
 - `src/media_cache.*`, `src/ui_cache.*` — media and UI caches.
 - `src/cpu_scheduler.*` — thread priorities and load distribution.
 - `src/settings.h`, `src/vita_net.*` — settings and network state.
+- `src/vault*.{h,cpp}` — data encryption: primitives, key hierarchy and sealed files, background sealer, FFmpeg adapter, key screens.
 - `src/i18n.*`, `assets/lang/*.lang` — localization.
 
 ## Licenses
@@ -273,7 +305,7 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.36**, версия пакета VPK: **36.00**. Проект находится в разработке.
+Версия исходников: **0.36.3**, версия пакета VPK: **36.03**. Проект находится в разработке.
 
 **0.36 — первый публичный релиз.**
 
@@ -292,6 +324,7 @@ When distributing the application, retain notices and comply with dependency lic
 - Темы форумных групп: список топиков, отдельная история, отправка текста и стикеров в выбранную тему.
 - Светлая/тёмная тема, размер шрифта, настройки хранения кэша, язык интерфейса и выход из аккаунта.
 - Индикатор подключения, открытие HTTP(S)-ссылок в браузере, заставка с этапами запуска.
+- Необязательное шифрование всего на карте памяти (база, фото, видео, стикеры, кэши, настройки) ключом из кнопок консоли — Start → *Шифрование данных*; см. раздел «Шифрование данных».
 
 Наличие функции в исходниках не означает проверку всех сценариев на устройстве.
 Последние изменения стикеров и топиков требуют проверки сборкой и на PS Vita.
@@ -453,7 +486,7 @@ rlottie собирается в `external/rlottie-vita/install` и нужен д
 Шрифты и уведомления о лицензиях включаются в VPK.
 `shrink-fonts.sh` создаёт уменьшенные копии двух самых больших шрифтов для VPK; исходные файлы не изменяются:
 
-- `assets/NotoColorEmoji-64.ttf`: битмапы emoji уменьшены со 136 до 64 px (интерфейс рисует их не крупнее ~31 px). Около 5 МБ экономии в VPK и около 53 КиБ видеопамяти на каждый emoji.
+- `assets/NotoColorEmoji_b-64.ttf` (из `assets/NotoColorEmoji_b.ttf`, Noto Color Emoji 2.051): битмапы emoji уменьшены со 136 до 64 px (интерфейс рисует их не крупнее ~31 px). Около 5 МБ экономии в VPK и около 53 КиБ видеопамяти на каждый emoji.
 - `assets/NotoSansJP-JIS.otf`: кандзи ограничены JIS X 0208, первой плоскостью JIS X 0213 и расширениями Windows CP932 (7788 знаков — современный японский, включая имена); кана, пунктуация, полноширинные формы и символы сохраняются. Около 1,6 МБ экономии. Редкие кандзи и иероглифы, встречающиеся только в китайском, больше не отображаются.
 
 Скрипт ставит fontTools, Pillow и imagequant в `external/font-tools-venv` (нужны Python 3 и доступ в интернет) и не пересоздаёт актуальные результаты. Без этих файлов CMake упаковывает полноразмерные шрифты и выводит предупреждение. После их создания повторите конфигурацию CMake.
@@ -567,11 +600,41 @@ Secret скрыт на экране и хранится в файле настр
 
 Установка использует `ScePromoterUtil` и `sce_sys/package/head.bin` уже установленной копии, поэтому работает, если приложение само было установлено через VPK-установщик. Проверки логики (версии, разбор релиза, HTTP, подпись, распаковка): `bash tests/run-update-tests.sh`. Установка на самой Vita требует проверки на устройстве.
 
+## Шифрование данных
+
+При первом запуске (и после обновления с версии без этой функции) VitaGram спрашивает, шифровать ли данные. При согласии вы выбираете способ разблокировки: **текстовая фраза**, набираемая системной клавиатурой (от 10 символов; более надёжный вариант — фраза из нескольких слов с цифрами или знаками гораздо устойчивее к перебору, чем любая последовательность кнопок; показываемая оценка намеренно осторожна, а буквы с диакритикой можно ввести по-разному, поэтому обычные символы надёжнее) или **ключ из кнопок консоли**: стрелки D-pad, ✕ ○ △ □ (8 кнопок, по 3 бита; от 8 до 32 нажатий; Start — готово, L — удалить последнее, R — очистить, Select — отмена). Ключ вводится дважды и затем при каждом запуске. Он никогда не показывается (по точке на нажатие) и не хранится.
+Настройка находится в Start → *Шифрование данных* (включить/выключить) и *Сменить ключ*. Включение и выключение перезапускают приложение: старые файлы преобразуются до запуска TDLib; показывается прогресс, его можно пропустить кнопкой ○ (продолжится при следующем запуске).
+
+Что шифруется: база TDLib (штатным шифрованием базы TDLib), все загруженные фото, видео, голосовые, стикеры, миниатюры и аватары, индексы кэша (`ui-cache.json`, `ui-startup.json`, `media-cache.json`), перекодированные вертикальные видео и `settings.json` (в том числе данные прокси).
+
+**Криптография**
+
+| Часть | Выбор | Почему |
+| --- | --- | --- |
+| Растяжение ключа | scrypt, N=2¹⁴, r=8, p=2 (16 МиБ, ≈1–2 с на Vita), случайная соль 256 бит | требует памяти, поэтому GPU/ASIC выигрывают гораздо меньше, чем при PBKDF2 |
+| Привязка к консоли | ключ = HKDF-SHA256(результат scrypt ‖ хэш OpenPSID консоли) | одну лишь скопированную карту памяти нельзя атаковать офлайн |
+| Хранение ключа | случайный мастер-ключ 256 бит, завёрнутый ChaCha20-Poly1305 (`ux0:data/vitagram/vault.json`) | смена ключа перезаписывает 48 байт, а не гигабайты; неверный ключ определяется по тегу аутентификации |
+| Шифрование файлов | ChaCha20-Poly1305 (RFC 8439), блоки по 64 КиБ, ключ файла = HMAC(ключ, случайная соль 16 байт) | у Cortex-A9 нет инструкций AES: программный AES примерно вдвое медленнее и обращается к таблицам по значению ключа; ChaCha20 — только сложение/сдвиг/XOR, выполняется за постоянное время и быстро без спецоборудования |
+| Целостность контейнера | nonce = номер блока + флаг «последний блок», заголовок аутентифицирован | блоки нельзя переставить, обрезать, дописать или перенести в другой файл незаметно; фиксированные блоки дают быструю перемотку видео |
+| База TDLib | подключ HKDF от мастер-ключа как `database_encryption_key` | независим от ключа файлов |
+
+В OpenSSL 1.0.2 из VitaSDK нет ни ChaCha20-Poly1305, ни scrypt, поэтому они реализованы в `src/vault_crypto.cpp` и проверены по векторам RFC 8439 / 7914 / 5869 и сравнением с OpenSSL 3 (`bash tests/run-vault-tests.sh`, в том числе под AddressSanitizer/UBSan).
+Запечатанные файлы расшифровываются в памяти на время использования: изображения декодируются из RAM, FFmpeg читает через расшифровывающий `AVIOContext` (`src/vault_avio.cpp`), TGS распаковываются из RAM. Обычные файлы по-прежнему читаются штатно, поэтому установки без шифрования не затронуты. Новые загрузки запечатываются в фоне сразу после того, как TDLib сообщает об их завершении.
+
+**Честные ограничения**
+
+- Ключ из кнопок короткий: 8 нажатий — 24 бита, 12 нажатий — 36 бит. Стоимость scrypt и привязка к консоли делают перебор дорогим, но тот, кто получил и карту, **и** OpenPSID консоли (например, украденная консоль с homebrew), может перебирать ключи офлайн. Используйте 12 и более нажатий и разные кнопки; шкала надёжности становится зелёной от 36 бит. Повторные ошибки лишь замедляют ввод в самом приложении (от 30 с после пяти неудач) — офлайн-атаку это не остановит.
+- **Забыли ключ — данные потеряны.** Экран ввода предлагает стереть всё и начать заново (потребуется заново войти в Telegram). Хранилище, созданное на одной консоли, на другой не откроется (привязка).
+- Не скрываются: имена файлов, размеры, количество и время изменения; сам факт шифрования. Каждый файл аутентифицируется, но не привязан к своему пути.
+- Открытый текст неизбежно существует кратко: пока TDLib докачивает файл и мгновение после; записи (голос, видеокружки) до отправки TDLib; временный файл перекодирования; файлы, которые вы сами сохраняете в папку загрузок (это ваш экспорт). Журналы производительности и диагностики не шифруются. Тот, кто управляет работающим приложением или ОЗУ консоли, видит всё.
+- Ключи расшифровки находятся в ОЗУ только пока приложение работает (при блокировке затираются).
+
 ## Кэш и приватные данные
 
 - `ux0:data/vitagram/db` — данные TDLib, сессия и индекс медиакэша.
 - `ux0:data/vitagram/files` — загруженные медиа.
 - `ux0:data/vitagram/settings.json` — настройки приложения.
+- `ux0:data/vitagram/vault.json` — параметры ключа шифрования данных и завёрнутый мастер-ключ (открытых секретов нет).
 
 Часть миниатюр и стикеров TDLib хранит в подкаталогах `db`; клиент учитывает эти пути.
 Медиакэш сопоставляет файлы по постоянному идентификатору Telegram, проверяет наличие и размер файла и сохраняет индекс между запусками.
@@ -604,6 +667,7 @@ UI, воспроизведение, обработка ответов и фон�
 - `src/media_cache.*`, `src/ui_cache.*` — кэш медиа и интерфейса.
 - `src/cpu_scheduler.*` — приоритеты потоков и распределение нагрузки.
 - `src/settings.h`, `src/vita_net.*` — настройки и состояние сети.
+- `src/vault*.{h,cpp}` — шифрование данных: примитивы, иерархия ключей и запечатанные файлы, фоновое запечатывание, адаптер FFmpeg, экраны ввода ключа.
 - `src/i18n.*`, `assets/lang/*.lang` — локализация.
 
 ## Лицензии

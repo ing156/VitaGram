@@ -1,6 +1,8 @@
 #include "portrait_video.h"
 #include "i18n.h"
 #include "minih264e.h"
+#include "vault.h"
+#include "vault_avio.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -28,6 +30,7 @@ struct Resources {
     void* persist = nullptr;
     void* scratch = nullptr;
     std::vector<AVPacket*> pending_audio;
+    VaultAvio sealed_input; // released after the demuxer is closed (members die after the body)
     ~Resources() {
         for (auto* p : pending_audio) av_packet_free(&p);
         if (output) {
@@ -84,6 +87,7 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
     if (input_size<=0) { std::fclose(file); error=tr("pv.empty"); return false; }
     uint64_t key=cache_key(source,input_size,file);
     std::fclose(file);
+    const int64_t progress_size=std::max<int64_t>(1,vault::plain_size(source)); // plain bytes, as the demuxer counts them
     char name[96];
     std::snprintf(name,sizeof(name),"ux0:data/vitagram/portrait-432x768-%016llx.mp4",
                   (unsigned long long)key);
@@ -109,7 +113,10 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
     };
     uint64_t output_bytes=0;
     auto work=[&]() -> bool {
-        int rc=avformat_open_input(&r.input,("file:"+source).c_str(),nullptr,nullptr);
+        r.input=avformat_alloc_context();
+        if (!r.input) return fail(tr("pv.read_failed"),AVERROR(ENOMEM));
+        const int sealed=r.sealed_input.attach(r.input,source); // sealed sources are decrypted on the fly
+        int rc=sealed<0 ? AVERROR(EIO) : avformat_open_input(&r.input,sealed ? source.c_str() : ("file:"+source).c_str(),nullptr,nullptr);
         if (rc<0) return fail(tr("pv.read_failed"),rc);
         r.input->interrupt_callback={[](void* opaque)->int { return (*static_cast<const std::function<bool()>*>(opaque))(); },
                                       (void*)&cancelled};
@@ -236,8 +243,8 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
                 }
             }
             av_packet_unref(r.packet);
-            if (input_size>0 && (frame_count%16)==0 && r.input->pb)
-                progress(std::min(99,(int)(avio_tell(r.input->pb)*100/input_size)));
+            if (progress_size>0 && (frame_count%16)==0 && r.input->pb)
+                progress(std::min(99,(int)(avio_tell(r.input->pb)*100/progress_size)));
         }
         if (cancelled()) return fail(tr("pv.cancelled"));
         if (rc!=AVERROR_EOF && rc<0) return fail(tr("pv.read_error"),rc);
@@ -257,6 +264,13 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
     if (std::rename(partial.c_str(),prepared.c_str())!=0) {
         fail(tr("pv.mp4_save"));
         std::remove(partial.c_str());
+        if (diagnostic) std::fclose(diagnostic);
+        return false;
+    }
+    if (vault::sealing() && vault::seal_file(prepared)==vault::Convert::Failed) {
+        // The result is only a cache of the user's video: never leave it behind in plain text.
+        fail(tr("pv.mp4_save"));
+        std::remove(prepared.c_str());
         if (diagnostic) std::fclose(diagnostic);
         return false;
     }

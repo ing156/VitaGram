@@ -48,6 +48,7 @@ inline bool purge() {
     while (auto* entry = readdir(dir)) {
         std::string name = entry->d_name;
         if (name.compare(0, 14, "voice-message-") == 0 ||
+            name.compare(0, 9, "portrait-") == 0 || // transcoded copies of the account's videos
             name == "media-upload.log" || name == "media-upload.previous.log" ||
             name == "animation-error.log")
             if (!removeTree("ux0:data/vitagram/" + name)) ok = false;

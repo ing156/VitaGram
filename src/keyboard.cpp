@@ -46,11 +46,9 @@ void Keyboard::open(const std::string& title, bool secret, const std::string& in
     utf8_to_utf16(title, title_, std::size(title_)); utf8_to_utf16(initial, initial_, std::size(initial_));
     sceImeDialogParamInit(&param_);
     param_.supportedLanguages = 0x0001ffff; param_.languagesForced = SCE_FALSE;
-    // VitaSDK doesn't expose a password IME type on all SDK revisions.
-    // Authentication still stays inside the system dialog and is sent directly to TDLib.
-    (void)secret;
+    // Secrets (2FA password, vault passphrase) are masked by the system dialog.
     param_.type = SCE_IME_TYPE_DEFAULT;
-    param_.textBoxMode = SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
+    param_.textBoxMode = secret ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
     param_.title = title_; param_.maxTextLength = MaxTextLength;
     param_.initialText = initial_; param_.inputTextBuffer = input_;
     active_ = sceImeDialogInit(&param_) >= 0;
@@ -64,6 +62,13 @@ void Keyboard::close() {
         sceImeDialogTerm();
     }
     active_ = submitted_ = cancelled_ = false;
+}
+
+void Keyboard::clear() {
+    std::fill(text_.begin(), text_.end(), '\0');
+    text_.clear();
+    std::fill(std::begin(input_), std::end(input_), 0);
+    std::fill(std::begin(initial_), std::end(initial_), 0);
 }
 
 void Keyboard::handle(unsigned int) {

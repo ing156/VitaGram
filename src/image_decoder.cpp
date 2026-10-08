@@ -1,5 +1,6 @@
 #include "image_decoder.h"
 #include "performance.h"
+#include "vault.h"
 #ifdef __vita__
 #include "cpu_scheduler.h"
 #endif
@@ -50,18 +51,17 @@ bool jpeg_pixels(const uint8_t* data, size_t size, DecodedImage& out, const std:
 DecodedImage decode_image(const std::string& path, const std::function<bool()>& proceed) {
     DecodedImage out;
     if (!proceed()) return out;
-    FILE* f = std::fopen(path.c_str(), "rb"); if (!f) return out;
-    if (std::fseek(f,0,SEEK_END)) { std::fclose(f); return out; }
-    long size=std::ftell(f);
-    if (size<=0 || size>long(limit)) { std::fclose(f); return out; }
-    std::rewind(f);
+    vault::Reader f; // plain files and sealed ones alike
+    if (!f.open(path)) return out;
+    const int64_t size=f.size();
+    if (size<=0 || size>int64_t(limit)) return out;
     std::vector<uint8_t> bytes(size_t(size), 0);
     for (size_t n=0; n<bytes.size();) {
         size_t count=std::min(size_t(64*1024),bytes.size()-n);
-        if (!proceed() || std::fread(bytes.data()+n,1,count,f)!=count) { std::fclose(f); return out; }
+        if (!proceed() || f.read(bytes.data()+n,count)!=int64_t(count)) return out;
         n+=count;
     }
-    std::fclose(f);
+    f.close();
     bool ok=false;
     if (bytes.size()>=8 && !png_sig_cmp(bytes.data(),0,8)) {
         png_image png{}; png.version=PNG_IMAGE_VERSION;

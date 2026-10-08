@@ -15,4 +15,7 @@ bool reveal(const std::string& stored, std::string& plain);
 bool is_protected(const std::string& stored);
 // Stable 64-hex-character key for TDLib's database_encryption_key; "" when unavailable.
 std::string database_key();
+// 32 bytes derived from the console id for binding the data vault to this console; false when
+// no console id is available.
+bool console_binding(unsigned char out[32]);
 }

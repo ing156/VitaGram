@@ -1,4 +1,5 @@
 #pragma once
+#include "vault.h"
 #include <psp2/io/stat.h>
 #include <cstdio>
 #include <string>
@@ -59,17 +60,20 @@ inline bool save_downloaded_file(const std::string& source, const std::string& d
     SceIoStat info{};
     for (int suffix = 1; sceIoGetstat(target.c_str(), &info) >= 0; ++suffix)
         target = dir + "/" + stem + " (" + std::to_string(suffix) + ")" + extension;
-    FILE* in = std::fopen(source.c_str(), "rb");
-    if (!in) return false;
+    // The cached copy may be sealed; the saved file is the user's own export and is written plain.
+    vault::Reader in;
+    if (!in.open(source)) return false;
     FILE* out = std::fopen(target.c_str(), "wb");
-    if (!out) { std::fclose(in); return false; }
+    if (!out) return false;
     char buffer[65536];
     bool ok = true;
-    while (size_t count = std::fread(buffer, 1, sizeof(buffer), in))
-        if (std::fwrite(buffer, 1, count, out) != count) { ok = false; break; }
-    if (std::ferror(in)) ok = false;
+    for (;;) {
+        int64_t count = in.read(buffer, sizeof(buffer));
+        if (count < 0) { ok = false; break; }
+        if (count == 0) break;
+        if (std::fwrite(buffer, 1, (size_t)count, out) != (size_t)count) { ok = false; break; }
+    }
     if (std::fclose(out) != 0) ok = false;
-    std::fclose(in);
     if (!ok) { std::remove(target.c_str()); return false; }
     result = target;
     return true;

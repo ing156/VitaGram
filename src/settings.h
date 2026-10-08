@@ -1,13 +1,15 @@
 #pragma once
 #include "proxy_config.h"
 #include "secure_store.h"
+#include "vault.h"
 #include <jansson.h>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <string>
 
 struct AppSettings {
-    int retention = 2, capacity = 2, theme = 0, font = 1, request_batch_size = 32; // Оптимизация: увеличил с 16 до 32 для более быстрой загрузки
+    int retention = 2, capacity = 2, theme = 0, font = 5, request_batch_size = 32; // Оптимизация: увеличил с 16 до 32 для более быстрой загрузки
     bool show_threads = false;
     bool check_updates = true; // look for a newer GitHub release shortly after startup
     bool proxy_enabled = false;
@@ -33,17 +35,20 @@ struct AppSettings {
         for (int i = 1; i < 5; ++i) if (std::abs(values[i] - value) < std::abs(values[best] - value)) best = i;
         return best;
     }
-    float fontScale() const { return 0.9f + font * 0.1f; }
+    float fontScale() const { return 0.7f + font * 0.1f; }
     void load() {
+        // Sealed when the vault is on; the vault must be unlocked first, or this reads defaults.
+        std::string text;
+        if (!vault::read_file("ux0:data/vitagram/settings.json", 1 << 20, text)) return;
         json_error_t error{};
-        json_t* root = json_load_file("ux0:data/vitagram/settings.json", 0, &error);
+        json_t* root = json_loadb(text.data(), text.size(), 0, &error);
         if (!json_is_object(root)) { if (root) json_decref(root); return; }
         auto value = [&](const char* key, int fallback, int maximum) {
             json_t* v = json_object_get(root, key);
             return json_is_integer(v) ? std::max(0, std::min(maximum, (int)json_integer_value(v))) : fallback;
         };
         retention = value("retention", 2, 4); capacity = value("capacity", 2, 5);
-        theme = value("theme", 0, 1); font = value("font", 1, 2);
+        theme = value("theme", 0, 1); font = value("font_size", 5, 6);
         request_batch_size = value("request_batch_size", 16, 64);
         cache_storage = value("cache_storage", 0, 1);
         show_threads = json_is_true(json_object_get(root, "show_threads"));
@@ -76,7 +81,7 @@ struct AppSettings {
     }
     bool save() const {
         json_t* root = json_pack("{s:i,s:i,s:i,s:i,s:i,s:b}", "retention", retention, "capacity", capacity,
-            "theme", theme, "font", font, "request_batch_size", request_batch_size, "show_threads", show_threads);
+            "theme", theme, "font_size", font, "request_batch_size", request_batch_size, "show_threads", show_threads);
         json_object_set_new(root, "check_updates", json_boolean(check_updates));
         json_object_set_new(root, "proxy_enabled", json_boolean(proxy_enabled));
         json_object_set_new(root, "proxy_server", json_string(proxy_server.c_str()));
@@ -88,8 +93,11 @@ struct AppSettings {
         json_object_set_new(root, "cache_storage", json_integer(cache_storage));
         json_object_set_new(root, "download_dir", json_string(download_dir.c_str()));
         json_object_set_new(root, "language", json_string(language.c_str()));
-        bool ok = json_dump_file(root, "ux0:data/vitagram/settings.json.tmp", JSON_COMPACT) == 0;
+        char* dumped = json_dumps(root, JSON_COMPACT);
         json_decref(root);
-        return ok && std::rename("ux0:data/vitagram/settings.json.tmp", "ux0:data/vitagram/settings.json") == 0;
+        if (!dumped) return false;
+        bool ok = vault::write_file_atomic("ux0:data/vitagram/settings.json", dumped);
+        std::free(dumped);
+        return ok;
     }
 };

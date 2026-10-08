@@ -23,6 +23,10 @@
 #include "download_folder_picker.h"
 #include "proxy_link.h"
 #include "secure_store.h"
+#include "vault.h"
+#include "account_cleanup.h"
+#include "qr_encode.h"
+#include "vault_ui.h"
 #include "qr_scanner.h"
 #include "photo_view.h"
 #include "updater.h"
@@ -228,7 +232,7 @@ static void rounded_rect(float x, float y, float w, float h, unsigned int color)
     vita2d_draw_fill_circle(x+w-r, y+h-r, r, color);
 }
 
-struct PostReaction { std::string text; int width; bool chosen; };
+struct PostReaction { std::string text; int width; bool chosen; int64_t custom_emoji_id; };
 struct PostLine {
     std::string text, url;
     std::vector<PostReaction> reactions;
@@ -236,14 +240,24 @@ struct PostLine {
 };
 
 static void draw_post_line(vita2d_pgf* font, int x, int baseline, const PostLine& line,
-                           unsigned int ink, unsigned int accent) {
+                           unsigned int ink, unsigned int accent, TelegramClient& tg,
+                           TextureCache& textures, bool pause_media) {
     if (line.reactions.empty()) {
         draw_text(font, x, baseline, line.text, line.url.empty() ? ink : accent, 0.68f);
         return;
     }
+    if (!pause_media) tg.ensureMessageReactionMedia();
     for (const auto& reaction : line.reactions) {
         if (reaction.chosen) rounded_rect(x, baseline-18, reaction.width, 22, accent);
-        draw_text(font, x+7, baseline, reaction.text, reaction.chosen ? RGBA8(255,255,255,255) : ink, 0.68f);
+        int text_x=x+7;
+        if (reaction.custom_emoji_id) {
+            auto icon=textures.get(tg.customReactionIcon(reaction.custom_emoji_id));
+            if (icon) draw_texture_fit(icon,x+7,baseline-18,20,20);
+            else vita2d_draw_fill_circle(x+17,baseline-8,4,
+                reaction.chosen ? RGBA8(255,255,255,255) : ink);
+            text_x+=24;
+        }
+        draw_text(font, text_x, baseline, reaction.text, reaction.chosen ? RGBA8(255,255,255,255) : ink, 0.68f);
         x += reaction.width + 6;
     }
 }
@@ -289,6 +303,7 @@ static std::vector<HistoryRow> history_layout(const std::vector<MessageItem>& me
             bool separator = day != previous;
             int height = (group && !messages[i].outgoing ? 98 : 78) +
                 (messages[i].media_label.empty() ? 0 : 22);
+            if (messages[i].service_message) height = 36;
             int day_top = separator ? y : -1;
             int top = y + (separator ? 26 : 0);
             if (top >= 481) break;
@@ -346,13 +361,13 @@ static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& mes
     PostLine reaction_line("", "");
     int reaction_width = 0;
     for (const auto& reaction : message.reactions) {
-        std::string label = reaction.emoji + " " + std::to_string(reaction.count);
-        int width = rich_text_width(font, 0.68f, label.c_str()) + 14;
+        std::string label = (reaction.custom_emoji_id ? "" : reaction.emoji + " ") + std::to_string(reaction.count);
+        int width = rich_text_width(font, 0.68f, label.c_str()) + 14 + (reaction.custom_emoji_id ? 24 : 0);
         if (!reaction_line.reactions.empty() && reaction_width + width > 840) {
             result.push_back(std::move(reaction_line));
             reaction_line = PostLine("", ""); reaction_width = 0;
         }
-        reaction_line.reactions.push_back({label, width, reaction.chosen});
+        reaction_line.reactions.push_back({label, width, reaction.chosen, reaction.custom_emoji_id});
         reaction_width += width + 6;
     }
     if (!reaction_line.reactions.empty()) result.push_back(std::move(reaction_line));
@@ -446,6 +461,9 @@ static void startup_screen(vita2d_pgf* font, const char* stage, int step) {
     vita2d_wait_rendering_done();
 }
 
+// Settings list: language, 3 cache rows... 14 rows in total; the stride leaves room for the footer.
+constexpr int kSettingsRows = 15, kSettingsStride = 25;
+
 enum ProxyRow { PROXY_ROW_USE, PROXY_ROW_TYPE, PROXY_ROW_SERVER, PROXY_ROW_PORT, PROXY_ROW_SECRET,
                 PROXY_ROW_USER, PROXY_ROW_PASS, PROXY_ROW_SAVE, PROXY_ROW_SCAN, PROXY_ROW_CHECK };
 
@@ -481,7 +499,10 @@ int main() {
     // Settings come first: the saved language ("" = follow the console language) must be known
     // before the first text is drawn.
     AppSettings settings;
-    settings.load();
+    vault::load();
+    // With the vault on, settings.json is sealed: it is read after the key has been entered, and
+    // the key screens use the console language until then.
+    if (!vault::enabled()) settings.load();
     i18n::init("app0:lang", settings.language);
     apply_language_font();
 
@@ -493,6 +514,18 @@ int main() {
     performance::Scope font_measurement(performance::Metric::FontsInit);
     if (!rich_text_init()) std::fprintf(stderr, "Noto text/emoji font initialization incomplete\n");
     font_measurement.finish();
+    // Encryption gate: first-run question, key entry, and moving old files into/out of the vault.
+    // It runs before the network and TDLib start so no file is changed while TDLib may use it.
+    {
+        const vault_ui::Env vault_env{font, settings.theme == 1};
+        vault_ui::run_gate(vault_env);
+        if (vault::enabled()) {
+            settings.load();
+            i18n::select(settings.language);
+            apply_language_font();
+        }
+        vault_ui::run_migration(vault_ui::Env{font, settings.theme == 1});
+    }
     startup_screen(font, "2/5  Initializing network", 2);
     VitaNet net;
     performance::Scope network_measurement(performance::Metric::NetworkInit);
@@ -509,7 +542,6 @@ int main() {
     tg.configureProxy(settings.proxy_enabled, settings.proxyConfig());
     tg.setRequestBatchSize(settings.request_batch_size);
     startup_screen(font, "3/5  Starting Telegram transport", 3);
-    tg.setDatabaseKey(secure_store::database_key());
     if (net_ok) tg.start(true);
 
     // The main loop can process authorization, navigation and live updates while
@@ -520,7 +552,7 @@ int main() {
     Keyboard kb;
     startup_screen(font, "5/5  Loading settings", 5);
     rich_text_set_scale(settings.fontScale());
-    bool settings_open = false, confirm_logout = false;
+    bool settings_open = false, confirm_logout = false, confirm_vault_off = false;
     int settings_row = 0;
     Updater updater(VITAGRAM_VERSION, "app0:certs/cacert.pem", "ux0:data/vitagram/update");
     if (!update_failure.empty()) updater.reportStartupFailure(update_failure);
@@ -672,6 +704,10 @@ int main() {
                 }
             }
         }
+        // Switching encryption off completes once files are plain again and TDLib's database has
+        // been re-keyed away from the vault key; only then may the vault key be dropped.
+        if (vault::disabling() && vault::unlocked() && !vault::migration_pending() && tg.databaseKeyCurrent() &&
+            (tg.canBrowse() || tg.inputKind() != InputKind::None)) vault::finish_disable();
         if (now >= next_network_poll) { net.poll(); next_network_poll = now + 1000000; }
         sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed = pad.buttons & ~old_buttons;
@@ -738,6 +774,15 @@ int main() {
         if (was_at_bottom && !post_open && !photo_open && !tg.messages().empty() &&
             tg.messages().back().outgoing && tg.messages().back().id != previous_last)
             message_index = (int)tg.messages().size() - 1;
+        if (const int64_t target = tg.takeMessageJump()) {
+            for (size_t i = 0; i < tg.messages().size(); ++i) if (tg.messages()[i].id == target) {
+                message_index = (int)i;
+                post_open = true; photo_open = video_fullscreen = reactions_open = false;
+                photo_index = 0; post_text_scroll = 0;
+                animation.setSource(""); voice.setSource("");
+                break;
+            }
+        }
 
         const bool folder_tabs = !tg.folders().empty();
         const int chat_rows = folder_tabs ? 8 : 9;
@@ -840,12 +885,12 @@ int main() {
                         }
                     }
                 } else if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (touch_y >= (proxy_open ? 104 : 88) && touch_y < (proxy_open ? 104 + 36 * (int)proxy_rows(proxy_draft.proxy_type).size() : 88 + 32 * 12)) {
-                    settings_row = proxy_open ? (touch_y - 104) / 36 : (touch_y - 88) / 32;
+                else if (touch_y >= (proxy_open ? 104 : 88) && touch_y < (proxy_open ? 104 + 36 * (int)proxy_rows(proxy_draft.proxy_type).size() : 88 + kSettingsStride * kSettingsRows)) {
+                    settings_row = proxy_open ? (touch_y - 104) / 36 : (touch_y - 88) / kSettingsStride;
                     pressed |= SCE_CTRL_CROSS;
                 }
             } else if (!tg.currentChatId() && !tg.canBrowse()) {
-                if ((touch_x >= 30 && touch_x < 470 && touch_y >= 280 && touch_y < 340) ||
+                if ((touch_x >= 30 && touch_x < 470 && touch_y >= 280 && touch_y < 340 && tg.qrLink().empty()) ||
                     (touch_y >= 500 && touch_x >= 480)) pressed |= SCE_CTRL_START;
                 else if (touch_y >= 500 && touch_x < 480) pressed |= SCE_CTRL_CROSS;
             } else if (!tg.currentChatId() && tg.canBrowse() && folder_tabs && touch_y >= 38 && touch_y < 82 && touch_x >= 20 && touch_x < 940) {
@@ -922,6 +967,19 @@ int main() {
             kb.open(tg.inputPrompt(), tg.inputSecret());
         }
 
+        // Sign-in: step back to the phone number, or ask Telegram for the code again.
+        if (!circle_recorder.active() && !settings_open && !kb.active() && !tg.canBrowse()) {
+            if ((pressed & SCE_CTRL_SQUARE) && tg.canRequestQr()) { tg.requestQr(); pressed &= ~SCE_CTRL_SQUARE; }
+            else if ((pressed & SCE_CTRL_CIRCLE) && !tg.qrLink().empty()) {
+                // TDLib cannot return from the QR state to a phone number, so the sign-in data is
+                // cleared and the app restarts at the phone prompt (the same path as after a logout).
+                if (account_cleanup::mark()) { tg.close(); restart_requested = true; running = false; }
+                pressed &= ~SCE_CTRL_CIRCLE;
+            }
+            else if ((pressed & SCE_CTRL_CIRCLE) && tg.canGoBackInput()) { tg.backInput(); pressed &= ~SCE_CTRL_CIRCLE; }
+            else if ((pressed & SCE_CTRL_TRIANGLE) && tg.canResendCode()) { tg.resendCode(); pressed &= ~SCE_CTRL_TRIANGLE; }
+        }
+
         bool toggle_voice = false;
         bool toggle_video = false;
         bool record_toggle = false;
@@ -944,7 +1002,7 @@ int main() {
             proxy_imported = false;
             if (auth_proxy) proxy_draft = settings;
             settings_error.clear();
-            settings_row = 0; confirm_logout = false; pressed = 0;
+            settings_row = 0; confirm_logout = false; confirm_vault_off = false; pressed = 0;
         }
         if (kb.active()) {
             kb.handle(pressed);
@@ -1107,8 +1165,8 @@ int main() {
             }
         } else if (settings_open) {
             if (pressed & SCE_CTRL_CIRCLE) { if (confirm_logout) confirm_logout = false; else settings_open = false; }
-            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+11)%12; confirm_logout = false; }
-            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%12; confirm_logout = false; }
+            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+kSettingsRows-1)%kSettingsRows; confirm_logout = false; confirm_vault_off = false; }
+            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%kSettingsRows; confirm_logout = false; confirm_vault_off = false; }
             if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                 int direction = (pressed & SCE_CTRL_LEFT) ? -1 : 1;
                 // Row 0 is the language; the remaining rows keep their original order.
@@ -1127,7 +1185,7 @@ int main() {
                 } else if (row < 4) {
                     confirm_logout = false;
                     int* values[] = {&settings.retention, &settings.capacity, &settings.theme, &settings.font};
-                    const int counts[] = {5, 6, 2, 3};
+                    const int counts[] = {5, 6, 2, 7};
                     *values[row] = (*values[row] + counts[row] + direction) % counts[row];
                     rich_text_set_scale(settings.fontScale());
                     settings_error = settings.save() ? "" : tr("settings.save_failed");
@@ -1156,6 +1214,51 @@ int main() {
                         if (u.state == Updater::State::Available) updater.install();
                         else if (u.busy() && u.state != Updater::State::Installing) updater.cancel();
                         else if (u.state == Updater::State::Idle || u.state == Updater::State::UpToDate || u.state == Updater::State::Failed) updater.check();
+                    }
+                } else if (row == 10) {
+                    // Data encryption: switching on/off restarts the app, because existing files are
+                    // converted before TDLib starts (see vault_ui::run_migration).
+                    confirm_logout = false;
+                    if (pressed & SCE_CTRL_CROSS) {
+                        const vault_ui::Env vault_env{font, (settings.theme == 1)};
+                        auto finish_vault_flow = [&](vault_ui::Outcome outcome, bool restart) {
+                            // Buttons used in the dialog must not leak into the main screen.
+                            SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons; pressed = 0;
+                            vita2d_set_clear_color((settings.theme == 1) ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                            if (outcome == vault_ui::Outcome::Failed) settings_error = tr("vault.error");
+                            else if (outcome == vault_ui::Outcome::Done) {
+                                settings_error = settings.save() ? "" : tr("settings.save_failed");
+                                if (restart) { restart_requested = true; tg.close(); settings_open = false; running = false; }
+                            }
+                        };
+                        if (vault::disabling()) settings_error = tr("vault.settings.pending");
+                        else if (!vault::enabled()) { confirm_vault_off = false; finish_vault_flow(vault_ui::enable_flow(vault_env), true); }
+                        else if (!confirm_vault_off) confirm_vault_off = true;
+                        else { confirm_vault_off = false; finish_vault_flow(vault_ui::disable_flow(vault_env), true); }
+                    }
+                } else if (row == 11) {
+                    confirm_logout = false; confirm_vault_off = false;
+                    if (pressed & SCE_CTRL_CROSS) {
+                        if (!vault::enabled() || vault::disabling()) settings_error = tr("vault.settings.not_enabled");
+                        else {
+                            const vault_ui::Env vault_env{font, (settings.theme == 1)};
+                            auto outcome = vault_ui::change_flow(vault_env);
+                            SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons; pressed = 0;
+                            vita2d_set_clear_color((settings.theme == 1) ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                            settings_error = outcome == vault_ui::Outcome::Done ? tr("vault.changed") :
+                                outcome == vault_ui::Outcome::Failed ? tr("vault.error") : "";
+                        }
+                    }
+                } else if (row == 12) {
+                    confirm_logout = false; confirm_vault_off = false;
+                    if (pressed & SCE_CTRL_CROSS) {
+                        if (!vault::enabled() || vault::disabling()) settings_error = tr("vault.settings.not_enabled");
+                        else {
+                            vault_ui::check_flow(vault_ui::Env{font, settings.theme == 1});
+                            SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons; pressed = 0;
+                            vita2d_set_clear_color(settings.theme == 1 ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                            settings_error.clear();
+                        }
                     }
                 } else if (pressed & SCE_CTRL_CROSS) {
                     if (!tg.ready()) settings_error = tr("settings.logout_wait");
@@ -1269,7 +1372,9 @@ int main() {
                 }
                 if ((pressed & SCE_CTRL_DOWN) && message_index + 1 < (int)messages.size()) message_index++;
                 if ((pressed & SCE_CTRL_CROSS) && !messages.empty() && message_index >= 0) {
-                    post_open = true;
+                    if (messages[message_index].pin_message)
+                        tg.openPinnedMessage(messages[message_index].pinned_message_id);
+                    else if (!messages[message_index].service_message) post_open = true;
                     video_fullscreen = false;
                     browser_error.clear();
                     photo_index = 0;
@@ -1515,20 +1620,25 @@ int main() {
         } else if (settings_open) {
             const std::string labels[] = {tr("settings.language"), tr("settings.retention"), tr("settings.cache_size"), tr("settings.theme"),
                 tr("settings.font_size"), tr("settings.show_threads"), tr("settings.batch"), tr("settings.download_dir"), tr("proxy.title"),
-                tr("settings.auto_update"), tr("settings.update"), tr("settings.logout")};
+                tr("settings.auto_update"), tr("settings.update"), tr("vault.settings.encryption"), tr("vault.settings.change_key"), tr("vault.settings.check"), tr("settings.logout")};
             std::string values[] = {
                 language_label(),
                 settings.retention == 4 ? tr("settings.always") : tr("settings.days", {std::to_string(AppSettings::days(settings.retention))}),
                 settings.capacity == 5 ? tr("settings.no_limit") : tr("unit.mb", {std::to_string(AppSettings::megabytes(settings.capacity))}),
-                dark ? tr("settings.theme_dark") : tr("settings.theme_light"), std::to_string(90+settings.font*10) + "%",
+                dark ? tr("settings.theme_dark") : tr("settings.theme_light"), std::to_string(70+settings.font*10) + "%",
                 settings.show_threads ? tr("common.yes") : tr("common.no"), std::to_string(settings.request_batch_size),
                 settings.download_dir, settings.proxy_enabled ? tr("common.enabled") : tr("common.disabled"),
                 settings.check_updates ? tr("common.yes") : tr("common.no"), update_label(updater.snapshot()),
+                confirm_vault_off ? tr("vault.settings.confirm_disable") :
+                    vault::disabling() ? tr("vault.settings.disabling") :
+                    vault::enabled() ? tr("common.enabled") : tr("common.disabled"),
+                vault::enabled() && !vault::disabling() ? "" : "-",
+                vault::enabled() && !vault::disabling() ? "" : "-",
                 confirm_logout ? tr("settings.confirm_logout") : ""};
-            for (int row=0; row<12; ++row) {
-                rounded_rect(24, 88+row*32, 912, 30, row == settings_row ? selected : white);
-                draw_text(font, 40, 109+row*32, labels[row], ink, 0.62f);
-                draw_text(font, 520, 109+row*32, fit_text(font, values[row], 400, 0.58f), ink, 0.58f);
+            for (int row=0; row<kSettingsRows; ++row) {
+                rounded_rect(24, 88+row*kSettingsStride, 912, kSettingsStride-2, row == settings_row ? selected : white);
+                draw_text(font, 40, 88+row*kSettingsStride+18, labels[row], ink, 0.58f);
+                draw_text(font, 520, 88+row*kSettingsStride+18, fit_text(font, values[row], 400, 0.54f), ink, 0.54f);
             }
             { const Updater::Snapshot u = updater.snapshot();
               draw_text(font, 30, 484, fit_text(font, !settings_error.empty() ? settings_error : u.state == Updater::State::Failed ? u.detail : std::string(), 900, 0.5f), ink, 0.5f); }
@@ -1671,7 +1781,7 @@ int main() {
                     int baseline = text_y+line*24;
                     if (baseline < 38) continue;
                     if (baseline-22 >= 481) break;
-                    draw_post_line(font, 38, baseline, lines[line], ink, accent);
+                    draw_post_line(font, 38, baseline, lines[line], ink, accent, tg, textures, decode_cooldown);
                 }
                 vita2d_disable_clipping();
                 int maximum = post_scroll_max(message, lines.size());
@@ -1729,7 +1839,7 @@ int main() {
                     std::max(0, (int)text_lines.size() - available_lines)));
                 for (int line = 0; line < available_lines && post_text_scroll + line < (int)text_lines.size(); ++line)
                     draw_post_line(font, 38, text_y + line * 24, text_lines[post_text_scroll + line],
-                        message.outgoing ? outgoing : ink, accent);
+                        message.outgoing ? outgoing : ink, accent, tg, textures, decode_cooldown);
                 draw_text(font, 28, 528, tr("hint.post_photo"), ink, 0.6f);
                 draw_text(font, 390, 528, message.document ? tr("hint.download_file") :
                     (message.voice || message.video) ? tr("hint.play_pause") : tr("hint.link_photo"), ink, 0.65f);
@@ -1748,6 +1858,17 @@ int main() {
                     }
                     int y = entry.top + 4;
                     const MessageItem& m = msgs[i];
+                    if (m.service_message) {
+                        std::string label = fit_text(font, m.pin_message ? m.text :
+                            tr("service.joined_by_link", {tg.senderName(m)}), 860, 0.55f);
+                        int width = rich_text_width(font, 0.55f, label.c_str()) + 28;
+                        int left = 480-width/2;
+                        if (i == message_index) rounded_rect(left-2, y-2, width+4, 28, accent);
+                        rounded_rect(left, y, width, 24,
+                            dark ? RGBA8(35,57,76,255) : RGBA8(185,214,235,255));
+                        draw_text(font, left+14, y+17, label, ink, 0.55f);
+                        continue;
+                    }
                     bool show_sender = tg.currentChatIsGroup() && !m.outgoing;
                     std::string sender = show_sender ? fit_text(font, tg.senderName(m), 654, 0.55f) : "";
                     bool selected_message = i == message_index;
@@ -1868,10 +1989,33 @@ int main() {
             draw_text(font, 28, 528, tr("hint.select"), ink, 0.65f);
             draw_text(font, 300, 528, tr("hint.open_settings"), ink, 0.6f);
             draw_text(font, 680, 528, tr("hint.refresh"), ink, 0.65f);
+        } else if (!tg.qrLink().empty()) {
+            static std::string qr_text;
+            static QrCode qr;
+            if (qr_text != tg.qrLink()) { qr_text = tg.qrLink(); if (!qr_encode(qr_text, qr)) qr = QrCode(); }
+            draw_text(font, 30, 70, tr("auth.qr_title"), ink, 0.8f);
+            if (qr.size) {
+                const int module = std::max(2, 400 / (qr.size + 8));
+                const int side = (qr.size + 8) * module, left = 30, top = 90;
+                vita2d_draw_rectangle(left, top, side, side, RGBA8(255,255,255,255));
+                for (int y = 0; y < qr.size; ++y)
+                    for (int x = 0; x < qr.size; ++x)
+                        if (qr.dark(x, y)) vita2d_draw_rectangle(left + (x + 4) * module, top + (y + 4) * module, module, module, RGBA8(0,0,0,255));
+            }
+            int line_y = 120;
+            for (const auto& line : wrap_text(font, tr("auth.qr_steps"), 440)) { draw_text(font, 490, line_y, line, ink, 0.62f); line_y += 28; }
+            draw_text(font, 28, 528, tr("auth.qr_footer"), ink, 0.6f);
         } else {
             bool starting = tg.inputKind() == InputKind::None;
             draw_text(font, 30, 145, starting ? tr("auth.connecting") : tr("auth.title"), ink, 0.9f);
             draw_text(font, 30, 180, clip(tg.status(), 100), muted, 0.7f);
+            if (!tg.authDetail().empty() && tg.inputKind() == InputKind::Code)
+                draw_text(font, 30, 222, fit_text(font, tg.authDetail(), 900, 0.62f), ink, 0.62f);
+            if (!tg.authResendInfo().empty() && tg.inputKind() == InputKind::Code)
+                draw_text(font, 30, 252, fit_text(font, tg.authResendInfo(), 900, 0.58f), muted, 0.58f);
+            if (tg.canGoBackInput())
+                draw_text(font, 30, 490, tg.canResendCode() ? tr("auth.code_hint") : tr("auth.back_hint"), muted, 0.6f);
+            if (tg.canRequestQr()) draw_text(font, 30, 462, tr("auth.qr_hint"), muted, 0.6f);
             vita2d_draw_rectangle(30, 280, 440, 60, selected);
             draw_text(font, 48, 318, tr("auth.setup_proxy"), ink, 0.7f);
             draw_text(font, 30, 375, tr("auth.proxy_hint"), muted, 0.6f);

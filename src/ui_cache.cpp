@@ -53,18 +53,21 @@ json_t* read_cache(const char* filename, size_t limit, bool (*proceed)(void*) = 
     if (!allowed()) return nullptr;
     performance::Scope reading(performance::Metric::CacheRead);
     struct stat info{};
-    if (stat(filename, &info) || info.st_size <= 0 || (uint64_t)info.st_size > limit) return nullptr;
-    FILE* file = std::fopen(filename, "rb");
-    if (!file) return nullptr;
-    std::string bytes(static_cast<size_t>(info.st_size), '\0');
+    // The limit counts plain bytes; a sealed snapshot is a little larger on disk.
+    if (stat(filename, &info) || info.st_size <= 0 || (uint64_t)info.st_size > (uint64_t)vault::sealed_size((int64_t)limit)) return nullptr;
+    vault::Reader file; // sealed or plain; sealed snapshots need the unlocked vault
+    if (!file.open(filename) || file.size() <= 0 || (uint64_t)file.size() > limit) return nullptr;
+    std::string bytes(static_cast<size_t>(file.size()), '\0');
     size_t size = 0;
+    bool failed = false;
     while (size < bytes.size() && allowed()) {
-        const auto count = std::fread(&bytes[size], 1, std::min<size_t>(65536, bytes.size()-size), file);
-        if (!count) break;
-        size += count;
+        const auto count = file.read(&bytes[size], std::min<size_t>(65536, bytes.size()-size));
+        if (count < 0) failed = true;
+        if (count <= 0) break;
+        size += (size_t)count;
     }
-    const bool ok = size == bytes.size() && !std::ferror(file);
-    std::fclose(file); reading.finish();
+    const bool ok = size == bytes.size() && !failed;
+    file.close(); reading.finish();
     if (!ok) return nullptr;
     performance::Scope parsing(performance::Metric::CacheParse);
     json_error_t error{};

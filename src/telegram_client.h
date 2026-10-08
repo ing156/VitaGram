@@ -1,5 +1,6 @@
 #pragma once
 #include "proxy_config.h"
+#include "vault_sweep.h"
 #include "media_uploads.h"
 #include "td_event_queue.h"
 #include "poll.h"
@@ -63,6 +64,9 @@ struct MessageItem {
     std::string send_error;
     std::string text;
     std::string media_label;
+    bool pin_message = false;
+    bool service_message = false;
+    int64_t pinned_message_id = 0;
     int32_t media_file_id = 0;
     std::string media_path;
     bool document = false;
@@ -119,8 +123,9 @@ public:
         checkProxy(proxy);
     }
     void cancelProxyCheck();
-    // Call before start(). An existing unencrypted database is re-keyed once TDLib is running.
-    void setDatabaseKey(const std::string& key) { database_key_ = key; }
+    // True when TDLib's database is protected with the key it should have now (vault key while the
+    // vault is on, console key otherwise). False while a re-key is pending or running.
+    bool databaseKeyCurrent() const;
     const std::string& proxyCheckStatus() const { return proxy_check_status_; }
     void setRequestBatchSize(int size) { request_batch_size_.store(std::max(1, std::min(64, size))); }
     void restoreCache(); // UI, before pump() and before the cache writer starts.
@@ -153,6 +158,18 @@ public:
     std::string inputPrompt() const;
     bool inputSecret() const { return input_kind_ == InputKind::Password; }
     void submitInput(const std::string& value);
+    // Sign-in helpers: where the code was sent, step back to the phone number, ask for a new code.
+    const std::string& authDetail() const { return auth_detail_; }
+    bool canResendCode() const;
+    // "Next: SMS in 42 s" / "Press triangle to get it by SMS"; empty when no other method exists.
+    std::string authResendInfo() const;
+    bool canGoBackInput() const { return input_kind_ == InputKind::Code || input_kind_ == InputKind::Password || input_kind_ == InputKind::FirstName; }
+    // QR sign-in: Telegram's tg://login link while waiting for the phone to confirm (empty otherwise).
+    const std::string& qrLink() const { return qr_link_; }
+    bool canRequestQr() const { return !ready_ && (input_kind_ == InputKind::Phone || input_kind_ == InputKind::Code || input_kind_ == InputKind::Password); }
+    void requestQr();
+    void backInput();
+    void resendCode();
     void cancelInput();
 
     const std::vector<ChatItem>& chats() const { return chats_; }
@@ -177,6 +194,8 @@ public:
     bool chatsEnd() const { return chats_end_ && chats_.size() == selected_chat_count_; }
     const std::string& chatsError() const { return chats_error_; }
     void openChat(int64_t chat_id, const std::string& title);
+    bool openPinnedMessage(int64_t message_id);
+    int64_t takeMessageJump() { int64_t id = message_jump_generation_ == history_generation_ ? message_jump_ : 0; message_jump_ = 0; return id; }
     bool openTelegramLink(const std::string& url);
     bool takeLinkChatOpened() { bool opened = link_chat_opened_; link_chat_opened_ = false; return opened; }
     bool topicsOpen() const { return topics_open_; }
@@ -211,6 +230,8 @@ public:
     void toggleReaction(int64_t message_id, const std::string& emoji);
     void ensureReactionMedia(size_t index);
     std::string reactionIcon(size_t index) const;
+    void ensureMessageReactionMedia();
+    std::string customReactionIcon(int64_t custom_emoji_id) const;
     const std::vector<std::string>& reactionChoices() const { return reaction_choices_; }
     const std::string& reactionStatus() const { return reaction_status_; }
     void leaveChat();
@@ -242,10 +263,19 @@ private:
     int64_t proxy_check_deadline_ = 0;
     std::string proxy_check_status_;
     void applyProxy();
-    std::string database_key_;      // Derived key for TDLib's database; empty = leave the database unencrypted.
+    // The database on disk is protected by one of: nothing, the console-derived key (legacy marker
+    // v1) or the vault key (marker v2). It is re-keyed when the vault is switched on or off.
+    std::string currentDatabaseKey() const;
+    std::string targetDatabaseKey() const;
+    int databaseMarker() const;       // 0 none, 1 console key, 2 vault key
+    int targetDatabaseMarker() const;
     bool database_key_migrating_ = false;
-    bool databaseEncrypted() const;
     void migrateDatabaseKey();
+    std::string auth_detail_, qr_link_;
+    bool auth_can_resend_ = false;
+    std::string auth_next_via_;
+    int64_t auth_resend_at_ = 0;
+    vault_sweep::Sealer sealer_;
     std::vector<ForumTopicItem> topics_;
     std::string topics_status_, forum_title_;
     bool topics_open_ = false, topics_pending_ = false, topics_end_ = false;
@@ -396,6 +426,8 @@ private:
     std::vector<MessageItem> history_items_;
     std::unordered_map<int64_t, std::vector<MessageItem::Reaction>> cached_reactions_;
     unsigned int history_generation_ = 0;
+    int64_t message_jump_ = 0;
+    unsigned message_jump_generation_ = 0;
     bool history_pending_ = false, history_done_ = true, history_end_ = false;
     int history_target_ = 60;
     int64_t history_cursor_ = 0;

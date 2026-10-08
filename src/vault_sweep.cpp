@@ -1,0 +1,170 @@
+#include "vault_sweep.h"
+#include "config.h"
+#include "cpu_scheduler.h"
+#include "vault.h"
+#include <dirent.h>
+#include <psp2/kernel/threadmgr.h>
+#include <sys/stat.h>
+#include <cerrno>
+#include <cstring>
+
+namespace vault_sweep {
+namespace {
+bool ends_with(const std::string& text, const char* suffix) {
+    size_t n = std::strlen(suffix);
+    return text.size() >= n && !text.compare(text.size() - n, n, suffix);
+}
+
+std::string normalized(std::string path) {
+    auto colon = path.find(':');
+    if (colon != std::string::npos && path.compare(colon + 1, 1, "/") == 0 && path.compare(colon + 1, 2, "//") != 0)
+        path.erase(colon + 1, 1); // TDLib may return ux0:/data instead of ux0:data
+    return path;
+}
+
+bool has_prefix(const std::string& path, const std::string& prefix) { return !path.compare(0, prefix.size(), prefix); }
+
+void walk(const std::string& directory, bool top_of_db, std::vector<std::string>& out) {
+    DIR* dir = opendir(directory.c_str());
+    if (!dir) return;
+    while (auto* entry = readdir(dir)) {
+        std::string name = entry->d_name;
+        if (name == "." || name == "..") continue;
+        std::string path = directory + "/" + name;
+        struct stat info{};
+        if (stat(path.c_str(), &info)) continue;
+        if (S_ISDIR(info.st_mode)) {
+            if (!ends_with(name, ".trash")) walk(path, false, out); // trash is being emptied anyway
+        } else if (S_ISREG(info.st_mode) && info.st_size > 0) {
+            if (ends_with(name, ".vgs") || ends_with(name, ".tmp")) { if (ends_with(name, ".vgs")) std::remove(path.c_str()); continue; }
+            // Database root: only the JSON caches are ours, the rest belongs to TDLib.
+            if (top_of_db && !ends_with(name, ".json")) continue;
+            out.push_back(path);
+        }
+    }
+    closedir(dir);
+}
+}
+
+bool is_user_file(const std::string& raw) {
+    std::string path = normalized(raw);
+    if (path.find("..") != std::string::npos || ends_with(path, ".vgs") || ends_with(path, ".tmp")) return false;
+    const std::string files = std::string(VITAGRAM_FILES_DIR) + "/", db = std::string(VITAGRAM_DB_DIR) + "/";
+    if (has_prefix(path, files)) return true;
+    if (has_prefix(path, db)) {
+        std::string rest = path.substr(db.size());
+        return rest.find('/') != std::string::npos || ends_with(rest, ".json");
+    }
+    return false;
+}
+
+std::vector<std::string> list_user_files() {
+    std::vector<std::string> files;
+    walk(VITAGRAM_FILES_DIR, false, files);
+    walk(VITAGRAM_DB_DIR, true, files);
+    // Derived portrait videos live next to the settings.
+    if (DIR* dir = opendir("ux0:data/vitagram")) {
+        while (auto* entry = readdir(dir)) {
+            std::string name = entry->d_name;
+            if (name.compare(0, 9, "portrait-") == 0 && ends_with(name, ".mp4")) files.push_back("ux0:data/vitagram/" + name);
+            if (ends_with(name, ".mp4.part")) std::remove(("ux0:data/vitagram/" + name).c_str());
+        }
+        closedir(dir);
+    }
+    return files;
+}
+
+Outcome convert_all(bool to_sealed, Proceed proceed, void* context, Report report, void* report_context) {
+    Outcome outcome;
+    auto files = list_user_files();
+    outcome.total = files.size();
+    size_t done = 0;
+    for (const auto& path : files) {
+        if (proceed && !proceed(context)) { if (report) report(report_context, done, outcome.total); return outcome; }
+        auto result = to_sealed ? vault::seal_file(path, proceed, context) : vault::unseal_file(path, proceed, context);
+        if (result == vault::Convert::Interrupted) return outcome;
+        if (result == vault::Convert::Done) ++outcome.converted;
+        else if (result == vault::Convert::Failed) ++outcome.failed;
+        ++done;
+        if (report && (done % 8 == 0 || done == outcome.total)) report(report_context, done, outcome.total);
+    }
+    outcome.completed = true;
+    return outcome;
+}
+
+void Sealer::start() {
+    if (started_ || !vault::sealing()) return;
+    stopping_ = false;
+    pthread_attr_t attributes;
+    pthread_attr_init(&attributes);
+    pthread_attr_setstacksize(&attributes, 256 * 1024);
+    started_ = pthread_create(&thread_, &attributes, entry, this) == 0;
+    pthread_attr_destroy(&attributes);
+}
+
+void Sealer::stop() {
+    if (!started_) return;
+    stopping_ = true;
+    pthread_join(thread_, nullptr);
+    started_ = false;
+}
+
+void Sealer::enqueue(const std::string& path) {
+    if (!started_ || path.empty() || !is_user_file(path)) return;
+    pthread_mutex_lock(&mutex_);
+    if (known_.size() > 20000) known_.clear();
+    if (known_.insert(path).second) queue_.emplace_back(path, 0);
+    pthread_mutex_unlock(&mutex_);
+}
+
+size_t Sealer::pending() {
+    pthread_mutex_lock(&mutex_);
+    size_t n = queue_.size();
+    pthread_mutex_unlock(&mutex_);
+    return n;
+}
+
+void* Sealer::entry(void* self) {
+    cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Storage);
+    static_cast<Sealer*>(self)->run();
+    return nullptr;
+}
+
+void Sealer::run() {
+    // Called about every 64 KiB while a file is converted. Converting must never compete with
+    // video playback for the card and the CPU: give way at once and finish later.
+    auto proceed = [](void* opaque) -> bool {
+        auto* self = static_cast<Sealer*>(opaque);
+        if (self->stopping_ || cpu_scheduler::videoActive()) return false;
+        sceKernelDelayThread(1500); // leaves room for the decoder threads even when idle
+        return true;
+    };
+    while (!stopping_) {
+        std::pair<std::string, int> item;
+        pthread_mutex_lock(&mutex_);
+        bool have = !queue_.empty();
+        if (have) { item = std::move(queue_.front()); queue_.pop_front(); }
+        pthread_mutex_unlock(&mutex_);
+        if (!have) { sceKernelDelayThread(200000); continue; }
+        // Let a freshly completed file finish being used by whoever reported it.
+        if (item.second == 0) sceKernelDelayThread(300000);
+        // Wait for playback to end, plus a pause so the next video does not start into a rewrite.
+        while (!stopping_ && cpu_scheduler::videoActive()) sceKernelDelayThread(200000);
+        if (stopping_) break;
+        auto result = vault::seal_file(item.first, proceed, this);
+        if (result == vault::Convert::Interrupted && !stopping_) {
+            pthread_mutex_lock(&mutex_);
+            queue_.emplace_back(item.first, item.second); // not a failure: try again after playback
+            pthread_mutex_unlock(&mutex_);
+            sceKernelDelayThread(500000);
+        } else if (result == vault::Convert::Failed && item.second < 3 && !stopping_) {
+            // Most likely still open elsewhere; try again a little later.
+            sceKernelDelayThread(500000);
+            pthread_mutex_lock(&mutex_);
+            queue_.emplace_back(item.first, item.second + 1);
+            pthread_mutex_unlock(&mutex_);
+        }
+        sceKernelDelayThread(2000);
+    }
+}
+}

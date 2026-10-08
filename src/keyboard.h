@@ -9,6 +9,7 @@ public:
     Keyboard();
     void open(const std::string& title, bool secret = false, const std::string& initial = "");
     void close();
+    void clear(); // overwrites the typed text (passphrases)
     bool active() const { return active_; }
     bool submitted() const { return submitted_; }
     bool cancelled() const { return cancelled_; }
