@@ -5,7 +5,7 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.36.3**. VPK package version: **36.03**. This project is under development.
+Source version: **0.36.19**. VPK package version: **36.19**. This project is under development.
 
 **0.36 is the first public release.**
 
@@ -40,6 +40,7 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 ### Main menu
 
 - **![D-pad](assets/controller-icons/dpad.svg) / touch** — select and scroll; **![X](assets/controller-icons/cross.svg) / tap** — open a chat.
+- Vertical dragging moves the chat list with your finger; a tap opens the chat under it.
 - **L / R** — switch folders; folder tabs also support touch and horizontal scrolling.
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh the list.
 - **![Start](assets/controller-icons/start.svg)** — settings.
@@ -54,6 +55,7 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh history.
 - **L** — open the video-note recorder.
 - **R** — start/stop microphone recording; the recorded audio is sent automatically after preparation.
+- **Select** — attach: choose Photo / Video / File, browse the memory card (**![Square](assets/controller-icons/square.svg)** toggles hidden files, **![Triangle](assets/controller-icons/triangle.svg)** rescans the folder; the drive list has shortcuts such as `ux0:picture/SCREENSHOT`), pick a file and a review form opens where you can add more photos/videos/files (up to 10) or remove items, then send them all: photos and videos are sent compressed as one album message, other files unchanged. Dates follow the console's regional clock settings.
 - **![O](assets/controller-icons/circle.svg)** — go back; inside a forum topic, return to the topic list.
 
 ### Forum topics
@@ -305,7 +307,7 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.36.3**, версия пакета VPK: **36.03**. Проект находится в разработке.
+Версия исходников: **0.36.19**, версия пакета VPK: **36.19**. Проект находится в разработке.
 
 **0.36 — первый публичный релиз.**
 
@@ -336,6 +338,7 @@ When distributing the application, retain notices and comply with dependency lic
 ### Главное меню
 
 - **![Стрелки](assets/controller-icons/dpad.svg) / тач** — выбор и прокрутка; **![X](assets/controller-icons/cross.svg) / тап** — открыть чат.
+- При вертикальном перетаскивании список чатов движется вслед за пальцем; тап открывает чат под пальцем.
 - **L / R** — переключить папку; закладки также поддерживают тач и горизонтальную прокрутку.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить список.
 - **![Start](assets/controller-icons/start.svg)** — настройки.
@@ -350,6 +353,7 @@ When distributing the application, retain notices and comply with dependency lic
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить историю.
 - **L** — открыть запись видеокружка.
 - **R** — начать/остановить запись голоса; после подготовки запись отправляется автоматически.
+- **Select** — прикрепить: выбрать Фото / Видео / Файл, обзор карты памяти (**![Square](assets/controller-icons/square.svg)** — скрытые файлы, **![Triangle](assets/controller-icons/triangle.svg)** — обновить список; в списке дисков есть быстрые пути, например `ux0:picture/SCREENSHOT`); после выбора открывается форма, где можно добавить ещё фото/видео/файлы (до 10) или убрать лишние, затем всё отправляется разом: фото и видео сжимаются и уходят одним сообщением-альбомом, остальные файлы уходят без изменений. Даты показываются по региональным настройкам часов консоли.
 - **![O](assets/controller-icons/circle.svg)** — назад; из топика возвращает к списку тем.
 
 ### Темы форумной группы

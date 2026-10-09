@@ -1273,6 +1273,19 @@ std::string TelegramClient::senderAvatar(const MessageItem& message) const {
     return "";
 }
 
+std::string TelegramClient::serviceMessageText(const MessageItem& message) const {
+    if (message.pin_message) return tr("service.message_pinned");
+    if (message.member_removed) {
+        MessageItem member;
+        member.sender_id = message.removed_member_id;
+        std::string name = senderName(member);
+        if (!message.sender_chat && message.sender_id == message.removed_member_id)
+            return tr("service.member_left", {name});
+        return tr("service.member_removed", {senderName(message), name});
+    }
+    return tr("service.joined_by_link", {senderName(message)});
+}
+
 void TelegramClient::ensureSenderMedia(const MessageItem& message) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"ensure_sender_media");
     if (!ready_ || !message.sender_id || !currentChatIsGroup() || message.outgoing) return;
@@ -1630,6 +1643,12 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         out.service_message = true;
         out.text = tr("service.joined_by_link", {senderName(out)});
     }
+    else if (!std::strcmp(type, "messageChatDeleteMember")) {
+        out.service_message = true;
+        out.member_removed = true;
+        out.removed_member_id = json_i53(content, "user_id");
+        out.text = serviceMessageText(out);
+    }
     else out.text = type[0] ? std::string("[") + type + "]" : "[" + tr("media.message") + "]";
     auto add_link = [&](const std::string& url) {
         std::string normalized = url;
@@ -1875,6 +1894,16 @@ void TelegramClient::ensureMessageMedia(size_t index) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"ensure_message_media");
     if (index >= messages_.size()) return;
     const auto& message = messages_[index];
+    if (ready_ && message.member_removed) {
+        for (int64_t user : {message.sender_chat ? int64_t(0) : message.sender_id, message.removed_member_id}) {
+            if (!user || user_names_.count(user)) continue;
+            std::string key = "u" + std::to_string(user);
+            int64_t now = sceKernelGetSystemTimeWide();
+            if (now < sender_requests_[key]) continue;
+            sender_requests_[key] = now + 10000000;
+            sendJson(json_pack("{s:s,s:I,s:s}", "@type", "getUser", "user_id", (json_int_t)user, "@extra", "sender_lookup"));
+        }
+    }
     ensureSenderMedia(message);
     if (!message.photos.empty()) {
         ensurePhotoThumbnail(index, 0);
@@ -2146,7 +2175,7 @@ void TelegramClient::process(void* opaque) {
                 topics_end_ = !json_array_size(arr) || (!date && !message && !offset) ||
                     (date == topics_date_ && message == topics_message_ && offset == topics_offset_);
                 topics_date_ = date; topics_message_ = message; topics_offset_ = offset;
-                topics_status_ = topics_.empty() ? tr("topics.none") : topics_end_ ? tr("topics.all_loaded") : tr("topics.load_more");
+                topics_status_ = topics_.empty() ? tr("topics.none") : topics_end_ ? tr("topics.all_loaded") : std::string();
             }
         }
         retire_td_json(root,wire_bytes); return;
@@ -3183,6 +3212,80 @@ bool TelegramClient::sendAudioFile(const std::string& path, int duration, int64_
     sendJson(root);
     logUploads(true);
     return true;
+}
+
+// kind: 0 photo, 1 video, 2 file. The modern schema wraps the file in inputPhoto / inputVideo / inputDocument.
+static json_t* local_file_content(const std::string& path, int kind, bool original, MediaUploads::Kind& upload_kind) {
+    auto local = [&] { return json_pack("{s:s,s:s}", "@type", "inputFileLocal", "path", path.c_str()); };
+    auto caption = [] { return json_pack("{s:s,s:[]}", "@type", "formattedText", "entities"); };
+    upload_kind = MediaUploads::Kind::File;
+    if (kind == 0 && !original) {
+        json_t* photo = json_pack("{s:s,s:o,s:i,s:i}", "@type", "inputPhoto", "photo", local(), "width", 0, "height", 0);
+        upload_kind = MediaUploads::Kind::Photo;
+        return json_pack("{s:s,s:o,s:o}", "@type", "inputMessagePhoto", "photo", photo, "caption", caption());
+    }
+    if (kind == 1 && !original) {
+        json_t* video = json_pack("{s:s,s:o,s:i,s:i,s:i,s:b}", "@type", "inputVideo", "video", local(),
+            "duration", 0, "width", 0, "height", 0, "supports_streaming", 1);
+        upload_kind = MediaUploads::Kind::Video;
+        return json_pack("{s:s,s:o,s:o}", "@type", "inputMessageVideo", "video", video, "caption", caption());
+    }
+    json_t* document = json_pack("{s:s,s:o,s:b}", "@type", "inputDocument", "document", local(),
+        "disable_content_type_detection", kind != 2);
+    if (kind == 0) upload_kind = MediaUploads::Kind::Photo;
+    else if (kind == 1) upload_kind = MediaUploads::Kind::Video;
+    return json_pack("{s:s,s:o,s:o}", "@type", "inputMessageDocument", "document", document, "caption", caption());
+}
+
+static json_t* forum_topic_id(int32_t topic) {
+    return topic ? json_pack("{s:s,s:i}", "@type", "messageTopicForum", "forum_topic_id", topic) : json_null();
+}
+
+bool TelegramClient::sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic) {
+    if (!ready_ || !chat || path.empty()) return false;
+    SceIoStat file_info{};
+    if (sceIoGetstat(path.c_str(), &file_info) < 0 || file_info.st_size <= 0) return false;
+    MediaUploads::Kind upload_kind;
+    json_t* content = local_file_content(path, kind, original, upload_kind);
+    json_t* root = json_pack("{s:s,s:I,s:o}", "@type", "sendMessage", "chat_id", (json_int_t)chat,
+        "input_message_content", content);
+    json_object_set_new(root, "topic_id", forum_topic_id(topic));
+    json_object_set_new(root, "@extra", uploads_.beginFile(path, file_info.st_size, upload_kind, chat, sceKernelGetSystemTimeWide()));
+    sendJson(root);
+    logUploads(true);
+    return true;
+}
+
+// Photos and videos share one album message, documents form their own album; a lone file is a plain message.
+bool TelegramClient::sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic) {
+    if (!ready_ || !chat) return false;
+    bool ok = true;
+    for (bool media : {true, false}) {
+        std::vector<std::pair<std::string, int>> group;
+        for (const auto& file : files) if ((file.second != 2) == media) group.push_back(file);
+        if (group.empty()) continue;
+        if (group.size() == 1) { ok = sendLocalFile(group[0].first, group[0].second, !media, chat, topic) && ok; continue; }
+        json_t* contents = json_array();
+        json_t* tokens = json_array();
+        const int64_t now = sceKernelGetSystemTimeWide();
+        for (const auto& file : group) {
+            SceIoStat info{};
+            if (sceIoGetstat(file.first.c_str(), &info) < 0 || info.st_size <= 0) { ok = false; continue; }
+            MediaUploads::Kind upload_kind;
+            json_array_append_new(contents, local_file_content(file.first, file.second, !media, upload_kind));
+            json_t* extra = uploads_.beginFile(file.first, info.st_size, upload_kind, chat, now);
+            json_array_append_new(tokens, json_incref(json_object_get(extra, "token")));
+            json_decref(extra);
+        }
+        if (!json_array_size(contents)) { json_decref(contents); json_decref(tokens); continue; }
+        json_t* root = json_pack("{s:s,s:I,s:o}", "@type", "sendMessageAlbum", "chat_id", (json_int_t)chat,
+            "input_message_contents", contents);
+        json_object_set_new(root, "topic_id", forum_topic_id(topic));
+        json_object_set_new(root, "@extra", json_pack("{s:s,s:o}", "kind", "media_upload_album", "tokens", tokens));
+        sendJson(root);
+    }
+    logUploads(true);
+    return ok;
 }
 
 bool TelegramClient::pollPending(int64_t message) const {

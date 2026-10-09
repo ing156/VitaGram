@@ -12,7 +12,7 @@
 // UI-owned state. No filesystem or TDLib calls; timestamps are monotonic microseconds.
 class MediaUploads {
 public:
-    enum class Kind { Audio, VideoNote, Sticker };
+    enum class Kind { Audio, VideoNote, Sticker, Photo, Video, File };
     struct Item {
         int64_t token = 0, chat = 0, message = 0, size = 0, done = 0;
         int64_t started = 0, changed = 0, ended = 0, sample_time = 0, sample_bytes = 0;
@@ -35,6 +35,11 @@ public:
         items_.push_back(i);
         return json_pack("{s:s,s:I}", "kind", "media_upload", "token", (json_int_t)i.token);
     }
+    json_t* beginFile(const std::string& path, int64_t size, Kind kind, int64_t chat, int64_t now) {
+        auto* extra = begin(path, size, false, chat, now);
+        items_.back().kind = kind;
+        return extra;
+    }
     json_t* beginSticker(int file, int64_t chat, int64_t now) {
         auto* extra = begin("", 0, false, chat, now);
         auto& i = items_.back(); i.kind = Kind::Sticker;
@@ -50,6 +55,8 @@ public:
     }
     static json_t* messageFile(json_t* message) {
         json_t* content = json_object_get(message, "content");
+        if (json_t* sizes = json_object_get(json_object_get(content, "photo"), "sizes"))
+            if (size_t n = json_array_size(sizes)) return json_object_get(json_array_get(sizes, n - 1), "photo");
         for (const auto& field : {std::make_pair("video_note", "video"), std::make_pair("voice_note", "voice"),
                                  std::make_pair("sticker", "sticker"), std::make_pair("audio", "audio"),
                                  std::make_pair("document", "document"), std::make_pair("video", "video")})
@@ -85,6 +92,21 @@ public:
     void process(json_t* root, int64_t now) {
         const auto type = string(root, "@type");
         json_t* extra = json_object_get(root, "@extra");
+        if (string(extra, "kind") == "media_upload_album") {
+            // One album response carries one message per token, in order; replay each as a single upload.
+            json_t* tokens = json_object_get(extra, "tokens");
+            json_t* messages = json_object_get(root, "messages");
+            for (size_t k = 0; k < json_array_size(tokens); ++k) {
+                json_t* single = nullptr;
+                if (type == "messages" && k < json_array_size(messages)) single = json_deep_copy(json_array_get(messages, k));
+                else if (type == "error") single = json_deep_copy(root);
+                if (!single) continue;
+                json_object_set_new(single, "@extra", json_pack("{s:s,s:O}", "kind", "media_upload", "token", json_array_get(tokens, k)));
+                process(single, now);
+                json_decref(single);
+            }
+            return;
+        }
         if (string(extra, "kind") == "media_upload") {
             for (auto& i : items_) if (i.token == number(extra, "token") && !i.terminal) {
                 if (type == "error") { finish(i, string(root, "message"), now); }
@@ -178,8 +200,17 @@ private:
         return tr("unit.kib", {b});
     }
     static std::string seconds(int64_t micros) { return tr("unit.sec", {std::to_string(micros / 1000000)}); }
+    static const char* kindKey(const Item& i) {
+        switch (i.kind) {
+            case Kind::Sticker: return "up.kind.sticker";
+            case Kind::Photo: return "up.kind.photo";
+            case Kind::Video: return "up.kind.video";
+            case Kind::File: return "up.kind.file";
+            default: return i.video ? "up.kind.video_note" : "up.kind.audio";
+        }
+    }
     static std::string describe(const Item& i, int64_t now) {
-        std::string s = tr(i.kind == Kind::Sticker ? "up.kind.sticker" : i.video ? "up.kind.video_note" : "up.kind.audio");
+        std::string s = tr(kindKey(i));
         if (i.terminal && i.reused && i.error.empty()) return tr("up.sent", {s});
         if (i.terminal) return i.error.empty() ? tr("up.sent_info", {s, bytes(i.size), seconds(i.ended-i.started)})
                                                : tr("up.failed", {s, i.error});

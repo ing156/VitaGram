@@ -1,5 +1,6 @@
 #pragma once
 #include "vault.h"
+#include "vault_readahead.h"
 #include <memory>
 #include <string>
 
@@ -8,8 +9,10 @@ extern "C" {
 }
 
 // Lets FFmpeg demux a sealed file: decryption happens chunk by chunk behind a custom AVIOContext,
-// so nothing is ever written to disk in plain text and seeking stays cheap. Plain files are left
-// to FFmpeg's own file protocol (no behaviour or speed change for unencrypted installs).
+// so nothing is ever written to disk in plain text and seeking stays cheap. Larger files are read
+// and decrypted ahead of the demuxer on a helper thread (vault::ReadAhead), so the thread that
+// decodes never waits for the card. Plain files are left to FFmpeg's own file protocol (no
+// behaviour or speed change for unencrypted installs).
 class VaultAvio {
 public:
     VaultAvio() = default;
@@ -24,6 +27,9 @@ public:
 private:
     static int read(void* opaque, uint8_t* buffer, int size);
     static int64_t seek(void* opaque, int64_t offset, int whence);
-    std::unique_ptr<vault::Reader> reader_;
+    std::unique_ptr<vault::Reader> reader_;      // direct path (small files)
+    std::unique_ptr<vault::ReadAhead> ahead_;    // read-ahead path (owns its reader)
+    const vault::Reader* stats_ = nullptr;
+    int64_t size_ = 0;
     AVIOContext* io_ = nullptr;
 };

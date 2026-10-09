@@ -3,6 +3,7 @@
 #include "exit_gesture.h"
 #include "telegram_client.h"
 #include "history_selection.h"
+#include "chat_list_scroll.h"
 #include "keyboard.h"
 #include "vita_net.h"
 #include "media_render.h"
@@ -21,6 +22,7 @@
 #include "settings.h"
 #include "file_download.h"
 #include "download_folder_picker.h"
+#include "upload_picker.h"
 #include "proxy_link.h"
 #include "secure_store.h"
 #include "vault.h"
@@ -46,6 +48,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -232,6 +235,109 @@ static void rounded_rect(float x, float y, float w, float h, unsigned int color)
     vita2d_draw_fill_circle(x+w-r, y+h-r, r, color);
 }
 
+static unsigned int scale_alpha(unsigned int color, float factor) {
+    const float a = std::max(0.f, std::min(1.f, factor)) * (float)(color >> 24);
+    return (color & 0x00FFFFFFu) | ((unsigned int)a << 24);
+}
+static unsigned int mix_color(unsigned int a, unsigned int b, float t) {
+    auto channel = [&](int shift) { return (unsigned int)((float)((a >> shift) & 255) * (1 - t) + (float)((b >> shift) & 255) * t); };
+    return channel(0) | (channel(8) << 8) | (channel(16) << 16) | (channel(24) << 24);
+}
+
+// Translucent rounded panel with a vertical gradient, one non-overlapping stripe per row
+// (overlapping fills would double the alpha).
+static void glass_panel(float x, float y, float w, float h, unsigned int top, unsigned int bottom, float r = 9) {
+    for (int i = 0; i < (int)h; ++i) {
+        const float edge = (float)std::min(i + 0.5f, h - i - 0.5f);
+        const float inset = edge >= r ? 0.f : r - std::sqrt(std::max(0.f, r * r - (r - edge) * (r - edge)));
+        vita2d_draw_rectangle(x + inset, y + i, w - 2 * inset, 1, mix_color(top, bottom, h > 1 ? i / (h - 1) : 0));
+    }
+}
+
+static void draw_paperclip(float cx, float cy, float scale, unsigned int color) {
+    // Three nested U-bends, drawn as a polyline in a 11x21 box and rotated by 45 degrees.
+    std::vector<std::pair<float, float>> pts;
+    auto line = [&](float x, float y) { pts.emplace_back(x, y); };
+    auto arc = [&](float ax, float ay, float r, float from, float to) {
+        for (int i = 0; i <= 10; ++i) {
+            const float t = (from + (to - from) * i / 10) * 3.14159265f / 180.0f;
+            line(ax + r * std::cos(t), ay + r * std::sin(t));
+        }
+    };
+    line(3, 15); line(3, 5);
+    arc(5, 5, 2, 180, 360);
+    line(7, 17);
+    arc(4, 17, 3, 0, 180);
+    line(1, 4);
+    arc(5.5f, 4, 4.5f, 180, 360);
+    line(10, 19);
+    const float c = 0.70710678f;
+    for (size_t i = 1; i < pts.size(); ++i) {
+        float p[4] = {pts[i-1].first - 5.5f, pts[i-1].second - 10.5f, pts[i].first - 5.5f, pts[i].second - 10.5f};
+        float q[4];
+        for (int k = 0; k < 4; k += 2) {
+            q[k] = cx + (p[k] * c - p[k+1] * c) * scale;
+            q[k+1] = cy + (p[k] * c + p[k+1] * c) * scale;
+        }
+        vita2d_draw_line(q[0], q[1], q[2], q[3], color);
+        vita2d_draw_line(q[0] + 1, q[1], q[2] + 1, q[3], color);
+        vita2d_draw_line(q[0], q[1] + 1, q[2], q[3] + 1, color);
+    }
+}
+
+// Quarter circle in a bottom corner: gray radial gradient, translucent body and a glossy ring rim
+// with two glints. `glow` (0..1) brightens the ring while its menu is open.
+static void draw_corner_ring(bool right, bool dark, float glow) {
+    const float R = 66, deg = 3.14159265f / 180.0f, cx = right ? 960.f : 0.f;
+    vita2d_draw_fill_circle(cx, 544, R + 5, RGBA8(255, 255, 255, dark ? 6 : 10));
+    vita2d_draw_fill_circle(cx, 544, R + 3, RGBA8(255, 255, 255, dark ? 9 : 14));
+    const int steps = 18;
+    vita2d_draw_fill_circle(cx, 544, R, RGBA8(30, 34, 40, 150));
+    for (int i = 1; i <= steps; ++i) {
+        const float t = (float)i / steps;
+        const unsigned int c = mix_color(RGBA8(62, 68, 78, 255), RGBA8(150, 158, 170, 255), t);
+        vita2d_draw_fill_circle(cx, 544, R * (1.0f - 0.94f * t), (c & 0x00FFFFFFu) | (14u << 24));
+    }
+    // Visible arc: -90..0 degrees on the left button, -180..-90 on the right one (mirror image).
+    const int from = right ? -180 : -90;
+    for (int layer = 0; layer < 3; ++layer) {
+        const float radius = R - 0.5f - layer;
+        for (int a = from; a < from + 90; a += 2) {
+            const float m = (float)(right ? -180 - a : a);   // mirrored angle for the glint profile
+            const float g1 = std::exp(-((m + 62.f) * (m + 62.f)) / (2 * 14.f * 14.f));
+            const float g2 = std::exp(-((m + 14.f) * (m + 14.f)) / (2 * 8.f * 8.f));
+            float alpha = 70.f + 160.f * g1 + 110.f * g2 + 60.f * glow;
+            alpha *= layer == 0 ? 1.0f : layer == 1 ? 0.6f : 0.3f;
+            vita2d_draw_line(cx + radius * std::cos(a * deg), 544 + radius * std::sin(a * deg),
+                             cx + radius * std::cos((a + 2) * deg), 544 + radius * std::sin((a + 2) * deg),
+                             RGBA8(255, 255, 255, (unsigned int)std::min(255.f, alpha)));
+        }
+    }
+    for (int a = from + 2; a < from + 86; a += 3)
+        vita2d_draw_line(cx + (R - 7) * std::cos(a * deg), 544 + (R - 7) * std::sin(a * deg),
+                         cx + (R - 7) * std::cos((a + 3) * deg), 544 + (R - 7) * std::sin((a + 3) * deg), RGBA8(255, 255, 255, 22));
+}
+
+static void draw_attach_button(bool dark, float glow = 0) {
+    draw_corner_ring(false, dark, glow);
+    draw_paperclip(26, 519, 1.55f, RGBA8(0, 0, 0, 90));
+    draw_paperclip(25, 518, 1.55f, RGBA8(244, 247, 251, 255));
+}
+
+// Three dots, as on the original system menu button.
+static void draw_menu_button(bool dark, float glow = 0) {
+    draw_corner_ring(true, dark, glow);
+    for (int i = 0; i < 3; ++i) {
+        vita2d_draw_fill_circle(924.f + i * 11 + 1, 521, 3.2f, RGBA8(0, 0, 0, 90));
+        vita2d_draw_fill_circle(924.f + i * 11, 520, 3.2f, RGBA8(244, 247, 251, 255));
+    }
+}
+
+// One entry of the right-hand context menu: label key (text carries the button icon), the physical
+// button it stands for, or a special action.
+struct ChatMenuItem { const char* label; unsigned int button; int special; };
+static constexpr int kMenuRowHeight = 38, kMenuX = 600, kMenuWidth = 320, kMenuBottom = 486;
+
 struct PostReaction { std::string text; int width; bool chosen; int64_t custom_emoji_id; };
 struct PostLine {
     std::string text, url;
@@ -296,7 +402,7 @@ static std::vector<HistoryRow> history_layout(const std::vector<MessageItem>& me
     int begin = std::max(0, selected-5);
     for (;;) {
         std::vector<HistoryRow> rows;
-        int y = 40;
+        int y = 58;
         std::string previous;
         for (int i = begin; i < (int)messages.size(); ++i) {
             std::string day = message_day(messages[i]);
@@ -306,12 +412,12 @@ static std::vector<HistoryRow> history_layout(const std::vector<MessageItem>& me
             if (messages[i].service_message) height = 36;
             int day_top = separator ? y : -1;
             int top = y + (separator ? 26 : 0);
-            if (top >= 481) break;
+            if (top >= 544) break;
             rows.push_back({i, top, height, day_top, day});
             y = top + height; previous = day;
         }
         bool selected_fits = false;
-        for (const auto& row : rows) if (row.index == selected && row.top + row.height <= 481) selected_fits = true;
+        for (const auto& row : rows) if (row.index == selected && row.top + row.height <= 544) selected_fits = true;
         if (begin >= selected || selected_fits) return rows;
         ++begin;
     }
@@ -417,8 +523,8 @@ static void draw_post_date(vita2d_pgf* font, const MessageItem& message, int scr
                            unsigned int background, unsigned int color) {
     std::string label = message_day(message) + "  " + message_time(message);
     int width = rich_text_width(font, 0.55f, label.c_str()) + 28;
-    rounded_rect(480-width/2, 42-scroll, width, 26, background);
-    draw_text(font, 494-width/2, 60-scroll, label, color, 0.55f);
+    rounded_rect(480-width/2, 57-scroll, width, 22, background);
+    draw_text(font, 494-width/2, 73-scroll, label, color, 0.5f);
 }
 static int post_scroll_max(const MessageItem& message, size_t lines) {
     return std::max(0, post_text_top(message) + (int)lines*24 - 481);
@@ -593,6 +699,11 @@ int main() {
     bool proxy_open = false;
     int proxy_input = -1;
     DownloadFolderPicker folder_picker;
+    UploadPicker upload_picker;
+    int64_t attach_menu_since = 0;
+    bool chat_menu_open = false;
+    int chat_menu_sel = 0;
+    int64_t chat_menu_since = 0;
     bool folder_name_input = false;
     AppSettings proxy_draft;
     QrScanner qr_scanner;
@@ -628,6 +739,9 @@ int main() {
     int32_t circle_topic = 0;
     std::string circle_error;
     int chat_index = 0;
+    ChatListScroll chat_scroll;
+    bool chat_drag = false;
+    int chat_touch_y = 0;
     int message_index = -1;
     int photo_index = 0;
     int post_text_scroll = 0;
@@ -678,6 +792,65 @@ int main() {
 
     bool startup_ready_measured = false;
     performance::observe(performance::Metric::StartupUi, performance::now()-startup_time);
+    // Actions of the current chat screen; each maps to the physical button that already does it.
+    auto chat_menu_items = [&]() {
+        std::vector<ChatMenuItem> v;
+        const auto& m = tg.messages();
+        const bool has_message = message_index >= 0 && message_index < (int)m.size();
+        if (circle_recorder.active()) {
+            using S = VideoNoteRecorder::State;
+            const S state = circle_recorder.state();
+            if (state == S::Preview) v = {{"menu.rec_record", SCE_CTRL_CROSS, 0}, {"menu.rec_camera", SCE_CTRL_TRIANGLE, 0}};
+            else if (state == S::Recording) v = {{"menu.rec_stop", SCE_CTRL_CROSS, 0}, {"menu.rec_camera", SCE_CTRL_TRIANGLE, 0}};
+            else if (state == S::Review) v = {{"menu.rec_send", SCE_CTRL_CROSS, 0}, {"menu.rec_preview", SCE_CTRL_SQUARE, 0}};
+            else if (state == S::Error) v = {{"menu.rec_retry", SCE_CTRL_CROSS, 0}};
+            v.push_back({"menu.rec_cancel", SCE_CTRL_CIRCLE, 0});
+        } else if (!tg.currentChatId() && !tg.topicsOpen()) {
+            v = {{"menu.open_chat", SCE_CTRL_CROSS, 0}, {"menu.settings", SCE_CTRL_START, 0}, {"menu.refresh", SCE_CTRL_TRIANGLE, 0}};
+            if (tg.folders().size() > 1) { v.push_back({"menu.prev_folder", SCE_CTRL_LTRIGGER, 0}); v.push_back({"menu.next_folder", SCE_CTRL_RTRIGGER, 0}); }
+        } else if (tg.topicsOpen()) {
+            v = {{"menu.open_topic", SCE_CTRL_CROSS, 0}, {"menu.load_topics", SCE_CTRL_TRIANGLE, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+        } else if (stickers_open) {
+            if (sticker_pack_menu) v = {{"menu.open_set", SCE_CTRL_CROSS, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+            else v = {{"menu.send_sticker", SCE_CTRL_CROSS, 0}, {"menu.sets", SCE_CTRL_CIRCLE, 0}, {"menu.close_picker", SCE_CTRL_SQUARE, 0}};
+        } else if (reactions_open) {
+            v = {{"menu.react_toggle", SCE_CTRL_CROSS, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+        } else if (video_fullscreen) {
+            v = {{"menu.play_pause", SCE_CTRL_CROSS, 0}, {"menu.normal_view", SCE_CTRL_TRIANGLE, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+        } else if (photo_open) {
+            v = {{"menu.prev_photo_dpad", SCE_CTRL_LEFT, 0}, {"menu.next_photo_dpad", SCE_CTRL_RIGHT, 0},
+                 {"menu.reset_zoom", SCE_CTRL_TRIANGLE, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+        } else if (post_open && has_message && m[message_index].poll.id) {
+            v = {{"menu.poll_choose", SCE_CTRL_CROSS, 0}, {"menu.poll_send", SCE_CTRL_TRIANGLE, 0},
+                 {"menu.poll_retract", SCE_CTRL_SQUARE, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+        } else if (post_open && has_message) {
+            const MessageItem& item = m[message_index];
+            v = {{"menu.prev_post", SCE_CTRL_LEFT, 0}, {"menu.next_post", SCE_CTRL_RIGHT, 0}};
+            if (item.photos.size() > 1) { v.push_back({"menu.prev_photo", SCE_CTRL_LTRIGGER, 0}); v.push_back({"menu.next_photo", SCE_CTRL_RTRIGGER, 0}); }
+            if (!item.photos.empty()) v.push_back({"menu.open_photo", SCE_CTRL_CROSS, 0});
+            if (item.voice || item.video) v.push_back({"menu.play_pause", SCE_CTRL_CROSS, 0});
+            if (item.video && !item.video_note) v.push_back({"menu.fullscreen", SCE_CTRL_TRIANGLE, 0});
+            if (item.document) v.push_back({"menu.download", SCE_CTRL_CROSS, 0});
+            v.push_back({"menu.react", SCE_CTRL_SQUARE, 0});
+            v.push_back({"menu.back", SCE_CTRL_CIRCLE, 0});
+        } else {
+            if (has_message) v.push_back({"menu.open_post", SCE_CTRL_CROSS, 0});
+            v.push_back({"menu.compose", SCE_CTRL_SQUARE, 0});
+            v.push_back({"menu.stickers", 0, 1});
+            v.push_back({"menu.video_note", SCE_CTRL_LTRIGGER, 0});
+            v.push_back({"menu.audio", SCE_CTRL_RTRIGGER, 0});
+            v.push_back({"menu.attach", SCE_CTRL_SELECT, 0});
+            v.push_back({"menu.refresh", SCE_CTRL_TRIANGLE, 0});
+            v.push_back({"menu.back", SCE_CTRL_CIRCLE, 0});
+        }
+        return v;
+    };
+    // Corner buttons exist on every chat screen except modal tools (recorder, scanner, file picker).
+    auto chat_ui_visible = [&]() {
+        return (tg.currentChatId() != 0 || tg.topicsOpen() || tg.canBrowse()) && !settings_open &&
+               !qr_scanner.active() && !kb.active() && !unsupported_video_prompt &&
+               (upload_picker.stage == UploadPicker::Stage::Closed || upload_picker.stage == UploadPicker::Stage::Menu);
+    };
     while (running) {
         performance::Scope frame_measurement(performance::Metric::Frame);
         performance::Scope ui_measurement(performance::Metric::UiWork);
@@ -720,7 +893,7 @@ int main() {
         unsigned int released = old_buttons & ~pad.buttons;
         old_buttons = pad.buttons;
         bool compose_context = !circle_recorder.active() && tg.currentChatId() && !tg.topicsOpen() && !post_open && !photo_open && !settings_open &&
-            !reactions_open && !stickers_open && !kb.active() && !recorder.recording() && !recorder.processing() && tg.inputKind() == InputKind::None;
+            !reactions_open && !stickers_open && !upload_picker.active() && !kb.active() && !recorder.recording() && !recorder.processing() && tg.inputKind() == InputKind::None;
         if (compose_context) {
             if (pressed & SCE_CTRL_SQUARE) { square_since = now; square_long = false; }
             pressed &= ~SCE_CTRL_SQUARE;
@@ -758,7 +931,7 @@ int main() {
             post_open = photo_open = video_fullscreen = false;
         }
         if (!tg.currentChatId()) reactions_open = false;
-        if (!tg.currentChatId() || !tg.ready()) stickers_open = false;
+        if (!tg.currentChatId() || !tg.ready()) { stickers_open = false; upload_picker.close(); }
         if ((was_cleaning && !tg.cacheMaintenance()) || (was_ready && !tg.ready())) {
             vita2d_wait_rendering_done(); textures.clear();
         }
@@ -768,7 +941,7 @@ int main() {
                 if (tg.chats()[i].id == selected_chat) { chat_index = (int)i; break; }
         }
         chat_index = std::max(0, std::min(chat_index, (int)tg.chats().size() - 1));
-        if (tg.takeChatTopRequest() && !tg.currentChatId()) chat_index = 0;
+        if (tg.takeChatTopRequest() && !tg.currentChatId()) { chat_index = 0; chat_scroll.reset(); }
         const int restored_message = history_selection.find(tg.messages());
         if (restored_message >= 0) message_index = restored_message;
         if (was_at_bottom && !post_open && !photo_open && !tg.messages().empty() &&
@@ -788,6 +961,7 @@ int main() {
         const int chat_rows = folder_tabs ? 8 : 9;
         const int chat_top = folder_tabs ? 90 : 48;
         const int chat_row_height = (481-chat_top)/chat_rows;
+        chat_scroll.configure((int)tg.chats().size(), chat_row_height, 481-chat_top);
         const int folder_max_scroll = std::max(0, (int)tg.folders().size() * 180 - 920);
         folder_scroll = std::max(0, std::min(folder_scroll, folder_max_scroll));
         photo_view.updateMotion(photo_open, sceKernelGetProcessTimeWide(), touch.reportNum != 0);
@@ -803,13 +977,27 @@ int main() {
                 touch_blocked = kb.active() || (!circle_recorder.active() && !settings_open && tg.canBrowse() && tg.inputKind() != InputKind::None);
                 folder_drag = !circle_recorder.active() && !stickers_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 38 && touch_start_y < 82;
                 folder_touch_x = touch_x;
+                chat_drag = !circle_recorder.active() && !stickers_open && !settings_open &&
+                    !reactions_open && !upload_picker.active() && !tg.currentChatId() && tg.canBrowse() &&
+                    !touch_blocked && touch_start_y >= chat_top && touch_start_y < 481;
+                chat_touch_y = touch_y;
             }
             if (std::abs(touch_y - touch_start_y) > 14 || std::abs(touch_x - touch_start_x) > 14) touch_dragged = true;
             if (folder_drag && !touch_blocked && touch_dragged) {
                 folder_scroll = std::max(0, std::min(folder_max_scroll, folder_scroll + folder_touch_x - touch_x));
             }
             folder_touch_x = touch_x;
-            if (!folder_drag && !touch_blocked && touch_start_y >= 38 && touch_start_y < 499 && !photo_open && !video_fullscreen &&
+            if (chat_drag && touch_dragged &&
+                std::abs(touch_y - touch_start_y) >= std::abs(touch_x - touch_start_x)) {
+                chat_scroll.drag(touch_y - chat_touch_y);
+                if (chat_scroll.end() > chat_scroll.first())
+                    chat_index = std::clamp(chat_index, chat_scroll.first(), chat_scroll.end()-1);
+                if (chat_scroll.end() >= (int)tg.chats().size() - 2 && touch_y < chat_touch_y)
+                    tg.loadMoreChats();
+            }
+            // Include the initial movement once the tap threshold is crossed.
+            if (chat_drag && touch_dragged) chat_touch_y = touch_y;
+            if (!chat_drag && !folder_drag && !touch_blocked && touch_start_y >= 38 && touch_start_y < 499 && !photo_open && !video_fullscreen &&
                 std::abs(touch_y - touch_start_y) >= std::abs(touch_x - touch_start_x) &&
                 std::abs(touch_y - touch_step_y) >= 32) {
                 pressed |= touch_y < touch_step_y ? SCE_CTRL_DOWN : SCE_CTRL_UP;
@@ -838,20 +1026,82 @@ int main() {
             }
         }
 
+        {
+            const bool ui = chat_ui_visible();
+            auto open_menu = [&]() {
+                if (upload_picker.stage == UploadPicker::Stage::Menu) upload_picker.close();
+                chat_menu_open = true; chat_menu_sel = 0; chat_menu_since = now;
+            };
+            auto run_item = [&](const ChatMenuItem& item) {
+                chat_menu_open = false;
+                if (item.special == 1) { stickers_open = true; sticker_pack_menu = true; sticker_index = 0; sticker_pack = 1; tg.openStickers(); }
+                else pressed |= item.button;
+            };
+            if (!ui) chat_menu_open = false;
+            if (ui && (tg.currentChatId() != 0 || tg.topicsOpen()) && (pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT)) {
+                if (chat_menu_open) chat_menu_open = false; else open_menu();
+                pressed &= ~SCE_CTRL_START;
+            } else if (ui && chat_menu_open) {
+                const auto items = chat_menu_items();
+                const int count = (int)items.size();
+                if (pressed & SCE_CTRL_UP) chat_menu_sel = (chat_menu_sel + count - 1) % count;
+                if (pressed & SCE_CTRL_DOWN) chat_menu_sel = (chat_menu_sel + 1) % count;
+                if (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN)) pressed &= ~(SCE_CTRL_UP | SCE_CTRL_DOWN);
+                if (pressed & SCE_CTRL_CROSS) { pressed &= ~SCE_CTRL_CROSS; run_item(items[std::min(chat_menu_sel, count - 1)]); }
+                else if (pressed & SCE_CTRL_CIRCLE) { pressed &= ~SCE_CTRL_CIRCLE; chat_menu_open = false; }
+                else if (pressed & (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_SQUARE | SCE_CTRL_TRIANGLE |
+                                    SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_SELECT)) chat_menu_open = false;
+            }
+            if (tap && ui && !kb.active()) {
+                const bool in_right = std::hypot((float)touch_x - 960.0f, (float)touch_y - 544.0f) < 66.0f;
+                const bool in_left = std::hypot((float)touch_x, (float)touch_y - 544.0f) < 66.0f;
+                if (in_right) {
+                    if (chat_menu_open) chat_menu_open = false; else open_menu();
+                    tap = false;
+                } else if (in_left) {
+                    chat_menu_open = false;       // the attach button takes over (handled below)
+                } else if (chat_menu_open) {
+                    const auto items = chat_menu_items();
+                    const int top = kMenuBottom - (int)items.size() * kMenuRowHeight;
+                    if (touch_x >= kMenuX && touch_x < kMenuX + kMenuWidth && touch_y >= top && touch_y < kMenuBottom)
+                        run_item(items[(touch_y - top) / kMenuRowHeight]);
+                    else chat_menu_open = false;
+                    tap = false;
+                }
+            }
+        }
         if (tap && !kb.active() && (circle_recorder.active() || settings_open || !tg.canBrowse() || tg.inputKind() == InputKind::None)) {
             if (circle_recorder.active()) {
-                if (touch_y >= 500) pressed |= touch_x >= 760 ? SCE_CTRL_CIRCLE :
-                    touch_x >= 470 ? (circle_recorder.state() == VideoNoteRecorder::State::Review ? SCE_CTRL_SQUARE : SCE_CTRL_TRIANGLE) : SCE_CTRL_CROSS;
+                // Recorder actions live in the corner menu now; the bottom strip is not a touch target.
             } else if (qr_scanner.active()) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
             } else if (!settings_open && tg.topicsOpen()) {
-                if (touch_y >= 500) pressed |= touch_x >= 650 ? SCE_CTRL_CIRCLE : SCE_CTRL_TRIANGLE;
+                if (touch_y >= 500) {}
                 else if (touch_y >= 70 && touch_y < 470) {
                     int index = std::max(0, topic_index-7)+(touch_y-70)/50;
                     if (index < (int)tg.topics().size()) { topic_index = index; pressed |= SCE_CTRL_CROSS; }
                 }
+            } else if (upload_picker.active()) {
+                if (upload_picker.stage == UploadPicker::Stage::Menu) {
+                    if (touch_x >= 40 && touch_x < 270 && touch_y >= 366 && touch_y < 486) {
+                        upload_picker.selected = (touch_y - 366) / 40; pressed |= SCE_CTRL_CROSS;
+                    } else pressed |= SCE_CTRL_CIRCLE;
+                } else if (upload_picker.stage == UploadPicker::Stage::Review && touch_x >= 540 && touch_y >= 109 && touch_y < 465) {
+                    pressed |= SCE_CTRL_SQUARE;
+                } else if (touch_y >= 500) {
+                    if (upload_picker.stage == UploadPicker::Stage::Browse) {
+                        pressed |= touch_x < 250 ? SCE_CTRL_SQUARE : touch_x < 500 ? SCE_CTRL_TRIANGLE : SCE_CTRL_CIRCLE;
+                    } else if (touch_x >= 320 && touch_x < 640) pressed |= SCE_CTRL_TRIANGLE;
+                    else if (touch_x >= 640) pressed |= SCE_CTRL_CIRCLE;
+                } else if (upload_picker.stage == UploadPicker::Stage::Review && touch_y >= 117 && touch_y < 461 && touch_x < 530) {
+                    int index = (upload_picker.selected / 8) * 8 + (touch_y - 117) / 43;
+                    if (index < upload_picker.reviewRows()) { upload_picker.selected = index; pressed |= SCE_CTRL_CROSS; }
+                } else if (upload_picker.stage == UploadPicker::Stage::Browse && touch_y >= 117 && touch_y < 461) {
+                    int index = (upload_picker.selected / 8) * 8 + (touch_y - 117) / 43;
+                    if (index < (int)upload_picker.entries.size()) { upload_picker.selected = index; pressed |= SCE_CTRL_CROSS; }
+                }
             } else if (!settings_open && stickers_open) {
-                if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
+                if (touch_y >= 500) {}
                 else if (sticker_pack_menu && touch_y >= 116 && touch_y < 494) {
                     int index = std::max(0, sticker_pack - 6) + (touch_y - 116) / 54;
                     if (index < (int)tg.stickerPacks().size()) { sticker_pack = index; pressed |= SCE_CTRL_CROSS; }
@@ -860,15 +1110,15 @@ int main() {
                     if (index < (int)tg.stickers().size()) { sticker_index = index; pressed |= SCE_CTRL_CROSS; }
                 }
             } else if (!settings_open && reactions_open) {
-                if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
+                if (touch_y >= 500) {}
                 else if (touch_x >= 32 && touch_x < 928 && touch_y >= 130 && touch_y < 418) {
                     int index = (reaction_index/32)*32 + (touch_y-130)/72*8 + (touch_x-32)/112;
                     if (index < (int)tg.reactionChoices().size()) { reaction_index = index; pressed |= SCE_CTRL_CROSS; }
                 }
             } else if (video_fullscreen) {
-                pressed |= touch_y >= 500 ? SCE_CTRL_TRIANGLE : SCE_CTRL_CROSS;
+                pressed |= SCE_CTRL_CROSS;
             } else if (!settings_open && post_open && !photo_open && message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].poll.id) {
-                if (touch_y >= 500) pressed |= touch_x < 680 ? SCE_CTRL_TRIANGLE : SCE_CTRL_CIRCLE;
+                if (touch_y >= 500) {}
                 else if (touch_y >= 160 && touch_y < 435) {
                     int index = poll_index / 5 * 5 + (touch_y - 160) / 55;
                     if (index < (int)tg.messages()[message_index].poll.order.size()) { poll_index = index; pressed |= SCE_CTRL_CROSS; }
@@ -895,14 +1145,15 @@ int main() {
                 else if (touch_y >= 500 && touch_x < 480) pressed |= SCE_CTRL_CROSS;
             } else if (!tg.currentChatId() && tg.canBrowse() && folder_tabs && touch_y >= 38 && touch_y < 82 && touch_x >= 20 && touch_x < 940) {
                 int index = (touch_x - 20 + folder_scroll) / 180;
-                if (index < (int)tg.folders().size()) { tg.selectFolder(tg.folders()[index].id); chat_index = 0; }
+                if (index < (int)tg.folders().size()) { tg.selectFolder(tg.folders()[index].id); chat_index = 0; chat_scroll.reset(); }
             } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= 481 && touch_y < 500) {
                 tg.loadMoreChats();
-            } else if (touch_y >= 500) {
-                if (tg.currentChatId()) pressed |= touch_x >= 650 ? SCE_CTRL_CIRCLE :
-                    (post_open || photo_open || touch_x < 280 ? SCE_CTRL_CROSS : SCE_CTRL_SQUARE);
-                else pressed |= touch_x >= 650 ? SCE_CTRL_TRIANGLE : SCE_CTRL_CROSS;
-            } else if (tg.currentChatId() && !post_open && !photo_open && touch_y >= 40 && touch_y < 481) {
+            } else if (tg.currentChatId() && tg.ready() && !post_open && !photo_open && !tg.topicsOpen() &&
+                       std::hypot((float)touch_x, (float)touch_y - 544.0f) < 66.0f) {
+                upload_picker.openMenu(); chat_menu_open = false;
+            } else if (touch_y >= 500 && !tg.currentChatId() && !tg.canBrowse()) {
+                pressed |= touch_x >= 650 ? SCE_CTRL_TRIANGLE : SCE_CTRL_CROSS;
+            } else if (tg.currentChatId() && !post_open && !photo_open && touch_y >= 58 && touch_y < 544) {
                 for (const auto& row : history_layout(tg.messages(), message_index, tg.currentChatIsGroup()))
                     if (touch_y >= row.top && touch_y < row.top + row.height - 4) {
                         message_index = row.index; pressed |= SCE_CTRL_CROSS; break;
@@ -951,9 +1202,9 @@ int main() {
                     photo_index = index; pressed |= SCE_CTRL_CROSS;
                 }
                 }
-            } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= chat_top && touch_y < chat_top + chat_rows * chat_row_height) {
-                int index = std::max(0, chat_index - chat_rows + 1) + (touch_y - chat_top) / chat_row_height;
-                if (index < (int)tg.chats().size()) { chat_index = index; pressed |= SCE_CTRL_CROSS; }
+            } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= chat_top && touch_y < 481) {
+                int index = chat_scroll.hit(touch_y - chat_top);
+                if (index >= 0 && index < (int)tg.chats().size()) { chat_index = index; pressed |= SCE_CTRL_CROSS; }
             }
         }
 
@@ -1069,6 +1320,32 @@ int main() {
                 if (pressed & SCE_CTRL_TRIANGLE) tg.loadTopics(tg.topics().empty());
                 topic_index = std::max(0, std::min(std::max(0, (int)tg.topics().size()-1), topic_index));
                 if (pressed & SCE_CTRL_CROSS) { tg.openTopic(topic_index); message_index = -1; }
+            }
+        } else if (upload_picker.active()) {
+            using Stage = UploadPicker::Stage;
+            const int rows = upload_picker.stage == Stage::Menu ? 3 : upload_picker.stage == Stage::Review ? upload_picker.reviewRows() : (int)upload_picker.entries.size();
+            if (rows > 0) {
+                if (pressed & SCE_CTRL_UP) upload_picker.selected = (upload_picker.selected + rows - 1) % rows;
+                if (pressed & SCE_CTRL_DOWN) upload_picker.selected = (upload_picker.selected + 1) % rows;
+                if (upload_picker.stage == Stage::Browse) {
+                    if (pressed & SCE_CTRL_LTRIGGER) upload_picker.selected = std::max(0, upload_picker.selected - 8);
+                    if (pressed & SCE_CTRL_RTRIGGER) upload_picker.selected = std::min(rows - 1, upload_picker.selected + 8);
+                }
+            }
+            if (upload_picker.stage == Stage::Menu) {
+                if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SELECT)) upload_picker.close();
+                else if (pressed & SCE_CTRL_CROSS) upload_picker.chooseKind((UploadPicker::Kind)upload_picker.selected);
+            } else if (upload_picker.stage == Stage::Browse) {
+                if (pressed & SCE_CTRL_CIRCLE) upload_picker.up();
+                else if (pressed & SCE_CTRL_TRIANGLE) upload_picker.refresh();
+                else if (pressed & SCE_CTRL_SQUARE) upload_picker.toggleHidden();
+                else if (pressed & SCE_CTRL_CROSS) upload_picker.enter();
+            } else {
+                const auto* focus = upload_picker.focusedItem();
+                if ((pressed & SCE_CTRL_SQUARE) && focus && focus->kind == UploadPicker::Kind::Video) toggle_video = true;
+                if (pressed & SCE_CTRL_CIRCLE) upload_picker.close();
+                else if (pressed & SCE_CTRL_TRIANGLE) upload_picker.removeSelected();
+                else if (pressed & SCE_CTRL_CROSS) upload_picker.reviewActivate();
             }
         } else if (!settings_open && stickers_open) {
             if (sticker_pack_menu) {
@@ -1363,6 +1640,7 @@ int main() {
             } else {
                 if (pressed & SCE_CTRL_CIRCLE) { if (tg.inTopic()) tg.backToTopics(); else tg.leaveChat(); pressed = 0; }
                 if (pressed & SCE_CTRL_SQUARE) tg.requestCompose();
+                if ((pressed & SCE_CTRL_SELECT) && !(pad.buttons & SCE_CTRL_START) && tg.ready()) { upload_picker.openMenu(); chat_menu_open = false; }
                 if (pressed & SCE_CTRL_LTRIGGER) open_circle();
                 else if (pressed & SCE_CTRL_RTRIGGER) record_toggle = true;
                 if (pressed & SCE_CTRL_TRIANGLE) tg.refreshHistory();
@@ -1387,7 +1665,7 @@ int main() {
                 for (int i = 0; i < (int)tg.folders().size(); ++i) if (tg.folders()[i].id == tg.selectedFolder()) current = i;
                 int direction = (pressed & SCE_CTRL_RTRIGGER) ? 1 : -1;
                 int next = (current + direction + (int)tg.folders().size()) % (int)tg.folders().size();
-                tg.selectFolder(tg.folders()[next].id); chat_index = 0;
+                tg.selectFolder(tg.folders()[next].id); chat_index = 0; chat_scroll.reset();
                 pressed &= ~SCE_CTRL_CROSS; // Never open a stale selection during a tab switch.
             }
             const auto& chats = tg.chats();
@@ -1398,6 +1676,8 @@ int main() {
                     if (chat_index >= (int)chats.size() - 2) tg.loadMoreChats();
                 }
                 chat_index = std::max(0, std::min(chat_index, (int)chats.size() - 1));
+                if ((pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN)) || (!tap && (pressed & SCE_CTRL_CROSS)))
+                    chat_scroll.reveal(chat_index);
                 if (pressed & SCE_CTRL_CROSS) {
                     tg.openChat(chats[chat_index].id, chats[chat_index].title);
                     topic_index = 0;
@@ -1421,6 +1701,15 @@ int main() {
             const bool sent = tg.sendAudioFile(completed_audio, recorder.seconds(), audio_chat, audio_topic);
             // Upload tracking now owns the progress/result, not the recorder.
             recorder.setStatus(sent ? "" : tr("rec.send_failed"));
+        }
+
+        std::vector<UploadPicker::Item> upload_batch;
+        if (upload_picker.takeResult(upload_batch)) {
+            // Photos and videos go compressed in one album message; other files stay untouched documents.
+            std::vector<std::pair<std::string, int>> files;
+            for (const auto& item : upload_batch) files.emplace_back(item.path, (int)item.kind);
+            if (!tg.sendLocalFiles(files, tg.currentChatId(), tg.currentTopicId()))
+                recorder.setStatus(tr("upload.send_failed"));
         }
 
         if (exit_gesture.update(pad.buttons & SCE_CTRL_START, pad.buttons & SCE_CTRL_SELECT,
@@ -1501,9 +1790,12 @@ int main() {
             unsupported_video_chat = tg.currentChatId();
             unsupported_video_message = animation_message->id;
         }
-        animation.setSource(animation_message && animation_message->animation_error.empty() && (!unsupported_video || prepare_video) ? animation_message->animation_path : "",
+        const auto* picker_focus = upload_picker.stage == UploadPicker::Stage::Review ? upload_picker.focusedItem() : nullptr;
+        const bool picker_video = picker_focus && picker_focus->kind == UploadPicker::Kind::Video;
+        if (picker_video) animation.setSource(picker_focus->path, true, false, false);
+        else animation.setSource(animation_message && animation_message->animation_error.empty() && (!unsupported_video || prepare_video) ? animation_message->animation_path : "",
             animation_message && animation_message->video, animation_message && animation_message->video_note, prepare_video);
-        if (toggle_video && animation_message) animation.toggle();
+        if (toggle_video && (animation_message || picker_video)) animation.toggle();
         animation.upload();
         int voice_index = !circle_recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running && tg.currentChatId() &&
             message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].voice ? message_index : -1;
@@ -1556,8 +1848,10 @@ int main() {
         draw_text(font, 940-rich_text_width(font, 0.52f, network.c_str()), 25, network, header_text, 0.52f);
         std::string update_notice = tg.updateNotice();
 
-        vita2d_draw_rectangle(0, 500, 960, 44, white);
-        vita2d_draw_rectangle(0, 499, 960, 1, separator);
+        if (settings_open || !(tg.currentChatId() || tg.topicsOpen() || tg.canBrowse()) || qr_scanner.active() || circle_recorder.active()) {
+            vita2d_draw_rectangle(0, 500, 960, 44, white);
+            vita2d_draw_rectangle(0, 499, 960, 1, separator);
+        }
 
         if (qr_scanner.active()) {
             if (qr_scanner.preview()) draw_texture_fit(qr_scanner.preview(), 240, 60, 480, 360);
@@ -1664,7 +1958,6 @@ int main() {
                     float scale = std::min(960.0f/w, 544.0f/h);
                     draw_texture_fit(picture, (960-w*scale)/2, (544-h*scale)/2, 960, 544);
                 } else draw_text(font, 360, 275, tr("video.loading"), ink, 0.7f);
-                draw_text(font, 20, 528, tr("hint.video_fullscreen"), ink, 0.55f);
             } else if (photo_open && message_index >= 0 && message_index < (int)msgs.size() &&
                 photo_index < (int)msgs[message_index].photos.size()) {
                 const PhotoItem& photo = msgs[message_index].photos[photo_index];
@@ -1676,8 +1969,6 @@ int main() {
                 char counter[32];
                 std::snprintf(counter, sizeof(counter), "%d / %d", photo_index + 1, (int)msgs[message_index].photos.size());
                 draw_text(font, 440, 60, counter, ink, 0.65f);
-                draw_text(font, 28, 528, tr("hint.photo_view"), ink, 0.55f);
-                draw_text(font, 700, 528, tr("hint.back"), ink, 0.65f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size() && msgs[message_index].poll.id) {
                 const auto& m = msgs[message_index]; const auto& poll = m.poll;
                 draw_post_date(font, m, 0, selected, muted);
@@ -1708,13 +1999,12 @@ int main() {
                 if (!request.empty()) state = request;
                 draw_text(font, 32, 457, fit_text(font, state+tr("poll.voters", {std::to_string(poll.voters)}), 890, 0.53f), ink, 0.53f);
                 if (!poll.explanation.empty()) draw_text(font, 32, 478, fit_text(font, poll.explanation, 890, 0.5f), muted, 0.5f);
-                draw_text(font, 24, 525, tr("poll.footer"), ink, 0.48f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size() && scrollable_post(msgs[message_index])) {
                 const auto& message = msgs[message_index];
                 auto lines = post_lines(font, message);
                 post_text_scroll = std::max(0, std::min(post_text_scroll, post_scroll_max(message, lines.size())));
                 vita2d_enable_clipping();
-                vita2d_set_clip_rectangle(0, 38, 960, 481);
+                vita2d_set_clip_rectangle(0, 56, 960, 481);
                 draw_post_date(font, message, post_text_scroll, selected, muted);
                 int photo_y = post_photo_top-post_text_scroll;
                 if (photo_y+170 > 38) {
@@ -1789,11 +2079,6 @@ int main() {
                     float thumb = std::max(28.0f, 443.0f*443/(443+maximum));
                     vita2d_draw_rectangle(953, 38+(443-thumb)*post_text_scroll/maximum, 3, thumb, accent);
                 }
-                draw_text(font, 28, 528, tr("hint.post_photo"), ink, 0.6f);
-                draw_text(font, 390, 528, message.video && unsupported_video && !prepare_video ?
-                    tr("hint.prepare_video") : message.video ? tr("hint.pause_fullscreen") :
-                    message.photos.empty() ? "" : tr("hint.open_photo"), ink, 0.58f);
-                draw_text(font, 750, 528, tr("hint.back"), ink, 0.65f);
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size()) {
                 const MessageItem& message = msgs[message_index];
                 draw_post_date(font, message, 0, selected, muted);
@@ -1840,14 +2125,10 @@ int main() {
                 for (int line = 0; line < available_lines && post_text_scroll + line < (int)text_lines.size(); ++line)
                     draw_post_line(font, 38, text_y + line * 24, text_lines[post_text_scroll + line],
                         message.outgoing ? outgoing : ink, accent, tg, textures, decode_cooldown);
-                draw_text(font, 28, 528, tr("hint.post_photo"), ink, 0.6f);
-                draw_text(font, 390, 528, message.document ? tr("hint.download_file") :
-                    (message.voice || message.video) ? tr("hint.play_pause") : tr("hint.link_photo"), ink, 0.65f);
-                draw_text(font, 750, 528, tr("hint.back"), ink, 0.65f);
             } else {
                 auto history_rows = history_layout(msgs, message_index, tg.currentChatIsGroup());
                 vita2d_enable_clipping();
-                vita2d_set_clip_rectangle(0, 38, 960, 481);
+                vita2d_set_clip_rectangle(0, 56, 960, 544);
                 for (const auto& entry : history_rows) {
                     int i = entry.index;
                     if (!decode_cooldown) tg.ensureMessageMedia((size_t)i);
@@ -1859,8 +2140,7 @@ int main() {
                     int y = entry.top + 4;
                     const MessageItem& m = msgs[i];
                     if (m.service_message) {
-                        std::string label = fit_text(font, m.pin_message ? m.text :
-                            tr("service.joined_by_link", {tg.senderName(m)}), 860, 0.55f);
+                        std::string label = fit_text(font, tg.serviceMessageText(m), 860, 0.55f);
                         int width = rich_text_width(font, 0.55f, label.c_str()) + 28;
                         int left = 480-width/2;
                         if (i == message_index) rounded_rect(left-2, y-2, width+4, 28, accent);
@@ -1931,9 +2211,7 @@ int main() {
                 }
                 vita2d_disable_clipping();
                 if (msgs.empty()) draw_text(font, 38, 150, tr("chat.no_messages"), muted, 0.75f);
-                draw_text(font, 28, 528, tr("hint.open_post"), ink, 0.65f);
-                draw_text(font, 275, 528, tr("hint.chat_compose"), ink, 0.5f);
-                draw_text(font, 700, 528, tr("hint.back"), ink, 0.65f);
+                draw_attach_button(dark);
             }
         } else if (tg.canBrowse()) {
             const auto& chats = tg.chats();
@@ -1959,12 +2237,13 @@ int main() {
                 if (folder_scroll > 0) draw_text(font, 2, 66, "<", accent, 0.6f);
                 if (folder_scroll < folder_max_scroll) draw_text(font, 944, 66, ">", accent, 0.6f);
             } else { shown_folder_id = -1; shown_folder_index = -1; }
-            int y = chat_top + 24;
-            int max_items = chat_rows;
-            int base = 0;
-            if (chat_index >= max_items) base = chat_index - max_items + 1;
-            if (!decode_cooldown) for (int i = base; i < (int)chats.size() && i < base + max_items; ++i) tg.ensureChatMedia((size_t)i);
-            for (int i = base; i < (int)chats.size() && i < base + max_items; ++i) {
+            chat_scroll.configure((int)chats.size(), chat_row_height, 481-chat_top);
+            const int base = chat_scroll.first(), end = chat_scroll.end();
+            int y = chat_top + 24 + base * chat_row_height - chat_scroll.offset();
+            if (!decode_cooldown) for (int i = base; i < end; ++i) tg.ensureChatMedia((size_t)i);
+            vita2d_enable_clipping();
+            vita2d_set_clip_rectangle(20, chat_top, 940, 481);
+            for (int i = base; i < end; ++i) {
                 vita2d_draw_rectangle(20, y - 24, 920, chat_row_height, i == chat_index ? selected : white);
                 vita2d_draw_rectangle(88, y - 25 + chat_row_height, 852, 1, separator);
                 vita2d_texture* avatar = textures.get(chats[i].avatar_path);
@@ -1973,6 +2252,7 @@ int main() {
                 draw_text(font, 88, y + 3, clip(chats[i].title, 70), ink, 0.72f);
                 y += chat_row_height;
             }
+            vita2d_disable_clipping();
             if (chats.empty()) draw_text(font, 38, chat_top+51, tg.chatsLoading() ? tr("chats.loading_first") :
                 (tg.chatsEnd() ? tr("chats.none") : tr("chats.load_failed")), muted, 0.75f);
             vita2d_draw_rectangle(0, 481, 960, 18, selected);
@@ -1986,9 +2266,6 @@ int main() {
                 float position = (float)((now / 2000) % 840);
                 vita2d_draw_rectangle(position, 497, 120, 2, accent);
             }
-            draw_text(font, 28, 528, tr("hint.select"), ink, 0.65f);
-            draw_text(font, 300, 528, tr("hint.open_settings"), ink, 0.6f);
-            draw_text(font, 680, 528, tr("hint.refresh"), ink, 0.65f);
         } else if (!tg.qrLink().empty()) {
             static std::string qr_text;
             static QrCode qr;
@@ -2034,9 +2311,10 @@ int main() {
 
         performance::SlowScope draw_overlays(performance::SlowPhase::Ui,"draw_overlays");
         if (!settings_open && !stickers_open && !tg.topicsOpen() && !photo_open && !video_fullscreen && tg.currentChatId()) {
-            vita2d_draw_rectangle(0, 481, 960, 18, selected);
+            // Status strip sits right under the header so it never covers media.
+            vita2d_draw_rectangle(0, 36, 960, 18, selected);
             int progress = tg.historyPercent();
-            vita2d_draw_rectangle(0, 497, 960.0f * progress / 100, 2, accent);
+            vita2d_draw_rectangle(0, 52, 960.0f * progress / 100, 2, accent);
             std::string thread_info = settings.show_threads ? " | " + cpu_scheduler::threadStatus() : "";
             const std::string loading = tr(tg.historyLoading() ? "history.block_loading" : "history.block_ready",
                 {std::to_string(progress)}) + thread_info;
@@ -2053,12 +2331,12 @@ int main() {
             std::string info = !tg.documentStatus().empty() ? tg.documentStatus() : !browser_status.empty() ? browser_status :
                 (!audio_status.empty() ? audio_status :
                 (tg.historyError().empty() ? loading : tr("history.error", {tg.historyError()})));
-            draw_text(font, 28, 494, fit_text(font, info, recorder.recording() ? 650 : 904, 0.48f), ink, 0.48f);
+            draw_text(font, 28, 49, fit_text(font, info, recorder.recording() ? 650 : 904, 0.48f), ink, 0.48f);
             if (recorder.recording()) {
-                vita2d_draw_rectangle(690, 484, 235, 8, separator);
-                vita2d_draw_rectangle(690, 484, 2.35f * recorder.peak(), 8, accent);
-                vita2d_draw_rectangle(690, 494, 235, 3, muted);
-                vita2d_draw_rectangle(690, 494, 2.35f * recorder.level(), 3, accent);
+                vita2d_draw_rectangle(690, 39, 235, 8, separator);
+                vita2d_draw_rectangle(690, 39, 2.35f * recorder.peak(), 8, accent);
+                vita2d_draw_rectangle(690, 48, 235, 3, muted);
+                vita2d_draw_rectangle(690, 48, 2.35f * recorder.level(), 3, accent);
             }
         }
         if (!settings_open && !tg.currentChatId() && !tg.uploadStatus().empty()) {
@@ -2069,9 +2347,6 @@ int main() {
             vita2d_draw_rectangle(0, 78, 960, 26, RGBA8(20,35,50,240));
             draw_text(font, 20, 98, tr("diag.cached_waiting"), header_text, 0.55f);
         }
-        if (!settings_open && post_open && !photo_open && !video_fullscreen && !reactions_open && !kb.active() &&
-            message_index >= 0 && message_index < (int)tg.messages().size() && !tg.messages()[message_index].poll.id)
-            draw_text(font, 750, 472, tr("hint.reactions"), muted, 0.45f);
         if (!settings_open && reactions_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
             draw_text(font, 32, 80, tr("reaction.title"), ink, 0.85f);
@@ -2086,7 +2361,6 @@ int main() {
                 if (icon) draw_texture_fit(icon,x+28,y+8,48,48);
                 else draw_text(font, x+8, y+43, fit_text(font,choices[i],88,0.7f), ink, 0.7f);
             }
-            draw_text(font, 28, 528, tr("hint.reaction_footer"), ink, 0.6f);
         }
         if (!settings_open && tg.topicsOpen()) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
@@ -2101,7 +2375,6 @@ int main() {
                 if (topics[i].unread) draw_text(font, 830, y+32, std::to_string(topics[i].unread), accent, 0.7f);
             }
             draw_text(font, 30, 492, fit_text(font, tg.topicsStatus(), 900, 0.55f), muted, 0.55f);
-            draw_text(font, 30, 528, tr("topics.footer"), ink, 0.6f);
         }
         if (!settings_open && stickers_open) {
             vita2d_draw_rectangle(0, 36, 960, 508, white);
@@ -2119,7 +2392,6 @@ int main() {
                     else { vita2d_draw_rectangle(30, y+6, 36, 36, separator); draw_text(font, 40, y+32, "S", ink, 0.6f); }
                     draw_text(font, 82, y+31, fit_text(font, packs[i].title, 820, 0.65f), ink, 0.65f);
                 }
-                draw_text(font, 30, 528, tr("sticker.sets_footer"), ink, 0.6f);
             } else {
                 std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : tr("sticker.title");
                 draw_text(font, 30, 76, fit_text(font, title, 900, 0.8f), ink, 0.8f);
@@ -2138,7 +2410,6 @@ int main() {
                     } else draw_text(font, x+45, y+60, items[i].emoji.empty() ? "..." : items[i].emoji, ink, 0.85f);
                 }
                 draw_text(font, 30, 490, tr("sticker.page", {std::to_string(first/18+1), std::to_string(std::max(1, ((int)items.size()+17)/18))}), muted, 0.6f);
-                draw_text(font, 30, 528, tr("sticker.footer"), ink, 0.6f);
             }
         }
         draw_overlays.finish();
@@ -2158,13 +2429,109 @@ int main() {
                 vita2d_draw_rectangle(320, 432, 3.2f * circle_recorder.level(), 6, accent);
             }
             draw_text(font, 28, 464, fit_text(font, circle_error.empty() ? circle_recorder.status() : circle_error, 900, 0.55f), ink, 0.55f);
-            const std::string action = state == RecordingState::Review ? tr("vnr.action.send") : state == RecordingState::Recording ? tr("vnr.action.stop") :
-                state == RecordingState::Preview ? tr("vnr.action.record") : state == RecordingState::Error ? tr("vnr.action.retry") : "";
-            draw_text(font, 28, 528, action, ink, 0.65f);
-            if (state == RecordingState::Review) draw_text(font, 480, 528, tr("vnr.review"), ink, 0.6f);
-            else if (state == RecordingState::Preview || state == RecordingState::Recording)
-                draw_text(font, 480, 528, tr("vnr.camera"), ink, 0.6f);
-            draw_text(font, 785, 528, tr("vnr.cancel"), ink, 0.6f);
+        }
+        if (chat_ui_visible()) {
+            float t = chat_menu_open ? std::min(1.f, (float)(now - chat_menu_since) / 140000.f) : 0.f;
+            const float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+            if (chat_menu_open) {
+                const auto items = chat_menu_items();
+                const float h = (float)items.size() * kMenuRowHeight;
+                const float dx = (1.f - e) * 36.f, dy = (1.f - e) * 30.f, y0 = kMenuBottom - h + dy;
+                glass_panel(kMenuX + dx, y0, kMenuWidth, h, scale_alpha(RGBA8(52, 58, 68, 232), e), scale_alpha(RGBA8(20, 25, 33, 238), e));
+                vita2d_draw_rectangle(kMenuX + 10 + dx, y0, kMenuWidth - 20, 1, scale_alpha(RGBA8(255, 255, 255, 90), e));
+                chat_menu_sel = std::max(0, std::min(chat_menu_sel, (int)items.size() - 1));
+                for (int i = 0; i < (int)items.size(); ++i) {
+                    if (i == chat_menu_sel) glass_panel(kMenuX + 4 + dx, y0 + i * kMenuRowHeight + 2, kMenuWidth - 8, kMenuRowHeight - 4,
+                        scale_alpha(RGBA8(255, 255, 255, 62), e), scale_alpha(RGBA8(255, 255, 255, 26), e), 7);
+                    if (i) vita2d_draw_rectangle(kMenuX + 8 + dx, y0 + i * kMenuRowHeight, kMenuWidth - 16, 1, scale_alpha(RGBA8(255, 255, 255, 36), e));
+                    draw_text(font, kMenuX + 18 + dx, y0 + i * kMenuRowHeight + 26, fit_text(font, tr(items[i].label), kMenuWidth - 36, 0.62f),
+                              scale_alpha(RGBA8(240, 244, 249, 255), e), 0.62f);
+                }
+            }
+            draw_menu_button(dark, chat_menu_open ? e : 0.f);
+        }
+        {
+            static UploadPicker::Stage previous_stage = UploadPicker::Stage::Closed;
+            if (upload_picker.stage == UploadPicker::Stage::Menu && previous_stage != UploadPicker::Stage::Menu) attach_menu_since = now;
+            previous_stage = upload_picker.stage;
+        }
+        if (upload_picker.active()) {
+            using Stage = UploadPicker::Stage;
+            const char* kind_key[] = {"upload.photo", "upload.video", "upload.file"};
+            if (upload_picker.stage == Stage::Menu) {
+                // Compact glass popup growing out of the attach button (~140 ms ease-out).
+                float t = std::min(1.f, (float)(now - attach_menu_since) / 140000.f);
+                const float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+                const float dy = (1.f - e) * 30.f, dx = -(1.f - e) * 36.f; // grows out of the circle
+                glass_panel(40 + dx, 366 + dy, 230, 120, scale_alpha(RGBA8(52, 58, 68, 232), e), scale_alpha(RGBA8(20, 25, 33, 238), e));
+                vita2d_draw_rectangle(50 + dx, 366 + dy, 210, 1, scale_alpha(RGBA8(255, 255, 255, 90), e));
+                for (int i = 0; i < 3; ++i) {
+                    if (i == upload_picker.selected) glass_panel(44 + dx, 370 + i * 40 + dy, 222, 36, scale_alpha(RGBA8(255, 255, 255, 62), e), scale_alpha(RGBA8(255, 255, 255, 26), e), 7);
+                    if (i) vita2d_draw_rectangle(48 + dx, 366 + i * 40 + dy, 214, 1, scale_alpha(RGBA8(255, 255, 255, 36), e));
+                    draw_text(font, 60 + dx, 396 + i * 40 + dy, tr(kind_key[i]), scale_alpha(RGBA8(240, 244, 249, 255), e), 0.7f);
+                }
+                draw_attach_button(dark, e);
+            } else if (upload_picker.stage == Stage::Browse) {
+                vita2d_draw_rectangle(0, 36, 960, 508, white);
+                const bool preview = upload_picker.kind == UploadPicker::Kind::Photo;
+                const float list_w = preview ? 600.f : 896.f;
+                draw_text(font, 30, 68, fit_text(font, upload_picker.path.empty() ? tr("picker.drives") : upload_picker.path == UploadPicker::LatestView ? tr("upload.latest") : upload_picker.path, 900, 0.64f), ink, 0.64f);
+                draw_text(font, 32, 97, fit_text(font, tr(kind_key[(int)upload_picker.kind]) + "  |  " +
+                    tr(upload_picker.show_hidden ? "upload.hidden_on" : "upload.hidden_off"), 900, 0.48f), muted, 0.48f);
+                rounded_rect(24, 109, preview ? 616 : 912, 356, separator);
+                rounded_rect(26, 111, preview ? 612 : 908, 352, white);
+                const int first = (upload_picker.selected / 8) * 8;
+                for (int row = 0; row < 8 && first + row < (int)upload_picker.entries.size(); ++row) {
+                    const auto& entry = upload_picker.entries[first + row];
+                    if (first + row == upload_picker.selected) rounded_rect(32, 117 + row * 43, list_w, 40, selected);
+                    draw_text(font, 42, 144 + row * 43, fit_text(font, !entry.label.empty() ? entry.label : entry.dir ? entry.name + "/" : entry.name, list_w - (entry.date.empty() ? 30 : 220), 0.65f), ink, 0.65f);
+                    if (!entry.date.empty()) draw_text(font, 32 + list_w - 190, 143 + row * 43, entry.date, muted, 0.45f);
+                    if (!entry.dir) draw_text(font, 32 + list_w - 72, 143 + row * 43, UploadPicker::formatSize(entry.size), muted, 0.45f);
+                }
+                if (preview) {
+                    rounded_rect(646, 109, 290, 356, separator);
+                    rounded_rect(648, 111, 286, 352, white);
+                    if (upload_picker.selected >= 0 && upload_picker.selected < (int)upload_picker.entries.size() &&
+                        !upload_picker.entries[upload_picker.selected].dir) {
+                        const std::string full = upload_picker.fullPath(upload_picker.entries[upload_picker.selected]);
+                        draw_texture_fit(textures.get(full), 652, 117, 278, 340);
+                    }
+                }
+                if (upload_picker.entries.empty() && upload_picker.error.empty())
+                    draw_text(font, 42, 144, fit_text(font, upload_picker.info.empty() ? tr("upload.empty") : upload_picker.info, 520, 0.5f), muted, 0.5f);
+                if (!upload_picker.error.empty()) draw_text(font, 30, 484, upload_picker.error, ink, 0.55f);
+                draw_text(font, 28, 528, tr("upload.browse_footer"), ink, 0.6f);
+            } else {
+                vita2d_draw_rectangle(0, 36, 960, 508, white);
+                const int count = (int)upload_picker.items.size();
+                draw_text(font, 30, 76, tr("upload.review_title", {std::to_string(count), std::to_string(UploadPicker::MaxItems)}), ink, 0.8f);
+                rounded_rect(24, 109, 512, 356, separator);
+                rounded_rect(26, 111, 508, 352, white);
+                const int first = (upload_picker.selected / 8) * 8;
+                const char* add_key[] = {"upload.add_photo", "upload.add_video", "upload.add_file"};
+                for (int row = 0; row < 8 && first + row < upload_picker.reviewRows(); ++row) {
+                    const int index = first + row;
+                    if (index == upload_picker.selected) rounded_rect(32, 117 + row * 43, 496, 40, selected);
+                    std::string label;
+                    if (index < count) label = upload_picker.items[index].name;
+                    else if (index < count + 3) label = tr(add_key[index - count]);
+                    else label = tr("upload.send", {std::to_string(count)});
+                    draw_text(font, 42, 144 + row * 43, fit_text(font, label, index < count ? 400 : 470, 0.65f),
+                              index == count + 3 && count == 0 ? muted : ink, 0.65f);
+                    if (index < count) draw_text(font, 450, 143 + row * 43, UploadPicker::formatSize(upload_picker.items[index].size), muted, 0.45f);
+                }
+                rounded_rect(548, 109, 388, 356, separator);
+                rounded_rect(550, 111, 384, 352, white);
+                const auto* focus = upload_picker.focusedItem();
+                if (focus) {
+                    if (focus->kind == UploadPicker::Kind::Photo) draw_texture_fit(textures.get(focus->path), 556, 117, 372, 340);
+                    else if (focus->kind == UploadPicker::Kind::Video) {
+                        draw_texture_fit(animation.texture(), 556, 117, 372, 310);
+                        draw_text(font, 560, 452, fit_text(font, animation.status(), 360, 0.45f), muted, 0.45f);
+                    } else draw_text(font, 566, 150, fit_text(font, tr("upload.file_info", {focus->name, UploadPicker::formatSize(focus->size)}), 350, 0.55f), muted, 0.55f);
+                }
+                draw_text(font, 28, 528, tr(focus && focus->kind == UploadPicker::Kind::Video ? "upload.review_footer_video" : "upload.review_footer"), ink, 0.55f);
+            }
         }
         if (kb.active()) kb.draw(font);
         if (unsupported_video_prompt) {

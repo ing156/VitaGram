@@ -66,6 +66,8 @@ struct MessageItem {
     std::string media_label;
     bool pin_message = false;
     bool service_message = false;
+    bool member_removed = false;
+    int64_t removed_member_id = 0;
     int64_t pinned_message_id = 0;
     int32_t media_file_id = 0;
     std::string media_path;
@@ -182,6 +184,7 @@ public:
     bool currentChatIsGroup() const;
     std::string senderAvatar(const MessageItem& message) const;
     std::string senderName(const MessageItem& message) const;
+    std::string serviceMessageText(const MessageItem& message) const;
 
     void refreshChats();
     const std::vector<ChatFolderItem>& folders() const { return folders_; }
@@ -212,6 +215,9 @@ public:
     const std::string& videoNoteStatus() const { return video_note_status_; }
     int32_t currentTopicId() const { return current_topic_; }
     bool sendAudioFile(const std::string& path, int duration, int64_t chat, int32_t topic);
+    // kind: 0 photo, 1 video, 2 file. original=true sends a document without recompression.
+    bool sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic);
+    bool sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic);
     void openStickers();
     void loadStickerPacks();
     void selectStickerPack(int index);

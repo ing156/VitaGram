@@ -91,10 +91,27 @@ struct Reader {
     }
 };
 }
+// Unsolicited updates this client never reads. Several are large (up to 30 KB) and cost
+// 50-400 ms each to parse on the Vita at every start, so their bodies are skipped.
+inline const char* unused_td_update_type(std::string_view name) {
+    for (const char* known:{"updateStickerSet","updateAvailableMessageEffects","updateEmojiChatThemes",
+                            "updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors",
+                            "updateAccentColors"})
+        if (name==known) return known;
+    return nullptr;
+}
 inline json_t* compact_raw_unused_td_update(const std::string& text) {
     // TDLib emits @type near the beginning. A missed candidate only loses the
     // optimization; it still takes the full parser path.
-    if (text.compare(0,1,"{") || std::string_view(text.data(),text.size()<128 ? text.size() : 128).find("updateStickerSet")==std::string_view::npos) return nullptr;
+    if (text.compare(0,1,"{")) return nullptr;
+    const std::string_view head(text.data(),text.size()<128 ? text.size() : 128);
+    bool candidate=false;
+    for (const char* known:{"updateStickerSet","updateAvailableMessageEffects","updateEmojiChatThemes",
+                            "updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors",
+                            "updateAccentColors"})
+        if (head.find(known)!=std::string_view::npos) { candidate=true;break; }
+    if (!candidate) return nullptr;
+    const char* matched_type=nullptr;
     td_unused_detail::Reader r{text.data(),text.data()+text.size()};
     ++r.p;r.ws();bool seen=false, matches=false;
     for (;;) {
@@ -108,7 +125,7 @@ inline json_t* compact_raw_unused_td_update(const std::string& text) {
         if (!r.value()) return nullptr;
         if (is_type) {
             seen=true;auto* type=json_loadb(begin,r.p-begin,JSON_DECODE_ANY,nullptr);
-            const char* value=json_string_value(type);matches=value && !std::strcmp(value,"updateStickerSet");json_decref(type);
+            const char* value=json_string_value(type);matched_type=value ? unused_td_update_type(value) : nullptr;matches=matched_type!=nullptr;json_decref(type);
             if (!matches) return nullptr;
         }
         r.ws();if (r.p==r.end) return nullptr;
@@ -117,5 +134,5 @@ inline json_t* compact_raw_unused_td_update(const std::string& text) {
         r.ws();
     }
     r.ws();if (r.p!=r.end || !seen || !matches) return nullptr;
-    return json_pack("{s:s}","@type","updateStickerSet");
+    return json_pack("{s:s}","@type",matched_type);
 }

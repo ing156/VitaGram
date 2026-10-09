@@ -741,6 +741,28 @@ int main() {
     assert(joined_item.service_message && !joined_item.pin_message && !joined_item.pinned_message_id);
     assert(joined_item.text.find("Вступление по ссылке: ")==0 && joined_item.text.find(tg.senderName(joined_item))!=std::string::npos);
     {
+        TelegramClient members;
+        members.user_names_[5]="Admin"; members.user_names_[1234567890123LL]="Member";
+        auto* removed=parse(R"({"sender_id":{"@type":"messageSenderUser","user_id":5},"content":{"@type":"messageChatDeleteMember","user_id":1234567890123}})");
+        auto removed_item=members.parseMessage(removed); json_decref(removed);
+        assert(removed_item.service_message && removed_item.member_removed && removed_item.removed_member_id==1234567890123LL);
+        assert(removed_item.text=="Admin удалил(а) Member из чата");
+        removed_item.sender_id=removed_item.removed_member_id;
+        assert(members.serviceMessageText(removed_item)=="Member покинул(а) чат");
+        removed_item.sender_id=5;
+        members.user_names_.erase(removed_item.removed_member_id);
+        members.current_chat_id_=42; members.ready_=true; members.worker_started_=true;
+        members.messages_={removed_item}; members.ensureMessageMedia(0);
+        assert(members.outgoing_.size()==1);
+        auto* lookup=parse(members.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(lookup,"@type")=="getUser" && MediaUploads::number(lookup,"user_id")==1234567890123LL);
+        json_decref(lookup);
+        members.ensureMessageMedia(0); assert(members.outgoing_.size()==1);
+        members.user_names_[1234567890123LL]="Updated";
+        assert(members.serviceMessageText(removed_item)=="Admin удалил(а) Updated из чата");
+        members.worker_started_=false;
+    }
+    {
         TelegramClient pins;
         pins.current_chat_id_=42; pins.ready_=true; pins.worker_started_=true;
         pins.process(parse(R"({"@type":"updateNewMessage","message":{"id":501,"chat_id":42,"content":{"@type":"messageText","text":{"text":"Pinned text"}}}})"));

@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "36.03")
-set(VITAGRAM_VERSION "0.36.3")
+set(VITA_VERSION  "36.19")
+set(VITAGRAM_VERSION "0.36.19")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 
@@ -110,6 +110,7 @@ add_executable(${PROJECT_NAME}
   src/main.cpp
   src/i18n.cpp
   src/download_folder_picker.cpp
+  src/upload_picker.cpp
   src/utf8_decode.cpp
   src/cpu_scheduler.cpp
   src/td_diagnostics.cpp
@@ -130,6 +131,7 @@ add_executable(${PROJECT_NAME}
   src/vault.cpp
   src/vault_sweep.cpp
   src/vault_avio.cpp
+  src/vault_readahead.cpp
   src/vault_ui.cpp
   src/qr_scanner.cpp
   src/qr_encode.cpp
@@ -144,6 +146,7 @@ add_executable(${PROJECT_NAME}
 # Decryption runs while video plays: keep the ChaCha20/Poly1305 loops fully optimized.
 set_source_files_properties(src/vault_crypto.cpp PROPERTIES COMPILE_OPTIONS "-O3")
 set_source_files_properties(src/download_folder_picker.cpp PROPERTIES COMPILE_OPTIONS "-Os")
+set_source_files_properties(src/upload_picker.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/portrait_video.cpp src/video_note_encoder.cpp src/qr_scanner.cpp src/update_core.cpp src/https_client.cpp src/updater.cpp
   PROPERTIES COMPILE_OPTIONS "-Os")

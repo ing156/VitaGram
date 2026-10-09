@@ -61,7 +61,9 @@ void start_probe() { // Called on UI only; never overlap probe threads.
         else probe_info_error = deleted;
     }
 }
-bool background(Role role) { return role == Role::Network || role == Role::Parser || role == Role::Storage; }
+// Prefetch (read-ahead and decryption for playback) is placed like the other background work:
+// on the least loaded core that audio and the video decoder do not own.
+bool background(Role role) { return role == Role::Network || role == Role::Parser || role == Role::Storage || role == Role::Prefetch; }
 void move(Entry& thread, int core, int64_t now) {
     if (thread.core == core) return;
     int rc = sceKernelChangeThreadCpuAffinityMask(thread.id, masks[core]);
@@ -109,8 +111,9 @@ void init() {
 }
 Thread::Thread(Role role) : id_(sceKernelGetThreadId()) {
     pthread_mutex_lock(&mutex);
+    // Prefetch runs just behind the decoder it feeds, ahead of the other background work.
     int offset = role == Role::Audio ? -8 : role == Role::Ui ? 0 : role == Role::Video ? 12 :
-        role == Role::Storage ? 28 : 24;
+        role == Role::Prefetch ? 16 : role == Role::Storage ? 28 : 24;
     check("priority", sceKernelChangeThreadPriority(id_, std::max(32, base_priority + offset)));
     for (auto& thread : threads) if (thread.id < 0) {
         thread = Entry{id_, role, -1, 0};
@@ -189,7 +192,7 @@ bool videoActive() {
 }
 std::string threadStatus() {
     pthread_mutex_lock(&mutex);
-    int ui = 0, audio = 0, video = 0, network = 0, parser = 0, storage = 0;
+    int ui = 0, audio = 0, video = 0, network = 0, parser = 0, storage = 0, prefetch = 0;
     for (const auto& thread : threads) {
         if (thread.id < 0) continue;
         switch (thread.role) {
@@ -199,11 +202,13 @@ std::string threadStatus() {
             case Role::Network: ++network; break;
             case Role::Parser: ++parser; break;
             case Role::Storage: ++storage; break;
+            case Role::Prefetch: ++prefetch; break;
         }
     }
     pthread_mutex_unlock(&mutex);
     return "Threads UI:" + std::to_string(ui) + " Net:" + std::to_string(network) +
         " Parser:" + std::to_string(parser) + " Audio:" + std::to_string(audio) +
-        " Video:" + std::to_string(video) + " Disk:" + std::to_string(storage);
+        " Video:" + std::to_string(video) + " Disk:" + std::to_string(storage) +
+        " Pre:" + std::to_string(prefetch);
 }
 }

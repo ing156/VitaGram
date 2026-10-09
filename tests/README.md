@@ -149,3 +149,7 @@ Sticker-pack icon tests exercise production selection of PNG/JPEG/WebP thumbnail
 Изображения (0.33.9): `bash tests/run-image-tests.sh`. Нужны host C++17, pthread и development-пакеты libpng/libjpeg/libwebp с pkg-config. Проверяются реальные RGBA-пиксели, встроенное уменьшение большого JPEG, уменьшение PNG, повреждённые и слишком большие файлы, смена видимых запросов, очистка с повторным путём, пауза и остановка фонового декодера. GPU-загрузку и время кадра проверять на Vita.
 
 Текст (0.33.12): `bash tests/run-text-layout-tests.sh`. Проверяются ключи кеша ширины, сброс, вытеснение LRU, пределы числа записей/байтов, обрезка по границам UTF-8 и логарифмическое число измерений длинной строки. `run-font-tests.sh` проверяет реальное покрытие и растеризацию fallback-шрифтов; холодные задержки и GPU-рисование проверять на Vita.
+
+`bash tests/run-chat-scroll-tests.sh` checks pixel dragging in both chat-list layouts,
+partial-row hit testing, viewport edges, button selection visibility, page append,
+list shrink and folder reset. Touch sampling and rendering require a PS Vita check.

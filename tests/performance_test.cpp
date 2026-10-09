@@ -166,6 +166,14 @@ int main(int argc, char** argv) {
     assert(compact && json_object_size(compact)==1);json_decref(compact);
     for (const char* raw:{R"({"@type":"updateStickerSet","@extra":null})",R"({"@type":"updateStickerSet","@type":"message"})",R"({"@type":"updateStickerSet","value":[1,]})",R"({"@type":"updateStickerSet","value":"\uD800"})",R"({"@type":"messages","value":"updateStickerSet"})",R"({"@type":"updateStickerSet"} garbage)"})
         assert(!compact_raw_unused_td_update(raw));
+    for (const char* type:{"updateAvailableMessageEffects","updateEmojiChatThemes","updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors","updateAccentColors"}) {
+        std::string raw=std::string("{\"@type\":\"")+type+"\",\"themes\":[{\"name\":\"x\\u00e9\",\"n\":[1,2.5e3,null]}]}";
+        auto* stub=compact_raw_unused_td_update(raw);
+        assert(stub && std::string(json_string_value(json_object_get(stub,"@type")))==type && json_object_size(stub)==1);
+        json_decref(stub);
+        assert(!compact_raw_unused_td_update(std::string("{\"@type\":\"")+type+"\",\"@extra\":\"x\"}"));
+    }
+    assert(!compact_raw_unused_td_update(R"({"@type":"updateUser","user":{"id":1,"note":"updateEmojiChatThemes"}})"));
     compact=compact_raw_unused_td_update(R"({"@type":"updateStickerSet","value":[null,true,false,-1.5e+2,"\uD83D\uDE00"]})");
     assert(compact);json_decref(compact);
 
