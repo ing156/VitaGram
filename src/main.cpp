@@ -527,7 +527,7 @@ static void draw_post_date(vita2d_pgf* font, const MessageItem& message, int scr
     draw_text(font, 494-width/2, 73-scroll, label, color, 0.5f);
 }
 static int post_scroll_max(const MessageItem& message, size_t lines) {
-    return std::max(0, post_text_top(message) + (int)lines*24 - 481);
+    return std::max(0, post_text_top(message) + (int)lines*24 - 544);
 }
 
 static std::string open_web_link(const std::string& url) {
@@ -958,10 +958,10 @@ int main() {
         }
 
         const bool folder_tabs = !tg.folders().empty();
-        const int chat_rows = folder_tabs ? 8 : 9;
-        const int chat_top = folder_tabs ? 90 : 48;
-        const int chat_row_height = (481-chat_top)/chat_rows;
-        chat_scroll.configure((int)tg.chats().size(), chat_row_height, 481-chat_top);
+        const int chat_rows = folder_tabs ? 9 : 10;
+        const int chat_top = folder_tabs ? 108 : 66;   // below the 18 px status strip (and the tabs)
+        const int chat_row_height = (544-chat_top)/chat_rows;
+        chat_scroll.configure((int)tg.chats().size(), chat_row_height, 544-chat_top);
         const int folder_max_scroll = std::max(0, (int)tg.folders().size() * 180 - 920);
         folder_scroll = std::max(0, std::min(folder_scroll, folder_max_scroll));
         photo_view.updateMotion(photo_open, sceKernelGetProcessTimeWide(), touch.reportNum != 0);
@@ -975,11 +975,11 @@ int main() {
                 touch_start_x = touch_x; touch_start_y = touch_step_y = touch_y;
                 touch_dragged = false;
                 touch_blocked = kb.active() || (!circle_recorder.active() && !settings_open && tg.canBrowse() && tg.inputKind() != InputKind::None);
-                folder_drag = !circle_recorder.active() && !stickers_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 38 && touch_start_y < 82;
+                folder_drag = !circle_recorder.active() && !stickers_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 56 && touch_start_y < 100;
                 folder_touch_x = touch_x;
                 chat_drag = !circle_recorder.active() && !stickers_open && !settings_open &&
                     !reactions_open && !upload_picker.active() && !tg.currentChatId() && tg.canBrowse() &&
-                    !touch_blocked && touch_start_y >= chat_top && touch_start_y < 481;
+                    !touch_blocked && touch_start_y >= chat_top && touch_start_y < 544;
                 chat_touch_y = touch_y;
             }
             if (std::abs(touch_y - touch_start_y) > 14 || std::abs(touch_x - touch_start_x) > 14) touch_dragged = true;
@@ -997,7 +997,7 @@ int main() {
             }
             // Include the initial movement once the tap threshold is crossed.
             if (chat_drag && touch_dragged) chat_touch_y = touch_y;
-            if (!chat_drag && !folder_drag && !touch_blocked && touch_start_y >= 38 && touch_start_y < 499 && !photo_open && !video_fullscreen &&
+            if (!chat_drag && !folder_drag && !touch_blocked && touch_start_y >= 38 && touch_start_y < 544 && !photo_open && !video_fullscreen &&
                 std::abs(touch_y - touch_start_y) >= std::abs(touch_x - touch_start_x) &&
                 std::abs(touch_y - touch_step_y) >= 32) {
                 pressed |= touch_y < touch_step_y ? SCE_CTRL_DOWN : SCE_CTRL_UP;
@@ -1143,10 +1143,10 @@ int main() {
                 if ((touch_x >= 30 && touch_x < 470 && touch_y >= 280 && touch_y < 340 && tg.qrLink().empty()) ||
                     (touch_y >= 500 && touch_x >= 480)) pressed |= SCE_CTRL_START;
                 else if (touch_y >= 500 && touch_x < 480) pressed |= SCE_CTRL_CROSS;
-            } else if (!tg.currentChatId() && tg.canBrowse() && folder_tabs && touch_y >= 38 && touch_y < 82 && touch_x >= 20 && touch_x < 940) {
+            } else if (!tg.currentChatId() && tg.canBrowse() && folder_tabs && touch_y >= 56 && touch_y < 100 && touch_x >= 20 && touch_x < 940) {
                 int index = (touch_x - 20 + folder_scroll) / 180;
                 if (index < (int)tg.folders().size()) { tg.selectFolder(tg.folders()[index].id); chat_index = 0; chat_scroll.reset(); }
-            } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= 481 && touch_y < 500) {
+            } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= 36 && touch_y < 54) {
                 tg.loadMoreChats();
             } else if (tg.currentChatId() && tg.ready() && !post_open && !photo_open && !tg.topicsOpen() &&
                        std::hypot((float)touch_x, (float)touch_y - 544.0f) < 66.0f) {
@@ -1161,7 +1161,7 @@ int main() {
             } else if (post_open && !photo_open && message_index >= 0 && message_index < (int)tg.messages().size()) {
                 const auto& post = tg.messages()[message_index];
                 if (scrollable_post(post)) {
-                    if (touch_y >= 40 && touch_y < 481) {
+                    if (touch_y >= 40 && touch_y < 544) {
                         if (post.video && touch_x >= 30 && touch_x < 930 &&
                             touch_y >= post_media_top-post_text_scroll &&
                             touch_y < post_media_top+post_media_height-post_text_scroll) {
@@ -1191,7 +1191,7 @@ int main() {
                 int text_y = (tg.messages()[message_index].sticker || tg.messages()[message_index].animation || tg.messages()[message_index].voice) ? 330 : (count == 0 ? 110 : (count > 2 ? 470 : 330));
                 if ((tg.messages()[message_index].voice || tg.messages()[message_index].video) && touch_x >= 30 && touch_x < 930 && touch_y >= post_media_top-post_text_scroll && touch_y < post_media_top+post_media_height-post_text_scroll)
                     pressed |= SCE_CTRL_CROSS;
-                if (touch_x >= 38 && touch_x < 930 && touch_y >= text_y - 19 && touch_y < 481) {
+                if (touch_x >= 38 && touch_x < 930 && touch_y >= text_y - 19 && touch_y < 544) {
                     auto lines = post_lines(font, tg.messages()[message_index]);
                     int line = post_text_scroll + (touch_y - (text_y - 19)) / 24;
                     if (line >= 0 && line < (int)lines.size() && !lines[line].url.empty())
@@ -1202,7 +1202,7 @@ int main() {
                     photo_index = index; pressed |= SCE_CTRL_CROSS;
                 }
                 }
-            } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= chat_top && touch_y < 481) {
+            } else if (!tg.currentChatId() && tg.canBrowse() && touch_y >= chat_top && touch_y < 544) {
                 int index = chat_scroll.hit(touch_y - chat_top);
                 if (index >= 0 && index < (int)tg.chats().size()) { chat_index = index; pressed |= SCE_CTRL_CROSS; }
             }
@@ -1848,10 +1848,6 @@ int main() {
         draw_text(font, 940-rich_text_width(font, 0.52f, network.c_str()), 25, network, header_text, 0.52f);
         std::string update_notice = tg.updateNotice();
 
-        if (settings_open || !(tg.currentChatId() || tg.topicsOpen() || tg.canBrowse()) || qr_scanner.active() || circle_recorder.active()) {
-            vita2d_draw_rectangle(0, 500, 960, 44, white);
-            vita2d_draw_rectangle(0, 499, 960, 1, separator);
-        }
 
         if (qr_scanner.active()) {
             if (qr_scanner.preview()) draw_texture_fit(qr_scanner.preview(), 240, 60, 480, 360);
@@ -1961,7 +1957,7 @@ int main() {
             } else if (photo_open && message_index >= 0 && message_index < (int)msgs.size() &&
                 photo_index < (int)msgs[message_index].photos.size()) {
                 const PhotoItem& photo = msgs[message_index].photos[photo_index];
-                vita2d_draw_rectangle(0, 38, 960, 468, dark ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                vita2d_draw_rectangle(0, 36, 960, 508, dark ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
                 vita2d_texture* image = textures.get(photo.full_path.empty() ? photo.thumbnail_path : photo.full_path);
                 if (image) photo_view.draw(image);
                 else draw_text(font, 390, 290, tr("photo.loading_full"), ink, 0.75f);
@@ -2004,7 +2000,7 @@ int main() {
                 auto lines = post_lines(font, message);
                 post_text_scroll = std::max(0, std::min(post_text_scroll, post_scroll_max(message, lines.size())));
                 vita2d_enable_clipping();
-                vita2d_set_clip_rectangle(0, 56, 960, 481);
+                vita2d_set_clip_rectangle(0, 56, 960, 544);
                 draw_post_date(font, message, post_text_scroll, selected, muted);
                 int photo_y = post_photo_top-post_text_scroll;
                 if (photo_y+170 > 38) {
@@ -2035,7 +2031,7 @@ int main() {
                 if (message.animation || message.sticker) {
                     if (!decode_cooldown) tg.ensureMessageMedia((size_t)message_index);
                     int media_y = post_media_top-post_text_scroll;
-                    if (media_y+post_media_height > 38 && media_y < 481) {
+                    if (media_y+post_media_height > 38 && media_y < 544) {
                         vita2d_texture* picture = message.animation ? animation.texture() : nullptr;
                         if (!picture && !message.video_note) picture = textures.get(message.media_path);
                         if (picture) {
@@ -2070,14 +2066,14 @@ int main() {
                 for (int line=0; line<(int)lines.size(); ++line) {
                     int baseline = text_y+line*24;
                     if (baseline < 38) continue;
-                    if (baseline-22 >= 481) break;
+                    if (baseline-22 >= 544) break;
                     draw_post_line(font, 38, baseline, lines[line], ink, accent, tg, textures, decode_cooldown);
                 }
                 vita2d_disable_clipping();
                 int maximum = post_scroll_max(message, lines.size());
                 if (maximum > 0) {
-                    float thumb = std::max(28.0f, 443.0f*443/(443+maximum));
-                    vita2d_draw_rectangle(953, 38+(443-thumb)*post_text_scroll/maximum, 3, thumb, accent);
+                    float thumb = std::max(28.0f, 488.0f*488/(488+maximum));
+                    vita2d_draw_rectangle(953, 56+(488-thumb)*post_text_scroll/maximum, 3, thumb, accent);
                 }
             } else if (post_open && message_index >= 0 && message_index < (int)msgs.size()) {
                 const MessageItem& message = msgs[message_index];
@@ -2225,24 +2221,24 @@ int main() {
                 }
                 folder_scroll = std::max(0, std::min(folder_scroll, folder_max_scroll));
                 vita2d_enable_clipping();
-                vita2d_set_clip_rectangle(20, 38, 940, 82);
+                vita2d_set_clip_rectangle(20, 56, 940, 100);
                 for (int i = 0; i < (int)tg.folders().size(); ++i) {
                     int x = 20 + i * 180 - folder_scroll;
                     if (x + 176 <= 20 || x >= 940) continue;
-                    vita2d_draw_rectangle(x, 40, 176, 39, i == active ? selected : white);
-                    draw_text(font, x+10, 65, fit_text(font, tg.folders()[i].title, 156, 0.65f), i == active ? accent : ink, 0.65f);
-                    if (i == active) vita2d_draw_rectangle(x, 77, 176, 3, accent);
+                    vita2d_draw_rectangle(x, 58, 176, 39, i == active ? selected : white);
+                    draw_text(font, x+10, 83, fit_text(font, tg.folders()[i].title, 156, 0.65f), i == active ? accent : ink, 0.65f);
+                    if (i == active) vita2d_draw_rectangle(x, 95, 176, 3, accent);
                 }
                 vita2d_disable_clipping();
-                if (folder_scroll > 0) draw_text(font, 2, 66, "<", accent, 0.6f);
-                if (folder_scroll < folder_max_scroll) draw_text(font, 944, 66, ">", accent, 0.6f);
+                if (folder_scroll > 0) draw_text(font, 2, 84, "<", accent, 0.6f);
+                if (folder_scroll < folder_max_scroll) draw_text(font, 944, 84, ">", accent, 0.6f);
             } else { shown_folder_id = -1; shown_folder_index = -1; }
-            chat_scroll.configure((int)chats.size(), chat_row_height, 481-chat_top);
+            chat_scroll.configure((int)chats.size(), chat_row_height, 544-chat_top);
             const int base = chat_scroll.first(), end = chat_scroll.end();
             int y = chat_top + 24 + base * chat_row_height - chat_scroll.offset();
             if (!decode_cooldown) for (int i = base; i < end; ++i) tg.ensureChatMedia((size_t)i);
             vita2d_enable_clipping();
-            vita2d_set_clip_rectangle(20, chat_top, 940, 481);
+            vita2d_set_clip_rectangle(20, chat_top, 940, 544);
             for (int i = base; i < end; ++i) {
                 vita2d_draw_rectangle(20, y - 24, 920, chat_row_height, i == chat_index ? selected : white);
                 vita2d_draw_rectangle(88, y - 25 + chat_row_height, 852, 1, separator);
@@ -2255,16 +2251,16 @@ int main() {
             vita2d_disable_clipping();
             if (chats.empty()) draw_text(font, 38, chat_top+51, tg.chatsLoading() ? tr("chats.loading_first") :
                 (tg.chatsEnd() ? tr("chats.none") : tr("chats.load_failed")), muted, 0.75f);
-            vita2d_draw_rectangle(0, 481, 960, 18, selected);
+            vita2d_draw_rectangle(0, 36, 960, 18, selected);
             const std::string progress = tr("chats.status", {tg.chatsLoading() ? tr("chats.state_loading") : tr("chats.state_ready"),
                 std::to_string(chats.size()), tg.chatsEnd() ? tr("chats.all_loaded") : tr("chats.tap_more")});
             const Updater::Snapshot update_state = updater.snapshot();
             const std::string update_hint = update_state.state == Updater::State::Available ? tr("update.hint", {update_state.version}) + "   " : "";
-            draw_text(font, 28, 494, !update_notice.empty() ? fit_text(font, update_notice, 900, 0.48f) :
+            draw_text(font, 28, 49, !update_notice.empty() ? fit_text(font, update_notice, 900, 0.48f) :
                 fit_text(font, update_hint + (tg.chatsError().empty() ? progress : tr("chats.retry", {tg.chatsError()})), 900, 0.48f), ink, 0.48f);
             if (tg.chatsLoading()) {
                 float position = (float)((now / 2000) % 840);
-                vita2d_draw_rectangle(position, 497, 120, 2, accent);
+                vita2d_draw_rectangle(position, 52, 120, 2, accent);
             }
         } else if (!tg.qrLink().empty()) {
             static std::string qr_text;
@@ -2340,8 +2336,8 @@ int main() {
             }
         }
         if (!settings_open && !tg.currentChatId() && !tg.uploadStatus().empty()) {
-            vita2d_draw_rectangle(0, 481, 960, 18, selected);
-            draw_text(font, 28, 494, fit_text(font, tg.uploadStatus(), 900, 0.48f), ink, 0.48f);
+            vita2d_draw_rectangle(0, 36, 960, 18, selected);
+            draw_text(font, 28, 49, fit_text(font, tg.uploadStatus(), 900, 0.48f), ink, 0.48f);
         }
         if (!settings_open && !tg.ready() && tg.canBrowse() && !kb.active()) {
             vita2d_draw_rectangle(0, 78, 960, 26, RGBA8(20,35,50,240));
@@ -2420,15 +2416,15 @@ int main() {
             draw_text(font, 28, 34, tr("vnr.title"), ink, 0.85f);
             draw_text(font, 590, 34, circle_recorder.rearCamera() ? tr("vnr.rear_camera") : tr("vnr.front_camera"), muted, 0.6f);
             auto* preview = circle_playback && circle_playback->texture() ? circle_playback->texture() : circle_recorder.preview();
-            if (preview) draw_texture_fit(preview, 320, 66, 320, 320);
+            if (preview) draw_texture_fit(preview, 290, 56, 380, 380);
             std::string timer = tr("vnr.timer", {std::to_string(circle_recorder.seconds())});
             if (state == RecordingState::Encoding) timer = tr("vnr.encoding_percent", {std::to_string(circle_recorder.percent())});
-            draw_text(font, 350, 416, timer, state == RecordingState::Recording ? RGBA8(210,45,45,255) : ink, 0.7f);
+            draw_text(font, 350, 470, timer, state == RecordingState::Recording ? RGBA8(210,45,45,255) : ink, 0.7f);
             if (state == RecordingState::Recording) {
-                vita2d_draw_rectangle(320, 432, 320, 6, separator);
-                vita2d_draw_rectangle(320, 432, 3.2f * circle_recorder.level(), 6, accent);
+                vita2d_draw_rectangle(320, 490, 320, 6, separator);
+                vita2d_draw_rectangle(320, 490, 3.2f * circle_recorder.level(), 6, accent);
             }
-            draw_text(font, 28, 464, fit_text(font, circle_error.empty() ? circle_recorder.status() : circle_error, 900, 0.55f), ink, 0.55f);
+            draw_text(font, 28, 528, fit_text(font, circle_error.empty() ? circle_recorder.status() : circle_error, 700, 0.55f), ink, 0.55f);
         }
         if (chat_ui_visible()) {
             float t = chat_menu_open ? std::min(1.f, (float)(now - chat_menu_since) / 140000.f) : 0.f;

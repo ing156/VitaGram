@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "36.19")
-set(VITAGRAM_VERSION "0.36.19")
+set(VITA_VERSION  "36.21")
+set(VITAGRAM_VERSION "0.36.21")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 

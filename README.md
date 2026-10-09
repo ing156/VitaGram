@@ -5,7 +5,7 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.36.19**. VPK package version: **36.19**. This project is under development.
+Source version: **0.36.21**. VPK package version: **36.21**. This project is under development.
 
 **0.36 is the first public release.**
 
@@ -307,7 +307,7 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.36.19**, версия пакета VPK: **36.19**. Проект находится в разработке.
+Версия исходников: **0.36.21**, версия пакета VPK: **36.21**. Проект находится в разработке.
 
 **0.36 — первый публичный релиз.**
 

@@ -1,0 +1,1446 @@
+{
+  "package": "VitaGram UI Assets",
+  "version": "1.2.0",
+  "screen": [
+    960,
+    544
+  ],
+  "format": "PNG RGBA8",
+  "themes": {
+    "dark": {
+      "background": "#071A34",
+      "header_top": "#0757B4",
+      "header_bottom": "#073D83",
+      "surface": "#112B4B",
+      "surface_secondary": "#173759",
+      "hover": "#1A4776",
+      "menu": "#081C36",
+      "selected": "#105CB4",
+      "accent": "#149AFF",
+      "focus": "#36BAFF",
+      "text": "#F2F7FF",
+      "muted": "#B1C8E5",
+      "divider": "#294768",
+      "border": "#30567B",
+      "shadow": "#000B1C",
+      "date": "#0E3C72",
+      "progress": "#24496E",
+      "green": "#23DB80"
+    },
+    "light": {
+      "background": "#EDF5FD",
+      "header_top": "#168EF1",
+      "header_bottom": "#0871D3",
+      "surface": "#FFFFFF",
+      "surface_secondary": "#E3F0FC",
+      "hover": "#DCEEFF",
+      "menu": "#F5FAFF",
+      "selected": "#C9E7FF",
+      "accent": "#087EEA",
+      "focus": "#088CFA",
+      "text": "#102A50",
+      "muted": "#57779E",
+      "divider": "#CADCEC",
+      "border": "#C1DAF1",
+      "shadow": "#597FA5",
+      "date": "#D6EBFC",
+      "progress": "#C1D4E8",
+      "green": "#12BB72"
+    }
+  },
+  "nine_slice": {
+    "themes/dark/9slice/panel.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 10,
+      "theme": "dark",
+      "name": "panel",
+      "transparent": true
+    },
+    "themes/dark/9slice/row.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "row",
+      "transparent": true
+    },
+    "themes/dark/9slice/row_focused.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "row_focused",
+      "transparent": true
+    },
+    "themes/dark/9slice/tab_normal.png": {
+      "size": [
+        48,
+        40
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "tab_normal",
+      "transparent": true
+    },
+    "themes/dark/9slice/tab_active.png": {
+      "size": [
+        48,
+        40
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "tab_active",
+      "transparent": true
+    },
+    "themes/dark/9slice/menu.png": {
+      "size": [
+        64,
+        64
+      ],
+      "insets": [
+        20,
+        20,
+        20,
+        20
+      ],
+      "radius": 12,
+      "theme": "dark",
+      "name": "menu",
+      "transparent": true
+    },
+    "themes/dark/9slice/menu_item_focus.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 7,
+      "theme": "dark",
+      "name": "menu_item_focus",
+      "transparent": true
+    },
+    "themes/dark/9slice/date_chip.png": {
+      "size": [
+        44,
+        28
+      ],
+      "insets": [
+        14,
+        10,
+        14,
+        10
+      ],
+      "radius": 12,
+      "theme": "dark",
+      "name": "date_chip",
+      "transparent": true
+    },
+    "themes/dark/9slice/file_tile.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "file_tile",
+      "transparent": true
+    },
+    "themes/dark/9slice/tooltip.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "tooltip",
+      "transparent": true
+    },
+    "themes/dark/9slice/toast.png": {
+      "size": [
+        56,
+        56
+      ],
+      "insets": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "radius": 10,
+      "theme": "dark",
+      "name": "toast",
+      "transparent": true
+    },
+    "themes/dark/9slice/media_frame.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 9,
+      "theme": "dark",
+      "name": "media_frame",
+      "transparent": true
+    },
+    "themes/dark/9slice/focus_ring.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "focus_ring",
+      "transparent": true
+    },
+    "themes/dark/9slice/badge.png": {
+      "size": [
+        40,
+        28
+      ],
+      "insets": [
+        12,
+        10,
+        12,
+        10
+      ],
+      "radius": 11,
+      "theme": "dark",
+      "name": "badge",
+      "transparent": true
+    },
+    "themes/dark/9slice/dialog.png": {
+      "size": [
+        64,
+        64
+      ],
+      "insets": [
+        20,
+        20,
+        20,
+        20
+      ],
+      "radius": 12,
+      "theme": "dark",
+      "name": "dialog",
+      "transparent": true
+    },
+    "themes/dark/9slice/input.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "dark",
+      "name": "input",
+      "transparent": true
+    },
+    "themes/dark/9slice/progress_track.png": {
+      "size": [
+        28,
+        14
+      ],
+      "insets": [
+        8,
+        5,
+        8,
+        5
+      ],
+      "radius": 5,
+      "theme": "dark",
+      "name": "progress_track",
+      "transparent": true
+    },
+    "themes/dark/9slice/progress_fill.png": {
+      "size": [
+        28,
+        14
+      ],
+      "insets": [
+        8,
+        5,
+        8,
+        5
+      ],
+      "radius": 5,
+      "theme": "dark",
+      "name": "progress_fill",
+      "transparent": true
+    },
+    "themes/dark/9slice/scroll_thumb.png": {
+      "size": [
+        16,
+        28
+      ],
+      "insets": [
+        5,
+        8,
+        5,
+        8
+      ],
+      "radius": 5,
+      "theme": "dark",
+      "name": "scroll_thumb",
+      "transparent": true
+    },
+    "themes/light/9slice/panel.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 10,
+      "theme": "light",
+      "name": "panel",
+      "transparent": true
+    },
+    "themes/light/9slice/row.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "row",
+      "transparent": true
+    },
+    "themes/light/9slice/row_focused.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "row_focused",
+      "transparent": true
+    },
+    "themes/light/9slice/tab_normal.png": {
+      "size": [
+        48,
+        40
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "tab_normal",
+      "transparent": true
+    },
+    "themes/light/9slice/tab_active.png": {
+      "size": [
+        48,
+        40
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "tab_active",
+      "transparent": true
+    },
+    "themes/light/9slice/menu.png": {
+      "size": [
+        64,
+        64
+      ],
+      "insets": [
+        20,
+        20,
+        20,
+        20
+      ],
+      "radius": 12,
+      "theme": "light",
+      "name": "menu",
+      "transparent": true
+    },
+    "themes/light/9slice/menu_item_focus.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 7,
+      "theme": "light",
+      "name": "menu_item_focus",
+      "transparent": true
+    },
+    "themes/light/9slice/date_chip.png": {
+      "size": [
+        44,
+        28
+      ],
+      "insets": [
+        14,
+        10,
+        14,
+        10
+      ],
+      "radius": 12,
+      "theme": "light",
+      "name": "date_chip",
+      "transparent": true
+    },
+    "themes/light/9slice/file_tile.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "file_tile",
+      "transparent": true
+    },
+    "themes/light/9slice/tooltip.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "tooltip",
+      "transparent": true
+    },
+    "themes/light/9slice/toast.png": {
+      "size": [
+        56,
+        56
+      ],
+      "insets": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "radius": 10,
+      "theme": "light",
+      "name": "toast",
+      "transparent": true
+    },
+    "themes/light/9slice/media_frame.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 9,
+      "theme": "light",
+      "name": "media_frame",
+      "transparent": true
+    },
+    "themes/light/9slice/focus_ring.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "focus_ring",
+      "transparent": true
+    },
+    "themes/light/9slice/badge.png": {
+      "size": [
+        40,
+        28
+      ],
+      "insets": [
+        12,
+        10,
+        12,
+        10
+      ],
+      "radius": 11,
+      "theme": "light",
+      "name": "badge",
+      "transparent": true
+    },
+    "themes/light/9slice/dialog.png": {
+      "size": [
+        64,
+        64
+      ],
+      "insets": [
+        20,
+        20,
+        20,
+        20
+      ],
+      "radius": 12,
+      "theme": "light",
+      "name": "dialog",
+      "transparent": true
+    },
+    "themes/light/9slice/input.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "light",
+      "name": "input",
+      "transparent": true
+    },
+    "themes/light/9slice/progress_track.png": {
+      "size": [
+        28,
+        14
+      ],
+      "insets": [
+        8,
+        5,
+        8,
+        5
+      ],
+      "radius": 5,
+      "theme": "light",
+      "name": "progress_track",
+      "transparent": true
+    },
+    "themes/light/9slice/progress_fill.png": {
+      "size": [
+        28,
+        14
+      ],
+      "insets": [
+        8,
+        5,
+        8,
+        5
+      ],
+      "radius": 5,
+      "theme": "light",
+      "name": "progress_fill",
+      "transparent": true
+    },
+    "themes/light/9slice/scroll_thumb.png": {
+      "size": [
+        16,
+        28
+      ],
+      "insets": [
+        5,
+        8,
+        5,
+        8
+      ],
+      "radius": 5,
+      "theme": "light",
+      "name": "scroll_thumb",
+      "transparent": true
+    }
+  },
+  "textures": {
+    "themes/dark/fixed/background_960x544.png": {
+      "size": [
+        960,
+        544
+      ],
+      "theme": "dark",
+      "role": "static fullscreen PS Vita-inspired wave wallpaper (main, restrained)",
+      "render": "single texture blit; no runtime wave generation"
+    },
+    "themes/dark/fixed/background_alt_960x544.png": {
+      "size": [
+        960,
+        544
+      ],
+      "theme": "dark",
+      "role": "static fullscreen PS Vita-inspired wave wallpaper (alternative, stronger contrast)",
+      "render": "single texture blit; no runtime wave generation"
+    },
+    "themes/dark/fixed/header_960x40.png": {
+      "size": [
+        960,
+        40
+      ],
+      "theme": "dark",
+      "role": "header_960x40"
+    },
+    "themes/dark/fixed/footer_960x44.png": {
+      "size": [
+        960,
+        44
+      ],
+      "theme": "dark",
+      "role": "footer_960x44"
+    },
+    "themes/dark/fixed/active_indicator_128x4.png": {
+      "size": [
+        128,
+        4
+      ],
+      "theme": "dark",
+      "role": "optional active tab underline"
+    },
+    "themes/light/fixed/background_960x544.png": {
+      "size": [
+        960,
+        544
+      ],
+      "theme": "light",
+      "role": "static fullscreen PS Vita-inspired wave wallpaper (main, restrained)",
+      "render": "single texture blit; no runtime wave generation"
+    },
+    "themes/light/fixed/background_alt_960x544.png": {
+      "size": [
+        960,
+        544
+      ],
+      "theme": "light",
+      "role": "static fullscreen PS Vita-inspired wave wallpaper (alternative, stronger contrast)",
+      "render": "single texture blit; no runtime wave generation"
+    },
+    "themes/light/fixed/header_960x40.png": {
+      "size": [
+        960,
+        40
+      ],
+      "theme": "light",
+      "role": "header_960x40"
+    },
+    "themes/light/fixed/footer_960x44.png": {
+      "size": [
+        960,
+        44
+      ],
+      "theme": "light",
+      "role": "footer_960x44"
+    },
+    "themes/light/fixed/active_indicator_128x4.png": {
+      "size": [
+        128,
+        4
+      ],
+      "theme": "light",
+      "role": "optional active tab underline"
+    },
+    "themes/dark/fixed/focus_edge_glow_16x128.png": {
+      "size": [
+        16,
+        128
+      ],
+      "theme": "dark",
+      "role": "optional overlay for row focus"
+    },
+    "themes/light/fixed/focus_edge_glow_16x128.png": {
+      "size": [
+        16,
+        128
+      ],
+      "theme": "light",
+      "role": "optional overlay for row focus"
+    }
+  },
+  "sprite_atlases": {
+    "themes/dark/ui_icons_atlas.png": {
+      "size": [
+        512,
+        320
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "sprites": {
+        "play": {
+          "x": 16,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "pause": {
+          "x": 80,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "back": {
+          "x": 144,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "next": {
+          "x": 208,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "refresh": {
+          "x": 272,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "attach": {
+          "x": 336,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "file": {
+          "x": 400,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "image": {
+          "x": 464,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "video": {
+          "x": 16,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "download": {
+          "x": 80,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "send": {
+          "x": 144,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "search": {
+          "x": 208,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "folder": {
+          "x": 272,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "chat": {
+          "x": 336,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "mic": {
+          "x": 400,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "heart": {
+          "x": 464,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "forward": {
+          "x": 16,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "fullscreen": {
+          "x": 80,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "collapse": {
+          "x": 144,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "more": {
+          "x": 208,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "sticker": {
+          "x": 272,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "warning": {
+          "x": 336,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "info": {
+          "x": 400,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "list": {
+          "x": 464,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "edit": {
+          "x": 16,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "check": {
+          "x": 80,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "menu": {
+          "x": 144,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "close": {
+          "x": 208,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "volume": {
+          "x": 272,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "calendar": {
+          "x": 336,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "wifi": {
+          "x": 400,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "settings": {
+          "x": 464,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "arrow-up": {
+          "x": 16,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "arrow-down": {
+          "x": 80,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_0": {
+          "x": 144,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_25": {
+          "x": 208,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_50": {
+          "x": 272,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_75": {
+          "x": 336,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_100": {
+          "x": 400,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_charging": {
+          "x": 464,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        }
+      },
+      "theme": "dark",
+      "note": "40 32x32 glyphs; original 34 sprites retain their coordinates; battery status fills remaining six unused atlas cells."
+    },
+    "themes/light/ui_icons_atlas.png": {
+      "size": [
+        512,
+        320
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "sprites": {
+        "play": {
+          "x": 16,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "pause": {
+          "x": 80,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "back": {
+          "x": 144,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "next": {
+          "x": 208,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "refresh": {
+          "x": 272,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "attach": {
+          "x": 336,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "file": {
+          "x": 400,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "image": {
+          "x": 464,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "video": {
+          "x": 16,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "download": {
+          "x": 80,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "send": {
+          "x": 144,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "search": {
+          "x": 208,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "folder": {
+          "x": 272,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "chat": {
+          "x": 336,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "mic": {
+          "x": 400,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "heart": {
+          "x": 464,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "forward": {
+          "x": 16,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "fullscreen": {
+          "x": 80,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "collapse": {
+          "x": 144,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "more": {
+          "x": 208,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "sticker": {
+          "x": 272,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "warning": {
+          "x": 336,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "info": {
+          "x": 400,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "list": {
+          "x": 464,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "edit": {
+          "x": 16,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "check": {
+          "x": 80,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "menu": {
+          "x": 144,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "close": {
+          "x": 208,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "volume": {
+          "x": 272,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "calendar": {
+          "x": 336,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "wifi": {
+          "x": 400,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "settings": {
+          "x": 464,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "arrow-up": {
+          "x": 16,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "arrow-down": {
+          "x": 80,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_0": {
+          "x": 144,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_25": {
+          "x": 208,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_50": {
+          "x": 272,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_75": {
+          "x": 336,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_100": {
+          "x": 400,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_charging": {
+          "x": 464,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        }
+      },
+      "theme": "light",
+      "note": "40 32x32 glyphs; original 34 sprites retain their coordinates; battery status fills remaining six unused atlas cells."
+    },
+    "themes/dark/ps_buttons_atlas.png": {
+      "size": [
+        512,
+        128
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "sprites": {
+        "cross": {
+          "x": 8,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "circle": {
+          "x": 72,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "square": {
+          "x": 136,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "triangle": {
+          "x": 200,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "dpad": {
+          "x": 264,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "L": {
+          "x": 328,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "R": {
+          "x": 392,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "START": {
+          "x": 456,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "SELECT": {
+          "x": 8,
+          "y": 72,
+          "w": 48,
+          "h": 48
+        }
+      },
+      "theme": "dark",
+      "note": "48x48 RGBA glyphs; button mapping is presentation only, not input handling"
+    },
+    "themes/light/ps_buttons_atlas.png": {
+      "size": [
+        512,
+        128
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "sprites": {
+        "cross": {
+          "x": 8,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "circle": {
+          "x": 72,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "square": {
+          "x": 136,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "triangle": {
+          "x": 200,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "dpad": {
+          "x": 264,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "L": {
+          "x": 328,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "R": {
+          "x": 392,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "START": {
+          "x": 456,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "SELECT": {
+          "x": 8,
+          "y": 72,
+          "w": 48,
+          "h": 48
+        }
+      },
+      "theme": "light",
+      "note": "48x48 RGBA glyphs; button mapping is presentation only, not input handling"
+    }
+  },
+  "notes": [
+    "Source sizes are physical pixels for Vita frame buffer 960x544.",
+    "Nine-slice margin order is left,top,right,bottom; coordinates are top-left and width/height.",
+    "No logos, avatar images, user-specific text, or user-specific tabs are baked into textures.",
+    "Theme and per-component colors are static PNGs; real text stays in current app renderer.",
+    "Full-screen wave wallpapers are pre-rendered offline as opaque RGBA PNGs: background_960x544.png is the default and background_alt_960x544.png is an optional stronger version.",
+    "v1.2: added six battery status sprites per theme using previously unused 64px cells; all existing icon source rectangles unchanged."
+  ],
+  "battery_icons": {
+    "states": [
+      "battery_0",
+      "battery_25",
+      "battery_50",
+      "battery_75",
+      "battery_100",
+      "battery_charging"
+    ],
+    "recommended_size": [
+      20,
+      20
+    ],
+    "source_size": [
+      32,
+      32
+    ],
+    "display_rules": {
+      "charging": "battery_charging",
+      "not_charging": {
+        "0-12": "battery_0",
+        "13-37": "battery_25",
+        "38-62": "battery_50",
+        "63-87": "battery_75",
+        "88-100": "battery_100"
+      }
+    },
+    "note": "Visual-only: obtain actual battery percentage and charging state from the application/system. Do not use these icon names as fixed percentages in the UI."
+  }
+}
