@@ -10,6 +10,11 @@ public:
     void setSource(const std::string& path, bool video = false, bool music = false);
     void toggle();
     void setPlaying(bool playing) { if (!finished_) playing_ = playing; }
+    bool playing() const { return playing_ && !finished_; }
+    // Restarts decoding of the current source at `us` (clamped by the caller). Keeps the play/pause state.
+    void seekTo(int64_t us);
+    // Output position; accurate to a PCM block, includes the seek offset for voice notes and music.
+    double positionSeconds() const { return samples_.load() / 48000.0; }
     bool finished() const { return finished_; }
     bool clockReady() const { return clock_ready_; }
     int64_t positionUs() const { return clock_us_; }
@@ -32,5 +37,6 @@ private:
     std::atomic<unsigned> generation_{0};
     std::atomic<int64_t> samples_{0};
     std::atomic<int64_t> clock_us_{0};
+    std::atomic<int64_t> start_us_{0};   // where the next decode generation starts
     std::atomic<bool> clock_ready_{false};
 };

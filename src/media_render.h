@@ -6,6 +6,8 @@
 bool rich_text_init();
 // Adopts fallback/emoji fonts read in the background; call once per frame.
 void rich_text_poll();
+// Call after ui_skin::load(): switches controller icons between the themed atlas and the legacy PNGs.
+void rich_text_skin_changed();
 // Changes when available fonts change; text layout caches must be dropped.
 unsigned rich_text_revision();
 void rich_text_set_scale(float scale);

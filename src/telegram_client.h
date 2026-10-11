@@ -5,9 +5,11 @@
 #include "td_event_queue.h"
 #include "poll.h"
 #include <map>
+#include <set>
 #include "media_cache.h"
 #include "ui_cache.h"
 #include "media_trash.h"
+#include <set>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -22,7 +24,10 @@ struct ChatItem {
     int64_t supergroup_id = 0;
     int64_t user_id = 0;
     bool group = false;
+    bool channel = false;
+    int64_t basic_group_id = 0;
     bool cached_metadata = false;
+    bool can_send = true;   // chat-wide default permission can_send_basic_messages
     std::unordered_map<int32_t, int64_t> list_orders; // 0 = main, >0 = folder
     int64_t id = 0;
     int64_t order = 0;
@@ -49,6 +54,9 @@ struct ChatFolderItem {
     int32_t icon_file_id = 0;
     std::string icon_path;
 };
+
+// A link inside MessageItem::text: UTF-8 byte range [begin, end) taken from TDLib text entities.
+struct LinkSpan { int begin = 0, end = 0; std::string url; };
 
 struct MessageItem {
     PollData poll;
@@ -87,7 +95,8 @@ struct MessageItem {
     int32_t voice_file_id = 0;
     int64_t voice_size = 0, voice_downloaded = 0;
     std::string voice_path, voice_error;
-    std::string transcription;
+    std::string transcription, transcription_error;
+    std::vector<uint8_t> waveform;   // voice notes: 0..31 amplitudes decoded from voiceNote.waveform
     bool transcription_pending = false;
     bool transcription_complete = false;
     int32_t animation_file_id = 0;
@@ -95,6 +104,21 @@ struct MessageItem {
     std::string animation_path, animation_error;
     std::vector<PhotoItem> photos;
     std::vector<std::string> links;
+    // Reply reference (TDLib reply_to). reply_sender/reply_text are filled from history, a cached lookup or the
+    // reply content itself; empty text with reply_missing == false means "still loading".
+    // Forward origin (TDLib forward_info.origin): a user, a chat/channel, or a hidden sender with only a name.
+    bool forwarded = false, forward_from_chat = false;
+    int64_t forward_origin_id = 0;
+    std::string forward_hidden_name, forward_source;   // forward_source is resolved at display time
+    int64_t reply_to_id = 0, reply_chat_id = 0;
+    std::string reply_quote, reply_origin_name, reply_sender, reply_text;
+    bool reply_missing = false;
+    // Discussion thread of a channel post (TDLib interaction_info.reply_info): present only when the post has a
+    // linked discussion. comments_message_id is the message that carries it (the first one of a merged album).
+    bool channel_post = false, has_comments = false;
+    int comment_count = 0;
+    int64_t comments_message_id = 0;
+    std::vector<LinkSpan> link_spans;   // valid only when they index `text` (plain text/caption messages)
 };
 
 enum class InputKind {
@@ -191,6 +215,8 @@ public:
     int32_t selectedFolder() const { return selected_folder_; }
     void selectFolder(int32_t id);
     std::string updateNotice() const;
+    // Progress of the latest speech-to-text request (requested, processing, done, error); empty once stale.
+    std::string transcriptionStatus() const;
     bool takeChatTopRequest() { bool result = refresh_top_; refresh_top_ = false; return result; }
     void loadMoreChats();
     bool chatsLoading() const { return ready_ && !chats_end_ && chats_error_.empty() && (chats_.size() < chats_target_ || startup_chat_snapshots_.count(selected_folder_)); }
@@ -199,6 +225,12 @@ public:
     void openChat(int64_t chat_id, const std::string& title);
     bool openPinnedMessage(int64_t message_id);
     int64_t takeMessageJump() { int64_t id = message_jump_generation_ == history_generation_ ? message_jump_ : 0; message_jump_ = 0; return id; }
+    // Whether the jump taken last should also open the expanded post (true except when returning from comments to a list view).
+    bool messageJumpOpensPost() const { return message_jump_post_; }
+    // Comments of a channel post are the linked discussion's thread (getMessageThread + getMessageThreadHistory).
+    bool openComments(int64_t message_id, bool from_post);
+    bool inComments() const { return current_thread_ != 0; }
+    void closeComments();   // back to the channel, positioned on the post the comments belong to
     bool openTelegramLink(const std::string& url);
     bool takeLinkChatOpened() { bool opened = link_chat_opened_; link_chat_opened_ = false; return opened; }
     bool topicsOpen() const { return topics_open_; }
@@ -241,6 +273,32 @@ public:
     const std::vector<std::string>& reactionChoices() const { return reaction_choices_; }
     const std::string& reactionStatus() const { return reaction_status_; }
     void leaveChat();
+    // Chat search: local chats, then the server, then public usernames. Results are ChatItem copies from the known chats.
+    void searchChats(const std::string& query);
+    void clearSearch();
+    std::vector<ChatItem> searchResults() const;
+    bool searchPending() const { return search_pending_ > 0; }
+    const std::string& searchQuery() const { return search_query_; }
+    void ensureSearchMedia(int64_t chat_id);
+    // Membership of the opened chat (groups and channels only).
+    enum class Membership { None, Unknown, Member, Creator, NotMember };
+    Membership currentMembership() const;
+    void joinCurrentChat();
+    // True when the user may post text in the opened chat (private chats, members of groups, admins of channels).
+    bool canPostCurrent() const;
+    // Reply: the next composed text message answers this message of the opened chat.
+    void replyTo(int64_t message_id);
+    int64_t replyTarget() const { return reply_target_; }
+    // Forward: remember a message, then copy it into any chat where posting is possible.
+    void beginForward(int64_t message_id);
+    bool forwardPending() const { return forward_message_ != 0; }
+    bool forwardIsHere() const { return forward_message_ && forward_chat_ == current_chat_id_; }
+    void cancelForward() { forward_message_ = 0; forward_chat_ = 0; }
+    bool pasteForward();
+    void leaveCurrentGroup();
+    bool currentChatIsPrivate() const;
+    // Private chats: remove=true deletes the conversation from the list, false only clears its messages (both for this account).
+    void deleteCurrentHistory(bool remove);
     void ensureChatMedia(size_t index);
     void ensureMessageMedia(size_t index);
     void setAnimationTarget(int index); // -1 cancels the opened animation download
@@ -359,7 +417,23 @@ private:
     std::vector<int64_t> refresh_before_;
     int64_t next_update_check_ = 0, notice_until_ = 0;
     std::string notice_;
+    std::string transcription_status_;
+    int64_t transcription_status_until_ = 0;
+    void setTranscriptionStatus(const std::string& text, int seconds);
     unsigned link_generation_ = 0;
+    unsigned search_generation_ = 0;
+    int search_pending_ = 0;
+    std::string search_query_;
+    std::vector<int64_t> search_ids_[3];
+    // supergroup / basic group id -> membership learnt from updateSupergroup, updateBasicGroup or getX.
+    std::unordered_map<int64_t, Membership> supergroup_member_, basic_group_member_;
+    // group id -> may post as a member / as an administrator (channels need the latter)
+    struct PostRights { bool member = false, admin = false; };
+    std::unordered_map<int64_t, PostRights> supergroup_rights_, basic_group_rights_;
+    static PostRights postRightsOf(void* status);
+    int64_t reply_target_ = 0, forward_chat_ = 0, forward_message_ = 0;
+    static Membership membershipOf(void* status);
+    bool membership_pending_ = false;
     bool link_chat_opened_ = false;
     std::unordered_set<int64_t> refresh_ids_;
     void checkChatUpdates(bool manual);
@@ -433,6 +507,13 @@ private:
     std::unordered_map<int64_t, std::vector<MessageItem::Reaction>> cached_reactions_;
     unsigned int history_generation_ = 0;
     int64_t message_jump_ = 0;
+    bool message_jump_post_ = true, next_jump_post_ = true;
+    int64_t current_thread_ = 0, pending_thread_ = 0;
+    struct CommentsReturn { int64_t chat = 0; std::string title; int64_t message = 0; bool post = false; };
+    CommentsReturn comments_return_, pending_return_;
+    std::set<int64_t> comment_probed_;   // posts already probed for comment info in the open chat
+    void probeComments();
+    std::set<int64_t> channel_full_requested_;   // channels whose full info (linked discussion) TDLib was asked for
     unsigned message_jump_generation_ = 0;
     bool history_pending_ = false, history_done_ = true, history_end_ = false;
     int history_target_ = 60;
@@ -441,6 +522,10 @@ private:
     void requestHistoryPage();
     void showTopicsList(); // Forum: invalidate history, show the topic list.
     void rebuildHistory();
+    struct ReplyInfo { int64_t sender_id = 0; bool sender_chat = false, missing = false; std::string text; };
+    std::map<std::pair<int64_t, int64_t>, ReplyInfo> reply_cache_;   // (chat, message) -> looked-up original
+    std::set<std::pair<int64_t, int64_t>> reply_requested_;          // one getMessage per original
+    void resolveReplies();
     void* client_;
     bool ready_;
     bool closed_;

@@ -18,6 +18,12 @@ public:
                    bool prepare = false); // UI, outside drawing
     void toggle(); // Video play/pause/replay; GIFs keep looping automatically.
     int seconds() const { return position_us_.load() / 1000000; }
+    int64_t positionUs() const { return position_us_.load(); }
+    bool playing() const { return video_ && !paused_ && !finished_; }
+    // Video only, file already local, not a prepared portrait copy.
+    bool canSeek() const { return video_ && started_ && !source_.empty() && !prepare_; }
+    // Restarts the decoder at `us` (like a replay that starts later); play/pause state is kept.
+    void seekTo(int64_t us);
     void upload();                         // UI, outside drawing
     vita2d_texture* texture() { return yuv_valid_ ? &yuv_texture_ : texture_; }
     std::string status();
@@ -29,6 +35,7 @@ private:
     VoicePlayer audio_;
     std::atomic<bool> paused_{false}, finished_{false};
     std::atomic<int64_t> position_us_{0};
+    std::atomic<int64_t> start_us_{0};   // decode start of the current generation
     std::atomic<bool> stopping_{false};
     std::atomic<unsigned> generation_{0};
     pthread_mutex_t mutex_ = PTHREAD_MUTEX_INITIALIZER;

@@ -4,6 +4,9 @@
 #include "vault.h"
 #include "font_fallback.h"
 #include "text_layout_cache.h"
+#include "text_font.h"
+#include "ui_skin.h"
+#include <memory>
 #include <array>
 #include <atomic>
 #include <pthread.h>
@@ -20,12 +23,12 @@
 #include <vector>
 
 namespace {
+// Base text size in pixels at 100%; each UI element applies its own scale.
+constexpr int kBaseFontSizePx = 28;
 FT_Library library = nullptr;
 FT_Face face = nullptr;
-// Text fonts live in RAM: FreeType/vita2d otherwise read glyph outlines from
-// app0 through many small seeks, which made cold text measurement take seconds.
-// vita2d_load_font_mem keeps a pointer to the buffer, so it must outlive font.
-struct TextFace { FT_Face coverage=nullptr; vita2d_font* font=nullptr; std::vector<unsigned char> data; };
+// Faces retain their in-memory font buffers until the raster cache is released.
+struct TextFace { FT_Face coverage=nullptr; std::unique_ptr<TextFont> font; std::vector<unsigned char> data; };
 std::array<TextFace,6> text_faces;
 // Slot 2 holds the font of the interface language (Korean/Chinese) and is placed ahead of the
 // Japanese font so shared Han characters use the glyph shapes of that language. It has no fixed
@@ -51,19 +54,19 @@ TextWidthCache run_widths;
 struct FontChoice { uint32_t code=0;size_t index=0;bool valid=false; };
 std::array<FontChoice,4096> font_choices;
 
-vita2d_font* font_for(uint32_t code) {
+TextFont* font_for(uint32_t code) {
     auto& choice=font_choices[code%font_choices.size()];
-    if (choice.valid && choice.code==code) return text_faces[choice.index].font;
+    if (choice.valid && choice.code==code) return text_faces[choice.index].font.get();
     size_t index=font_fallback_index(code,text_faces.size(),[](size_t i,uint32_t c) {
         return text_faces[i].font && text_faces[i].coverage && FT_Get_Char_Index(text_faces[i].coverage,c);
     });
     choice={code,index,true};
-    return text_faces[index].font;
+    return text_faces[index].font.get();
 }
 struct Glyph { uint32_t code; vita2d_texture* texture; uint64_t used; };
 std::vector<Glyph> cache;
 std::vector<uint32_t> requested;
-std::array<vita2d_texture*,7> controller_icons{};
+std::array<vita2d_texture*,9> controller_icons{};
 uint64_t clock_value = 0;
 
 uint32_t next_code(const char*& p) {
@@ -84,14 +87,14 @@ vita2d_texture* glyph_texture(uint32_t code) {
 }
 int render(vita2d_pgf* font, int x, int baseline, unsigned int color, float scale, const char* p, bool draw) {
     float advance = 0;
-    const unsigned int text_size = std::max(1, (int)(28 * scale + 0.5f));
+    const unsigned int text_size = std::max(1, (int)(kBaseFontSizePx * scale + 0.5f));
     std::string run;
-    vita2d_font* text_font = text_faces[0].font;
+    TextFont* text_font = text_faces[0].font.get();
     auto flush = [&]() {
         if (run.empty()) return;
         if (text_font) {
-            if (draw) vita2d_font_draw_text(text_font, x + static_cast<int>(advance), baseline, color, text_size, run.c_str());
-            advance += run_widths.get(run.c_str(),reinterpret_cast<uintptr_t>(text_font),float(text_size),[&]{return vita2d_font_text_width(text_font,text_size,run.c_str());});
+            if (draw) text_font->render(x + static_cast<int>(advance), baseline, color, text_size, run.c_str(), true);
+            advance += run_widths.get(run.c_str(),reinterpret_cast<uintptr_t>(text_font),float(text_size),[&]{return text_font->render(0,0,0,text_size,run.c_str(),false);});
         } else if (font) {
             // Emergency fallback only; normal UI always uses the packaged Noto font.
             if (draw) vita2d_pgf_draw_text(font, x + static_cast<int>(advance), baseline, color, scale, run.c_str());
@@ -109,6 +112,17 @@ int render(vita2d_pgf* font, int x, int baseline, unsigned int color, float scal
             flush();
             // All controller icons share one on-screen height in the 960x544 UI.
             constexpr float size = 22.0f;
+            ui_skin::Sprite sprite;
+            if (ui_skin::button(code - 0xe000, sprite)) {
+                const float factor = size / sprite.vh, width = sprite.vw * factor;
+                if (draw) {
+                    const float top = baseline - size + (size - text_size * 0.7f) * 0.5f + 1.5f;
+                    vita2d_draw_texture_part_scale(sprite.texture, x + advance - sprite.vx * factor, top - sprite.vy * factor,
+                        sprite.x, sprite.y, sprite.w, sprite.h, factor, factor);
+                }
+                advance += width + 3 * scale;
+                continue;
+            }
             auto* icon = controller_icons[code - 0xe000];
             float width = icon ? size * vita2d_texture_get_width(icon) / vita2d_texture_get_height(icon)
                                : size * (code >= 0xe005 ? 56.0f / 24.0f : 1.0f);
@@ -122,7 +136,7 @@ int render(vita2d_pgf* font, int x, int baseline, unsigned int color, float scal
             continue;
         }
         if (!is_emoji(code)) {
-            vita2d_font* selected = font_for(code);
+            TextFont* selected = font_for(code);
             if (selected != text_font) { flush(); text_font = selected; }
             run.append(start, p - start); continue;
         }
@@ -168,17 +182,16 @@ bool adopt_text_face(size_t index, std::vector<unsigned char>&& data) {
         FT_New_Memory_Face(library,text.data.data(),static_cast<FT_Long>(text.data.size()),0,&text.coverage)) {
         text.coverage=nullptr; std::vector<unsigned char>().swap(text.data); return false;
     }
-    text.font = vita2d_load_font_mem(text.data.data(), static_cast<unsigned int>(text.data.size()));
-    if (!text.font) std::fprintf(stderr, "Unable to load text font: %s\n", text_paths[index] ? text_paths[index] : language_font_path.c_str());
+    text.font = std::make_unique<TextFont>(text.coverage);
     return text.font != nullptr;
 }
 }
 
 bool rich_text_init() {
     widths.clear();run_widths.clear();font_choices={};
-    const char* icon_names[] = {"triangle", "square", "cross", "circle", "dpad", "start", "select"};
+    const char* icon_names[] = {"triangle", "square", "cross", "circle", "dpad", "start", "select", "L", "R"};
     for (size_t i=0; i<controller_icons.size(); ++i) {
-        std::string path = std::string("app0:assets/controller-icons/") + icon_names[i] + ".png";
+        std::string path = std::string(i < 7 ? "app0:assets/controller-icons/" : "app0:ui/themes/dark/buttons/") + icon_names[i] + ".png";
         controller_icons[i] = vita2d_load_PNG_file(path.c_str());
     }
     if (FT_Init_FreeType(&library)) return false;
@@ -200,7 +213,27 @@ bool rich_text_init() {
     // Keep the text font usable even when the emoji asset cannot be opened.
     return text_faces[0].font && face;
 }
+void rich_text_skin_changed() {
+    const bool skinned = ui_skin::has_buttons();
+    const char* icon_names[] = {"triangle", "square", "cross", "circle", "dpad", "start", "select", "L", "R"};
+    vita2d_wait_rendering_done();
+    for (size_t i=0; i<controller_icons.size(); ++i) {
+        if (skinned) { if (controller_icons[i]) { vita2d_free_texture(controller_icons[i]); controller_icons[i]=nullptr; } }
+        else if (!controller_icons[i]) {
+            const std::string path = std::string(i < 7 ? "app0:assets/controller-icons/" : "app0:ui/themes/dark/buttons/") + icon_names[i] + ".png";
+            controller_icons[i] = vita2d_load_PNG_file(path.c_str());
+        }
+    }
+    widths.clear(); run_widths.clear(); ++font_revision;
+}
 void rich_text_poll() {
+    bool reset = false;
+    for (const auto& text : text_faces) if (text.font && text.font->needs_reset()) reset = true;
+    if (reset) {
+        vita2d_wait_rendering_done();
+        for (auto& text : text_faces) if (text.font && text.font->needs_reset()) text.font->reset();
+        widths.clear(); run_widths.clear();
+    }
     if (loader.adopted || !loader.done) return;
     if (loader.started) { pthread_join(loader.thread, nullptr); loader.started=false; }
     loader.adopted=true;
@@ -226,7 +259,7 @@ void rich_text_set_language_font(const char* path) {
     if (!library) return; // rich_text_init() applies it.
     auto& slot = text_faces[language_slot];
     vita2d_wait_rendering_done(); // The old font's glyph textures may still be in flight.
-    if (slot.font) vita2d_free_font(slot.font);
+    slot.font.reset();
     if (slot.coverage) FT_Done_Face(slot.coverage);
     slot = {};
     std::vector<unsigned char> data;
@@ -279,7 +312,7 @@ void rich_text_shutdown() {
     for (auto& item : cache) if (item.texture) vita2d_free_texture(item.texture);
     cache.clear(); requested.clear();
     for (auto& text : text_faces) {
-        if (text.font) vita2d_free_font(text.font);
+        text.font.reset();
         if (text.coverage) FT_Done_Face(text.coverage);
         text = {}; // Releases the buffer after both users are gone.
     }

@@ -16,6 +16,11 @@
 
 namespace {
 constexpr size_t limit = 16 * 1024 * 1024;
+// Header limits checked before libjpeg allocates anything, and a hard cap on libjpeg's own working
+// memory: a progressive 64-megapixel JPEG would otherwise ask for hundreds of MB and take the app down.
+constexpr unsigned jpeg_max_side = 12000;
+constexpr uint64_t jpeg_max_pixels = 36ull * 1000 * 1000;
+constexpr long jpeg_memory_limit = 32L * 1024 * 1024;
 bool valid(unsigned w, unsigned h) { return w && h && w <= 4096 && h <= 4096 && size_t(w)*h <= limit/4; }
 struct JpegError { jpeg_error_mgr base; jmp_buf jump; };
 void jpeg_failed(j_common_ptr p) { longjmp(reinterpret_cast<JpegError*>(p->err)->jump, 1); }
@@ -27,8 +32,9 @@ bool jpeg_pixels(const uint8_t* data, size_t size, DecodedImage& out, const std:
     decoder->err = jpeg_std_error(&error.base); error.base.error_exit = jpeg_failed;
     if (setjmp(error.jump)) { jpeg_destroy_decompress(decoder); std::free(decoder); return false; }
     jpeg_create_decompress(decoder); jpeg_mem_src(decoder, data, size);
+    decoder->mem->max_memory_to_use = jpeg_memory_limit; // exceeding it raises a normal libjpeg error (longjmp above)
     jpeg_read_header(decoder, TRUE);
-    if (!decoder->image_width || !decoder->image_height || decoder->image_width>16384 || decoder->image_height>16384 || uint64_t(decoder->image_width)*decoder->image_height>64*1024*1024) { jpeg_destroy_decompress(decoder); std::free(decoder); return false; }
+    if (!decoder->image_width || !decoder->image_height || decoder->image_width>jpeg_max_side || decoder->image_height>jpeg_max_side || uint64_t(decoder->image_width)*decoder->image_height>jpeg_max_pixels) { jpeg_destroy_decompress(decoder); std::free(decoder); return false; }
     // Vita's screen is 960 pixels wide. Decode large JPEGs at a native reduced scale.
     while (decoder->scale_denom < 8 && (decoder->image_width/decoder->scale_denom > 1024 || decoder->image_height/decoder->scale_denom > 1024)) decoder->scale_denom *= 2;
     decoder->out_color_space = JCS_RGB;

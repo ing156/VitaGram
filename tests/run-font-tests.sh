@@ -8,3 +8,8 @@ if [[ ! -f "$headers/ft2build.h" ]]; then headers="${VITASDK:-/usr/local/vitasdk
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -I "$root/src" -I "$headers" \
   "$root/tests/font_fallback_test.cpp" "$root/src/utf8_decode.cpp" -l:libfreetype.so.6 -o "$build_dir/fonts"
 "$build_dir/fonts" "$root/assets"
+
+"${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -I "$root/tests/font-stubs" -I "$root/src" -I "$headers" \
+  "$root/tests/text_font_test.cpp" "$root/src/text_font.cpp" "$root/src/utf8_decode.cpp" \
+  -l:libfreetype.so.6 -o "$build_dir/text-font"
+"$build_dir/text-font" "$root/assets"

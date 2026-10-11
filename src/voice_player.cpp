@@ -39,7 +39,7 @@ void VoicePlayer::setSource(const std::string& path, bool video, bool music) {
     if (path_ == path && video_ == video && music_ == music) { pthread_mutex_unlock(&mutex_); return; }
     music_ = music;
     video_ = video; clock_ready_ = false; clock_us_ = 0;
-    path_ = path; playing_ = false; finished_ = false; samples_ = 0; status_.clear(); ++generation_;
+    path_ = path; playing_ = false; finished_ = false; samples_ = 0; start_us_ = 0; status_.clear(); ++generation_;
     pthread_mutex_unlock(&mutex_);
     if (!started_ && !path.empty()) {
         pthread_attr_t attr;
@@ -55,8 +55,20 @@ void VoicePlayer::toggle() {
     performance::SlowScope slow(performance::SlowPhase::Ui,"voiceplayer_toggle");
     pthread_mutex_lock(&mutex_);
     if (!path_.empty() && started_) {
-        if (finished_) { ++generation_; samples_ = 0; clock_us_ = 0; clock_ready_ = false; finished_ = false; status_.clear(); }
+        if (finished_) { ++generation_; samples_ = 0; start_us_ = 0; clock_us_ = 0; clock_ready_ = false; finished_ = false; status_.clear(); }
         playing_ = !playing_.load();
+    }
+    pthread_mutex_unlock(&mutex_);
+}
+void VoicePlayer::seekTo(int64_t us) {
+    performance::SlowScope slow(performance::SlowPhase::Ui,"voiceplayer_seek");
+    pthread_mutex_lock(&mutex_);
+    if (!path_.empty() && started_) {
+        // A new decode generation starts at the target; video audio derives its clock from the first frame's PTS.
+        start_us_ = std::max<int64_t>(0, us);
+        ++generation_;
+        samples_ = video_ ? 0 : start_us_.load() * 48000 / 1000000;
+        clock_us_ = 0; clock_ready_ = false; finished_ = false; status_.clear();
     }
     pthread_mutex_unlock(&mutex_);
 }
@@ -239,6 +251,12 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         codec->pkt_timebase = format->streams[stream]->time_base;
         result = avcodec_open2(codec, decoder, nullptr);
         if (result < 0) break;
+        if (const int64_t start_us = start_us_.load(); start_us > 0) {
+            // Fresh decoder: seek the demuxer to the last packet before the target.
+            int64_t target = start_us + (format->start_time != AV_NOPTS_VALUE ? format->start_time : 0);
+            const int seek_result = av_seek_frame(format, stream, av_rescale_q(target, AV_TIME_BASE_Q, format->streams[stream]->time_base), AVSEEK_FLAG_BACKWARD);
+            if (seek_result < 0) { if (!video) samples_ = 0; }   // not seekable: play from the start
+        }
         port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN, block_frames, 48000, SCE_AUDIO_OUT_MODE_STEREO);
         if (port < 0) { error = tr("voice.open_output"); break; }
         if (video) {

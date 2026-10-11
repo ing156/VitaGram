@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <sys/stat.h>
+#include <dirent.h>
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -34,6 +35,24 @@ void put32(unsigned char* p, uint32_t value) {
 }
 }
 
+namespace {
+// The raw microphone capture is written unsealed while recording. If the app died mid-recording the
+// PCM file is left behind; remove such leftovers before a new recording starts.
+void remove_stale_capture_files() {
+    const std::string suffix = ".pcm.wav";
+    if (DIR* dir = opendir(VITAGRAM_FILES_DIR)) {
+        std::vector<std::string> stale;
+        while (auto* entry = readdir(dir)) {
+            std::string name = entry->d_name;
+            if (name.size() > suffix.size() && !name.compare(name.size() - suffix.size(), suffix.size(), suffix))
+                stale.push_back(std::string(VITAGRAM_FILES_DIR) + "/" + name);
+        }
+        closedir(dir);
+        for (const auto& path : stale) std::remove(path.c_str());
+    }
+}
+}
+
 AudioRecorder::~AudioRecorder() {
     cancel();
     pthread_mutex_destroy(&mutex_);
@@ -44,6 +63,7 @@ bool AudioRecorder::start(const std::string& path) {
     // until takeCompleted() has handed the finished recording to the caller.
     if (started_ && !recording_) { pthread_join(thread_, nullptr); started_ = false; std::remove(pcm_path_.c_str()); }
     if (started_ || encode_started_ || processing_.load() || path.empty()) return false;
+    remove_stale_capture_files();
     std::string file_name = path;
     const size_t slash = file_name.find_last_of("/\\");
     if (slash != std::string::npos) file_name = file_name.substr(slash + 1);

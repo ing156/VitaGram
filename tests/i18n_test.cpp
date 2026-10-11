@@ -82,7 +82,7 @@ int main() {
                 assert(close != std::string::npos);
                 std::string name = rest.substr(open + 1, close - open - 1);
                 assert(isdigit((unsigned char)name[0]) || name == "cross" || name == "circle" || name == "square" ||
-                       name == "triangle" || name == "dpad" || name == "start" || name == "select");
+                       name == "triangle" || name == "dpad" || name == "start" || name == "select" || name == "l" || name == "r");
                 rest.erase(0, close + 1);
             }
         }
@@ -103,6 +103,8 @@ int main() {
     }
     // The icon token for the same hint is substituted identically in every language.
     i18n::init(dir, "en");
+    assert(tr("menu.rotate_left").find("\xEE\x80\x87") != std::string::npos);
+    assert(tr("menu.rotate_right").find("\xEE\x80\x88") != std::string::npos);
     std::string english = tr("hint.back");
     i18n::init(dir, "ru");
     std::string russian = tr("hint.back");

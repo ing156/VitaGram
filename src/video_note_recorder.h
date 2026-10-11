@@ -2,13 +2,16 @@
 #include <atomic>
 #include <cstdint>
 #include <pthread.h>
+#include <memory>
 #include <string>
 #include <vector>
 struct vita2d_texture;
+namespace video_note { class CaptureBuffer; }
 
 class VideoNoteRecorder {
 public:
     enum class State { Closed, Opening, Preview, Recording, Encoding, Review, Error };
+    VideoNoteRecorder();
     ~VideoNoteRecorder();
     bool open(const std::string& path);
     void record();
@@ -30,14 +33,18 @@ public:
 private:
     static void* entry(void*);
     static void* audioEntry(void*);
+    static void* writerEntry(void*);
     void run();
     void captureAudio();
+    void writeCapture();
     bool openCamera(int device);
     void closeCamera();
     void setStatus(const std::string& value);
     void fail(const std::string& value);
-    pthread_t thread_{}, audio_thread_{};
-    bool thread_started_ = false, audio_started_ = false;
+    pthread_t thread_{}, audio_thread_{}, writer_thread_{};
+    bool thread_started_ = false, audio_started_ = false, writer_started_ = false;
+    std::unique_ptr<video_note::CaptureBuffer> capture_;
+    std::atomic<bool> writer_error_{false};
     bool camera_open_ = false, camera_started_ = false;
     int memory_ = -1;
     uint8_t* camera_ = nullptr;

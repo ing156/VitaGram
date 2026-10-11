@@ -190,10 +190,11 @@ inline bool keeps(Shape shape, const std::string& name) {
     case Shape::Messages: return wanted(name, {"@type", "@extra", "total_count", "messages"});
     // Top-level members parseMessage, matchesTopic and the cache read.
     case Shape::Message: return wanted(name, {"@type", "id", "chat_id", "sender_id", "date", "edit_date", "media_album_id",
-        "is_outgoing", "sending_state", "self_destruct_type", "interaction_info", "topic_id", "content"});
+        "is_outgoing", "is_channel_post", "sending_state", "self_destruct_type", "interaction_info", "topic_id", "reply_to", "forward_info", "content"});
     // Content is read widely, so it is kept except for bulky members nothing reads.
-    case Shape::Content: return !wanted(name, {"minithumbnail", "waveform", "outline", "link_preview", "link_preview_options"});
-    case Shape::Media: return !wanted(name, {"minithumbnail", "waveform", "outline", "has_stickers", "supports_streaming", "is_animation"});
+    // "waveform" stays: voice messages draw it (about 100 bytes of 5-bit samples).
+    case Shape::Content: return !wanted(name, {"minithumbnail", "outline", "link_preview", "link_preview_options"});
+    case Shape::Media: return !wanted(name, {"minithumbnail", "outline", "has_stickers", "supports_streaming", "is_animation"});
     case Shape::PhotoSize: return wanted(name, {"type", "width", "height", "photo"});
     case Shape::AltVideo: return wanted(name, {"codec", "width", "height", "video"});
     case Shape::MediaFile: return wanted(name, {"id", "size", "expected_size", "local", "remote"});

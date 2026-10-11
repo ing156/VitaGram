@@ -36,7 +36,7 @@ State& state() {
 const char* icon_glyph(const std::string& name) {
     static const struct { const char* name; const char* glyph; } icons[] = {
         {"triangle", ""}, {"square", ""}, {"cross", ""}, {"circle", ""},
-        {"dpad", ""}, {"start", ""}, {"select", ""},
+        {"dpad", ""}, {"start", ""}, {"select", ""}, {"l", ""}, {"r", ""},
     };
     for (const auto& icon : icons) if (name == icon.name) return icon.glyph;
     return nullptr;

@@ -46,6 +46,12 @@ select it explicitly through `tests/test_language.h`.
 `bash tests/run-video-tests.sh` checks circular YUV cropping, the current TDLib
 `inputMessageVideoNote` payload, camera switching, microphone failure, cancellation,
 the 60-second recording limit and transfer of file ownership to the upload caller.
+It checks bounded video/audio queues, slot ownership during a stalled write, overflow,
+draining and abort. A paced 30 FPS camera and 32 ms microphone continue capture during
+a two-second disk stall; encoding must wait for the final flush. Injected fwrite,
+fclose and setvbuf errors must fail the recording. Idle preview must avoid GPU waits.
+Rear-camera tests wait for actual RGB preview pixels and check preserved Y/U/V planes
+in recorded frames, with the same resolution and 30 FPS settings on both cameras.
 It requires C/C++ compilers, pthreads, a host libjansson.so.4, and the Jansson headers
 from a configured build-modern tree. Vita camera/GPU/audio calls are replaced with
 stubs. The recorder's encoder is stubbed only in its lifecycle test.
@@ -67,8 +73,9 @@ FFMPEG_NATIVE_BUILD=/tmp/vitagram-video-ffmpeg-test bash tests/run-video-tests.s
 ```
 
 The test decodes every video and audio packet and checks square dimensions,
-circle masking, non-silent audio, duration, monotonic timestamps (including a gap
-between camera frames), cancellation and truncated input cleanup.
+circle masking, non-silent audio, duration, exact timestamps for 90 frames (including
+a one-sample interval and a camera-switch gap), keyframes every 60 frames,
+cancellation and truncated input cleanup.
 
 These tests do not verify the physical Vita camera, microphone, GPU, encoder
 performance or delivery to Telegram. Test on a device: open a chat → L → X;
@@ -153,3 +160,14 @@ Sticker-pack icon tests exercise production selection of PNG/JPEG/WebP thumbnail
 `bash tests/run-chat-scroll-tests.sh` checks pixel dragging in both chat-list layouts,
 partial-row hit testing, viewport edges, button selection visibility, page append,
 list shrink and folder reset. Touch sampling and rendering require a PS Vita check.
+
+`bash tests/run-font-tests.sh` also exercises the production text raster cache
+with real FreeType and an in-memory Vita texture stub: exact glyph pixels at
+multiple sizes, first-use order independence, padding, stride, native pixel
+positions, kerning, measurement without GPU allocations and bounded cache reset.
+It does not validate Vita GPU output.
+
+`bash tests/run-photo-tests.sh` checks fullscreen photo rotation: gyro restricted to
+0° and ±90°, debounce, flat/touch behavior, manual L/R rotation including 180°,
+disabled sampling, sampling failure, and reopening the viewer. Vita motion and GPU
+calls are stubbed; physical orientation and themed button rendering require a device.

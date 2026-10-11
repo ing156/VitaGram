@@ -4,7 +4,8 @@
 
 namespace video_note {
 constexpr int Side = 240, FrameBytes = Side * Side * 3 / 2;
-constexpr int SampleRate = 16000, MaxSeconds = 60, FrameInterval = SampleRate / 10;
+constexpr int SampleRate = 16000, MaxSeconds = 60, FrameRate = 30;
+constexpr int KeyframeInterval = FrameRate * 2;
 // Crop the 320x240 YUV420 camera frame to a square and erase the invisible corners.
 inline void crop(const uint8_t* camera, uint8_t* out) {
     for (int plane = 0; plane < 3; ++plane) {

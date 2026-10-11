@@ -5,7 +5,7 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.36.21**. VPK package version: **36.21**. This project is under development.
+Source version: **0.36.37**. VPK package version: **36.37**. This project is under development.
 
 **0.36 is the first public release.**
 
@@ -30,7 +30,7 @@ The Select diagnostics window has been removed; Select alone has no action.
 - Connection indicator, HTTP(S) links opened in the browser, and a startup screen showing initialization stages.
 - Self-update from GitHub Releases (Start → *Update*; also checked automatically about a minute after launch). The release `.vpk` is verified against a built-in public key before it is installed — see the Russian section «Обновление через GitHub» below.
 - Optional encryption of everything on the memory card (database, photos, videos, stickers, caches, settings) with a key made of console buttons — Start → *Data encryption*; see «Data encryption» below.
-- Proxy support: MTProxy, SOCKS5 and HTTPS (HTTP CONNECT) — Start → Proxy; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials are stored in plain text in `settings.json`.
+- Proxy support: MTProxy, SOCKS5 and HTTPS (HTTP CONNECT) — Start → Proxy; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials are encrypted in `settings.json` with a key bound to the console (plain text only if the console id is unreadable).
 
 A feature being present in the source does not mean every scenario has been tested on hardware.
 The latest sticker and forum-topic changes still require build and PS Vita testing.
@@ -43,6 +43,7 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - Vertical dragging moves the chat list with your finger; a tap opens the chat under it.
 - **L / R** — switch folders; folder tabs also support touch and horizontal scrolling.
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh the list.
+- The search field under the status line (select it with Up from the first chat and press **![X](assets/controller-icons/cross.svg)**, touch it, or press **![Square](assets/controller-icons/square.svg)**) — search chats, users, groups and channels (TDLib `searchChats`, `searchChatsOnServer`, `searchPublicChats`); **![Square](assets/controller-icons/square.svg)** edits the query, **![X](assets/controller-icons/cross.svg)** opens a result, **![O](assets/controller-icons/circle.svg)** returns to the list.
 - **![Start](assets/controller-icons/start.svg)** — settings.
 - **Hold ![Start](assets/controller-icons/start.svg), then press ![Select](assets/controller-icons/select.svg) and hold both for 2 seconds** — exit the application.
 
@@ -50,12 +51,15 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 
 - **Up / Down / vertical swipe** — scroll and load older messages.
 - **![X](assets/controller-icons/cross.svg) / tap a message** — open the expanded view.
+- **D-pad Right / tap the comment badge / corner menu *Comments*** — channel posts with a linked discussion show a speech bubble and the comment count beside the time (*Leave a comment* when there are none yet); it opens that post's discussion thread (TDLib `getMessageThread` / `getMessageThreadHistory`). **![O](assets/controller-icons/circle.svg)** returns to the channel, on the same post (and in the expanded view if you came from it). If the discussion is restricted or unavailable, a notice with the TDLib reason is shown.
 - **Short press ![Square](assets/controller-icons/square.svg)** — compose text; the keyboard opens after releasing the button.
 - **Hold ![Square](assets/controller-icons/square.svg) for at least 0.55 seconds** — open the sticker picker.
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh history.
+- Corner menu: *Join chat* / *Leave chat* for groups and channels according to your TDLib membership status (owners get neither; leaving asks for confirmation); *Clear chat* / *Delete chat* for private chats (for this account only, with confirmation).
 - **L** — open the video-note recorder.
 - **R** — start/stop microphone recording; the recorded audio is sent automatically after preparation.
 - **Select** — attach: choose Photo / Video / File, browse the memory card (**![Square](assets/controller-icons/square.svg)** toggles hidden files, **![Triangle](assets/controller-icons/triangle.svg)** rescans the folder; the drive list has shortcuts such as `ux0:picture/SCREENSHOT`), pick a file and a review form opens where you can add more photos/videos/files (up to 10) or remove items, then send them all: photos and videos are sent compressed as one album message, other files unchanged. Dates follow the console's regional clock settings.
+- Corner menu *Reply* (chats where you can post) — compose a text answer to the selected message; *Forward* remembers the message, then in any chat where you can post the menu offers *Copy here* (and *Cancel forwarding*). Both are also available inside the expanded post.
 - **![O](assets/controller-icons/circle.svg)** — go back; inside a forum topic, return to the topic list.
 
 ### Forum topics
@@ -73,6 +77,7 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - **L / R** — select a photo within an album.
 - **![X](assets/controller-icons/cross.svg)** — open the selected photo or play/pause supported media.
 - **![Square](assets/controller-icons/square.svg)** — choose a reaction, rather than compose text.
+- **![Select](assets/controller-icons/select.svg) / tap the comments row** — open the comments of a channel post.
 - **![O](assets/controller-icons/circle.svg)** — go back.
 
 ### Fullscreen photo
@@ -80,7 +85,8 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - **Left / Right** — switch photos; swiping switches photos at the default zoom level.
 - **Two fingers** — zoom; **one finger while zoomed in** — pan.
 - **![Triangle](assets/controller-icons/triangle.svg)** — reset zoom and position; **![O](assets/controller-icons/circle.svg)** — go back.
-- The image adjusts to the console's orientation. When the console lies face up, the previous orientation is retained. The header and control hints do not rotate.
+- **L / R** — rotate left/right by 90°, including 180°. Manual rotation takes priority until the fullscreen viewer is reopened. **Start** shows actions with button icons.
+- Automatic rotation uses only 0° and ±90° and can be disabled in general settings → **Gyroscope** (saved in `settings.json`). When the console lies face up, the previous orientation is retained. The header and control hints do not rotate.
 
 ### Sticker picker
 
@@ -222,6 +228,16 @@ Rerun CMake configuration after adding rlottie.
 - **rlottie patch failure** — preserve local changes and inspect the build script output; do not blindly reset the dependency tree.
 - **UPDATE_APP_TO_LOGIN** — the old TDLib fork may be incompatible with Telegram login; use the prepared modern TDLib.
 
+## Top bar
+
+The chat title stays on the left, with the contact's online/last-seen status centered (connection status when no contact status is available). On the right: the battery icon and actual percentage, a small `|` separator, then the console's local clock (HH:MM) at the edge. All text uses the title's font size; the clock has thicker strokes. Device data refreshes once per second.
+
+`src/ui_battery.cpp` reads sprite rectangles from `app0:ui/manifest.json` and loads only the active theme's icon atlas from `assets/VitaGram_UI_Assets_v1`. Charging takes priority; percentage thresholds follow the pack's `battery_icons.display_rules`. Textures are loaded between frames, reused and released after GPU completion. Missing device readings show `--`; unavailable sprites leave the percentage visible.
+## UI skin
+
+Decorative UI elements (wallpaper, header, rows, tabs, message cards, date chips, menus, progress bars, controller buttons) are drawn from the PNG pack in `assets/VitaGram_UI_Assets_v1` and packaged as `app0:ui/` (manifest, 9-slice textures, wave wallpapers, icon and button atlases of both themes). `src/ui_skin.cpp` reads `manifest.json` for paths, 9-slice insets and sprite rectangles, loads only the textures of the active theme once, and swaps them when the theme changes. If a texture or the manifest cannot be loaded, that element falls back to the original drawn shapes.
+The stronger wallpaper variant can be selected at configure time with `-DVITAGRAM_UI_ALT_BACKGROUND=ON`.
+
 ## Data encryption
 
 On the first launch (and after updating from a version without it) VitaGram asks whether to encrypt your data. If you agree, you choose how to unlock: a **text passphrase** typed with the system keyboard (at least 10 characters; the stronger option — a multi-word phrase with digits or symbols gives far more resistance to guessing than any button sequence; the strength shown is a deliberately cautious estimate, and accented letters can be entered in different ways, so plain characters are safer) or a **key from console buttons** — the D-pad directions, ✕ ○ △ □ (8 buttons, 3 bits each; at least 8 presses, at most 32; Start confirms, L deletes the last press, R clears, Select cancels). The key is entered twice and is entered again at every start. It is never shown (one dot per press) and never stored.
@@ -307,7 +323,7 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.36.21**, версия пакета VPK: **36.21**. Проект находится в разработке.
+Версия исходников: **0.36.37**, версия пакета VPK: **36.37**. Проект находится в разработке.
 
 **0.36 — первый публичный релиз.**
 
@@ -341,6 +357,7 @@ When distributing the application, retain notices and comply with dependency lic
 - При вертикальном перетаскивании список чатов движется вслед за пальцем; тап открывает чат под пальцем.
 - **L / R** — переключить папку; закладки также поддерживают тач и горизонтальную прокрутку.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить список.
+- Строка поиска под строкой состояния (выбирается стрелкой «Вверх» с первого чата и **![X](assets/controller-icons/cross.svg)**, касанием или **![Square](assets/controller-icons/square.svg)**) — поиск чатов, пользователей, групп и каналов (TDLib `searchChats`, `searchChatsOnServer`, `searchPublicChats`); **![Square](assets/controller-icons/square.svg)** — изменить запрос, **![X](assets/controller-icons/cross.svg)** — открыть результат, **![O](assets/controller-icons/circle.svg)** — назад к списку.
 - **![Start](assets/controller-icons/start.svg)** — настройки.
 - **Зажать ![Start](assets/controller-icons/start.svg), затем нажать ![Select](assets/controller-icons/select.svg) и держать обе кнопки 2 секунды** — выход из приложения.
 
@@ -348,12 +365,15 @@ When distributing the application, retain notices and comply with dependency lic
 
 - **Вверх / вниз / вертикальный свайп** — прокрутка и загрузка более старых сообщений.
 - **![X](assets/controller-icons/cross.svg) / тап по сообщению** — полный просмотр.
+- **Стрелка вправо / тап по значку комментариев / угловое меню *Комментарии*** — у постов канала со связанным обсуждением рядом со временем показан значок комментариев с числом (*Оставить комментарий*, если их ещё нет); он открывает ветку обсуждения этого поста (TDLib `getMessageThread` / `getMessageThreadHistory`). **![O](assets/controller-icons/circle.svg)** возвращает в канал на тот же пост (и в полный просмотр, если открывали оттуда). Если обсуждение недоступно, показывается уведомление с причиной от TDLib.
 - **![Квадрат](assets/controller-icons/square.svg), короткое нажатие** — ввод текста; клавиатура открывается после отпускания кнопки.
 - **![Квадрат](assets/controller-icons/square.svg), удержание от 0,55 секунды** — меню отправки стикеров.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить историю.
+- Угловое меню: *Вступить в чат* / *Покинуть чат* для групп и каналов по статусу участника в TDLib (владельцу не показываются; выход требует подтверждения); *Очистить чат* / *Удалить чат* для личных чатов (только для этого аккаунта, с подтверждением).
 - **L** — открыть запись видеокружка.
 - **R** — начать/остановить запись голоса; после подготовки запись отправляется автоматически.
 - **Select** — прикрепить: выбрать Фото / Видео / Файл, обзор карты памяти (**![Square](assets/controller-icons/square.svg)** — скрытые файлы, **![Triangle](assets/controller-icons/triangle.svg)** — обновить список; в списке дисков есть быстрые пути, например `ux0:picture/SCREENSHOT`); после выбора открывается форма, где можно добавить ещё фото/видео/файлы (до 10) или убрать лишние, затем всё отправляется разом: фото и видео сжимаются и уходят одним сообщением-альбомом, остальные файлы уходят без изменений. Даты показываются по региональным настройкам часов консоли.
+- Угловое меню *Ответить* (в чатах, где можно писать) — текстовый ответ на выбранное сообщение; *Переслать* запоминает сообщение, а в любом чате, где можно писать, появляется пункт *Скопировать сюда* (и *Отменить пересылку*). То же доступно в полном просмотре поста.
 - **![O](assets/controller-icons/circle.svg)** — назад; из топика возвращает к списку тем.
 
 ### Темы форумной группы
@@ -371,6 +391,7 @@ When distributing the application, retain notices and comply with dependency lic
 - **L / R** — выбрать фото в альбоме.
 - **![X](assets/controller-icons/cross.svg)** — открыть выбранное фото либо включить/приостановить поддерживаемое медиа.
 - **![Квадрат](assets/controller-icons/square.svg)** — выбор реакции, а не ввод текста.
+- **![Select](assets/controller-icons/select.svg) / тап по строке комментариев** — открыть комментарии поста канала.
 - **![O](assets/controller-icons/circle.svg)** — назад.
 
 ### Полноэкранное фото
@@ -378,7 +399,8 @@ When distributing the application, retain notices and comply with dependency lic
 - **Влево / вправо** — сменить фотографию; свайп переключает фото при обычном масштабе.
 - **Два пальца** — масштабирование; **один палец при увеличении** — перемещение.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — сброс масштаба и смещения; **![O](assets/controller-icons/circle.svg)** — назад.
-- Изображение подстраивается под поворот консоли. При положении экраном вверх сохраняется предыдущая ориентация. Шапка и подсказки не поворачиваются.
+- **L / R** — поворот влево/вправо на 90°, включая 180°. Ручной поворот имеет приоритет до повторного открытия полноэкранного просмотра. **Start** показывает действия со значками кнопок.
+- Автоповорот использует только 0° и ±90°; его можно отключить в общих настройках → **Гироскоп** (сохраняется в `settings.json`). При положении экраном вверх сохраняется предыдущая ориентация. Шапка и подсказки не поворачиваются.
 
 ### Меню стикеров
 
@@ -520,6 +542,16 @@ cmake --build build-modern -j$(nproc)
 - **Ошибка применения rlottie-патча** — сохраните локальные изменения и проверьте вывод скрипта сборки; не сбрасывайте дерево зависимости вслепую.
 - **UPDATE_APP_TO_LOGIN** — старый форк TDLib может быть несовместим с входом Telegram; требуется подготовленная современная TDLib.
 
+## Верхний бар
+
+Слева — название чата, по центру — статус собеседника онлайн/последнего посещения (если его нет — состояние подключения). Справа — иконка батареи и фактический процент заряда, небольшой разделитель `|`, затем местное время консоли (ЧЧ:ММ) у правого края. Весь текст имеет размер шрифта названия чата; часы выделены более жирным начертанием. Данные консоли обновляются раз в секунду.
+
+`src/ui_battery.cpp` читает координаты спрайтов из `app0:ui/manifest.json` и загружает только атлас активной темы из `assets/VitaGram_UI_Assets_v1`. При зарядке используется отдельная иконка; пороги соответствуют `battery_icons.display_rules`. Текстуры загружаются между кадрами и освобождаются после завершения работы GPU. При недоступности системных данных показаны прочерки; если иконки не загрузились, процент остаётся видимым.
+## Оформление интерфейса
+
+Декоративные элементы (обои, шапка, строки, вкладки, карточки сообщений, разделители дат, меню, индикаторы прогресса, кнопки контроллера) рисуются из PNG-набора `assets/VitaGram_UI_Assets_v1` и упаковываются в `app0:ui/` (манифест, 9-slice-текстуры, волнообразные обои, атласы иконок и кнопок обеих тем). `src/ui_skin.cpp` берёт пути, отступы 9-slice и координаты спрайтов из `manifest.json`, один раз загружает текстуры только активной темы и заменяет их при смене темы. Если текстуру или манифест загрузить не удалось, соответствующий элемент рисуется прежним программным способом.
+Более контрастные обои включаются при конфигурации флагом `-DVITAGRAM_UI_ALT_BACKGROUND=ON`.
+
 ## Запись видеокружков
 
 В открытом чате нажмите **L**: появится предпросмотр с фронтальной камеры.
@@ -537,9 +569,32 @@ cmake --build build-modern -j$(nproc)
 Аудио сохраняет исходный чат и тему даже при переходе в другой чат во время конвертации.
 
 
-Формат: 240×240, до 10 кадров/с, круглая маска, H.264 и моно AAC в MP4.
+Формат: 240×240, целевые 30 кадров/с, круглая маска, H.264 и моно AAC в MP4.
+Целевой битрейт видео — 1536 кбит/с, звука — 32 кбит/с. Видео использует VBR:
+фактический размер зависит от сцены; при целевом битрейте минута MP4 занимает около
+11,8 МБ плюс служебные данные. Бюджет — 6400 байт на кадр, независимо от коротких
+интервалов между временными метками и пауз при переключении камеры; QP — 20–45.
+
+Обе камеры запрашиваются в режиме 320×240 при 30 FPS, каждый новый кадр сохраняется
+без прежнего ограничителя 10 FPS. Временные метки следуют часам микрофона; реальная
+частота зависит от устройства. Превью преобразуется вне блокировки UI, кадр камеры
+сначала копируется из DMA-памяти, а ожидание GPU пропускается без нового изображения.
+
+Диск обслуживает отдельный поток. Очередь видео: 64 кадра (около 5,53 МБ, 2,1 с
+при 30 FPS); очередь звука: 128 блоков по 512 отсчётов (128 КиБ, 4,1 с).
+Проверяемые буферы stdio — 256 КиБ для видео и 32 КиБ для звука; вместе с очередями
+это около 5,7 МиБ, освобождаемых перед кодированием. При переполнении видеочереди
+новый кадр пропускается с сохранением временных меток; переполнение звука завершает
+запись ошибкой. Средняя скорость записи сырых данных нужна около 2,6 МБ/с.
+
+В журнале производительности: `video_capture_read_us`, `video_capture_crop_us`,
+`video_capture_preview_us`, `video_capture_write_us`, `video_capture_gpu_wait_us`,
+`video_capture_queue_peak_frames`, `audio_capture_queue_peak_blocks`,
+`video_capture_dropped_frames`. Пики очередей и число пропусков учитываются за запись.
+
 Кодирование выполняется после записи с индикатором прогресса. Временные кадры и звук
-занимают до примерно 55 МБ; они удаляются после подготовки или отмены.
+за минуту при 30 FPS занимают около 157 МБ; они удаляются после подготовки или отмены.
+Подготовка обрабатывает втрое больше кадров, чем при прежних 10 FPS, и может длиться дольше.
 Для этой функции пересоберите локальный FFmpeg скриптом `scripts/build-hardware-video-decoder.sh`
 (добавлены AAC encoder и MP4 muxer). H.264 encoder minih264 включён в исходники с лицензией CC0.
 
@@ -736,3 +791,15 @@ WebM-стикеры и видео VP8/VP9 разрешены в проигрыв
 при следующем запуске до загрузки кэша. Настройки приложения и MTProxy сохраняются.
 
 Шрифт Noto Sans Math добавляет отображение математических алфавитов в никах.
+
+
+## Restored font renderer and UI skin
+
+Text uses a bounded FreeType atlas keyed by Unicode scalar and pixel size, with
+transparent glyph padding and drawing at native pixel size. Measurements do not
+allocate GPU textures. The PNG skin is loaded from `app0:ui/manifest.json`; only
+one theme is resident, with the original geometry as fallback for missing assets.
+Menu bodies stay opaque during their slide animation.
+`bash tests/run-font-tests.sh` checks rasterization, size/order independence,
+padding, stride, kerning and cache reset; hardware appearance still needs Vita
+verification. `-DVITAGRAM_UI_ALT_BACKGROUND=ON` selects the stronger wave background.

@@ -7,7 +7,9 @@
 namespace secure_store {
 // False when no console id is available; then values are stored as plain text.
 bool available();
-// "enc1:<hex>" for non-empty input, "" for empty, the input unchanged when unavailable.
+// "enc1:<hex>" for non-empty input, "" for empty, the input unchanged when unavailable (no console
+// id). When encryption itself fails (random source, cipher) the result is "": a secret is never
+// written unprotected by mistake.
 std::string protect(const std::string& plain);
 // Accepts "enc1:" values and legacy plain text. Returns false when an "enc1:" value cannot be
 // decrypted (other console, corrupt); `plain` is then empty.

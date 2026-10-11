@@ -195,7 +195,7 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
     if (path == source_ && video_ == video && round_ == round && prepare_ == prepare) { pthread_mutex_unlock(&mutex_); return; }
     source_ = path;
     video_ = video; round_ = round; prepare_ = prepare;
-    paused_ = video; finished_ = false; position_us_ = 0;
+    paused_ = video; finished_ = false; position_us_ = 0; start_us_ = 0;
     ++generation_;
     ready_ = false;
     av_frame_free(&pending_yuv_frame_);
@@ -218,12 +218,38 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
     }
 }
 
+void AnimationPlayer::seekTo(int64_t us) {
+    performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_seek");
+    if (!canSeek()) return;
+    pthread_mutex_lock(&mutex_);
+    const int64_t target = std::max<int64_t>(0, us);
+    const bool play = finished_ ? true : !paused_.load();   // seeking a finished clip resumes it, like Telegram
+    start_us_ = target; position_us_ = target;
+    ++generation_; finished_ = false; status_.clear();
+    paused_ = !play;
+    // The hardware decoder has a fixed pool of frame surfaces; the picture on screen and the queued frame
+    // would still hold two of them while the new decoder starts.
+    av_frame_free(&pending_yuv_frame_);
+    pending_direct_ = false;
+    ready_ = false;   // the dropped frame must not fall through to the RGBA upload with an empty buffer
+    pthread_mutex_unlock(&mutex_);
+    if (yuv_valid_) { vita2d_wait_rendering_done(); releaseYuvTexture(); }
+    // Audio restarts at the same point; both clocks then run from the target.
+    // Audio starts from the decoder thread once the first picture after the IDR is known, so both begin at the same point
+    // (the hardware decoder needs about a second before its first picture, which used to leave the picture behind).
+    audio_.setSource("");
+    if (round_) {   // software-decoded notes have trustworthy picture timestamps: audio restarts at the target right away
+        if (!prepare_) { audio_.setSource(source_, true); audio_.seekTo(target); }
+        audio_.setPlaying(play);
+    }
+}
+
 void AnimationPlayer::toggle() {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_toggle");
     if (!video_ || source_.empty() || !started_) return;
     pthread_mutex_lock(&mutex_);
     bool replay = finished_;
-    if (replay) { ++generation_; finished_ = false; ready_ = false; position_us_ = 0; status_.clear(); }
+    if (replay) { ++generation_; finished_ = false; ready_ = false; position_us_ = 0; start_us_ = 0; status_.clear(); }
     if (replay) { audio_.setSource(""); if (!prepare_) audio_.setSource(source_, true); }
     paused_ = replay ? false : !paused_.load();
     bool play = !paused_;
@@ -309,6 +335,11 @@ void AnimationPlayer::upload() {
         if (texture_ && (vita2d_texture_get_width(texture_) != (unsigned)width_ ||
                          vita2d_texture_get_height(texture_) != (unsigned)height_)) {
             vita2d_free_texture(texture_); texture_ = nullptr;
+        }
+        if (width_ <= 0 || height_ <= 0 || pixels_.size() < (size_t)width_ * height_ * 4) {
+            ready_ = false;
+            pthread_mutex_unlock(&mutex_);
+            return;
         }
         if (!texture_) texture_ = vita2d_create_empty_texture(width_, height_);
         if (texture_) {
@@ -538,6 +569,25 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         sealed_input.release();
     };
     auto fail = [&](const std::string& message) {
+        // A seek that the decoder cannot start from (open GOP, missing parameter sets) degrades to playing from the beginning.
+        if (!interrupted(&job) && video && start_us_.load() > 0 && !prepare) {
+            pthread_mutex_lock(&mutex_);
+            const bool current = generation == generation_;
+            if (FILE* fl = std::fopen("ux0:data/vitagram/video-seek.log", "a")) {
+                std::fprintf(fl, " FALLBACK to start: %s (packets=%u frames=%u seek_base=%lld)\n", message.c_str(),
+                    packets_read, frames_decoded, (long long)start_us_.load());
+                std::fclose(fl);
+            }
+            if (current) { start_us_ = 0; position_us_ = 0; ++generation_; finished_ = false; status_.clear(); }
+            pthread_mutex_unlock(&mutex_);
+            if (current) {
+                audio_.setSource("");
+                audio_.setSource(source_, true);
+                audio_.setPlaying(!paused_);
+                cleanup();
+                return;
+            }
+        }
         // Closing/switching a post is not a decoder error.
         if (!interrupted(&job)) {
             log_decoder_error(message, codec, packet, frame, packets_read, frames_decoded);
@@ -626,12 +676,15 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     int64_t video_wall = 0, tail_wall = 0, tail_position = 0, video_end = 0;
     int64_t audio_wait_started = 0;
     bool wall_fallback = false;
+    bool seek_audio_started = false;
+    int64_t seek_key_us = 0;   // timeline position of the IDR picture a seek landed on
+    const int64_t seek_base = video ? start_us_.load() : 0;   // silent clips and audio fallback continue from the seek target
     // Audio is the master clock. Silent clips use the monotonic wall clock;
     // after a shorter audio track ends, continue its timeline without freezing.
     auto video_time = [&]() -> int64_t {
         int64_t now = sceKernelGetSystemTimeWide();
         if (!video_wall) video_wall = now;
-        if (wall_fallback) return now - video_wall;
+        if (wall_fallback) return seek_base + now - video_wall;
         if (!audio_.finished()) {
             if (!audio_.clockReady()) {
                 if (!audio_wait_started) audio_wait_started = now;
@@ -642,7 +695,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                         std::fprintf(hardware_log, "audio_clock_timeout=1\n");
                         std::fflush(hardware_log);
                     }
-                    return 0;
+                    return seek_base;
                 }
                 video_wall = now;
                 return -1;
@@ -653,7 +706,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             if (!tail_wall) { tail_wall = now; tail_position = audio_.positionUs(); }
             return tail_position + now - tail_wall;
         }
-        return now - video_wall;
+        return seek_base + now - video_wall;
     };
     auto wait_video = [&](int64_t due) -> int64_t {
         while (!interrupted(&job)) {
@@ -695,7 +748,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             int64_t due = next_wall;
             if (origin_pts != AV_NOPTS_VALUE && presentation_pts != AV_NOPTS_VALUE) {
                 int64_t offset = av_rescale_q(presentation_pts - origin_pts, stream->time_base, AVRational{1,1000000});
-                if (offset < 0 || offset > (video ? 86400LL : 300LL) * 1000000) {
+                if ((seek_base == 0 || round) && (offset < 0 || offset > (video ? 86400LL : 300LL) * 1000000)) {
                     frame_error = "Frame timestamp: " + std::to_string(offset) + " us";
                     return false;
                 }
@@ -708,9 +761,29 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             if (video) {
                 if (presentation_pts != AV_NOPTS_VALUE && format->start_time != AV_NOPTS_VALUE)
                     video_due = std::max<int64_t>(0, av_rescale_q(presentation_pts, stream->time_base, AVRational{1,1000000}) - format->start_time);
+                // The hardware decoder restarts its picture timestamps after a seek, so count pictures from the IDR instead.
+                if (seek_base > 0) {
+                    if (!round) video_due = seek_key_us + (int64_t)(frames_decoded - 1) * fallback_delay;
+                    else if (origin_pts != AV_NOPTS_VALUE && presentation_pts != AV_NOPTS_VALUE)   // notes: pictures restart at 0 too
+                        video_due = seek_key_us + std::max<int64_t>(0, av_rescale_q(presentation_pts - origin_pts, stream->time_base, AVRational{1,1000000}));
+                }
                 video_end = video_due + duration;
+                if (seek_base > 0 && !round && !seek_audio_started) {
+                    seek_audio_started = true;
+                    if (!prepare) {
+                        audio_.setSource(source_, true);
+                        audio_.seekTo(video_due);
+                        audio_.setPlaying(!paused_);
+                    }
+                }
                 int64_t clock = wait_video(video_due);
                 now = sceKernelGetSystemTimeWide();
+                if (seek_base > 0 && (frames_decoded <= 3 || frames_decoded % 20 == 0) && frames_decoded <= 140) {
+                    if (FILE* fl = std::fopen("ux0:data/vitagram/video-seek.log", "a")) {
+                        std::fprintf(fl, "  frame=%u due=%lld clock=%lld packets=%u\n", frames_decoded, (long long)video_due, (long long)clock, packets_read);
+                        std::fclose(fl);
+                    }
+                }
                 if (interrupted(&job)) return true;
                 pthread_mutex_lock(&mutex_);
                 if (generation == generation_) position_us_ = video_due;
@@ -839,6 +912,61 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         }
         return true;
     };
+    if (video && seek_base > 0) {
+        // The hardware decoder only outputs pictures from an IDR picture on; started at any other sync sample it
+        // buffers access units without output until "ES buffer full" (0x8062000a). So land on a real IDR packet:
+        // seek, inspect the first packet, and step back to an earlier keyframe while it is not an IDR.
+        const bool h264 = parameters->codec_id == AV_CODEC_ID_H264;
+        const int length_size = parameters->extradata_size > 4 && parameters->extradata[0] == 1 ? (parameters->extradata[4] & 3) + 1 : 4;
+        auto is_idr = [&](const AVPacket* candidate) {
+            const uint8_t* data = candidate->data; const int size = candidate->size;
+            if (size >= 4 && data[0] == 0 && data[1] == 0 && (data[2] == 1 || (data[2] == 0 && data[3] == 1))) {   // Annex B
+                for (int i = 0; i + 4 < size; ++i)
+                    if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && (data[i + 3] & 0x1f) == 5) return true;
+                return false;
+            }
+            for (int i = 0; i + length_size < size;) {   // length-prefixed (MP4)
+                int nal = 0;
+                for (int k = 0; k < length_size; ++k) nal = (nal << 8) | data[i + k];
+                i += length_size;
+                if (nal <= 0 || i + nal > size) break;
+                if ((data[i] & 0x1f) == 5) return true;
+                i += nal;
+            }
+            return false;
+        };
+        const int64_t first_ts = format->start_time != AV_NOPTS_VALUE ? format->start_time : 0;
+        int64_t target = av_rescale_q(seek_base + first_ts, AV_TIME_BASE_Q, stream->time_base);
+        const int64_t floor_ts = av_rescale_q(first_ts, AV_TIME_BASE_Q, stream->time_base);
+        AVPacket* probe = av_packet_alloc();
+        bool landed = false;
+        FILE* seek_log = std::fopen("ux0:data/vitagram/video-seek.log", "a");
+        if (seek_log) std::fprintf(seek_log, "seek target_us=%lld h264=%d\n", (long long)seek_base, h264 ? 1 : 0);
+        for (int attempt = 0; probe && attempt < 16 && !interrupted(&job); ++attempt) {
+            if (av_seek_frame(format, stream_index, target, AVSEEK_FLAG_BACKWARD) < 0) break;
+            bool got = false;
+            while (av_read_frame(format, probe) >= 0) {
+                if (probe->stream_index == stream_index) { got = true; break; }
+                av_packet_unref(probe);
+            }
+            if (!got) break;
+            const int64_t key = probe->dts != AV_NOPTS_VALUE ? probe->dts : probe->pts;
+            const bool idr = !h264 || is_idr(probe);
+            if (seek_log) std::fprintf(seek_log, " attempt=%d key_ts=%lld size=%d idr=%d\n", attempt, (long long)key, probe->size, idr ? 1 : 0);
+            av_packet_unref(probe);
+            if (idr) {
+                // Position the demuxer on that IDR packet again so the decoder receives it first.
+                landed = key != AV_NOPTS_VALUE && av_seek_frame(format, stream_index, key, AVSEEK_FLAG_BACKWARD) >= 0;
+                if (landed) seek_key_us = std::max<int64_t>(0, av_rescale_q(key, stream->time_base, AV_TIME_BASE_Q) - first_ts);
+                break;
+            }
+            if (key == AV_NOPTS_VALUE || key <= floor_ts) break;
+            target = key - 1;
+        }
+        av_packet_free(&probe);
+        if (seek_log) { std::fprintf(seek_log, " landed=%d\n", landed ? 1 : 0); std::fclose(seek_log); }
+        if (!landed && !interrupted(&job)) { fail("Seek: no IDR picture before the target"); return; }
+    }
     bool hardware_recovered = false;
     while (!interrupted(&job)) {
         if (video && paused_ && !(round && !had_frame)) {
@@ -847,6 +975,14 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             if (interrupted(&job)) break;
         }
         if (video && !reservation) reservation.emplace(cpu_scheduler::Role::Video);
+        // The hardware decoder swallows packets faster than it outputs pictures; when late frames are dropped nothing
+        // paces the feed and its elementary stream buffer overflows ("Send packet" failure). Keep the pipeline shallow.
+        if (video && direct_video) {
+            for (int waited = 0; waited < 400 && !interrupted(&job) && packets_read > frames_decoded + 250; ++waited) {
+                sceKernelDelayThread(5000);
+                if (!receive()) { fail(frame_error); return; }
+            }
+        }
         rc = av_read_frame(format, packet);
         if (rc == AVERROR_EOF) {
             rc = avcodec_send_packet(codec, nullptr);

@@ -17,6 +17,9 @@ extern "C" {
 }
 
 namespace {
+constexpr int VideoBitrate = 1536000;
+constexpr int AudioBitrate = 32000;
+constexpr int VideoFrameBudget = VideoBitrate / (8 * video_note::FrameRate);
 struct Resources {
     FILE *frames = nullptr, *pcm = nullptr;
     void *persist = nullptr, *scratch = nullptr, *pixels = nullptr;
@@ -65,8 +68,8 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
         r.frames = std::fopen(frames.c_str(), "rb"); r.pcm = std::fopen(pcm.c_str(), "rb");
         if (!r.frames || !r.pcm) return fail(tr("vne.open_failed"));
         H264E_create_param_t params{};
-        params.width = params.height = Side; params.gop = 20; params.const_input_flag = 1;
-        params.vbv_size_bytes = 128000; params.enableNEON = 1;
+        params.width = params.height = Side; params.gop = KeyframeInterval; params.const_input_flag = 1;
+        params.vbv_size_bytes = VideoBitrate / 8 * 2; params.enableNEON = 1;
         int persistent=0, scratch=0;
         if (H264E_sizeof(&params, &persistent, &scratch)) return fail(tr("vne.h264_params"));
         r.persist=memalign(64,persistent); r.scratch=memalign(64,scratch); r.pixels=memalign(64,FrameBytes);
@@ -79,13 +82,13 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
         if (rc<0 || !r.format) return fail(tr("vne.mp4_muxer_missing"),rc);
         r.audio->sample_rate=SampleRate; r.audio->sample_fmt=AV_SAMPLE_FMT_FLTP;
         av_channel_layout_default(&r.audio->ch_layout,1);
-        r.audio->bit_rate=32000; r.audio->time_base={1,SampleRate};
+        r.audio->bit_rate=AudioBitrate; r.audio->time_base={1,SampleRate};
         r.audio->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         if ((rc=avcodec_open2(r.audio,aac,nullptr))<0) return fail("AAC encoder",rc);
         AVStream* video=avformat_new_stream(r.format,nullptr);
         AVStream* audio=avformat_new_stream(r.format,nullptr);
         if (!video || !audio) return fail(tr("vne.streams"));
-        video->time_base={1,SampleRate}; video->avg_frame_rate={10,1};
+        video->time_base={1,SampleRate}; video->avg_frame_rate={FrameRate,1};
         video->codecpar->codec_type=AVMEDIA_TYPE_VIDEO; video->codecpar->codec_id=AV_CODEC_ID_H264;
         video->codecpar->width=video->codecpar->height=Side; video->codecpar->format=AV_PIX_FMT_YUV420P;
         audio->time_base=r.audio->time_base;
@@ -135,7 +138,10 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
             input.yuv[0]=pixels; input.yuv[1]=pixels+Side*Side; input.yuv[2]=pixels+Side*Side*5/4;
             input.stride[0]=Side; input.stride[1]=input.stride[2]=Side/2;
             H264E_run_param_t run{}; run.encode_speed=H264E_SPEED_FASTEST;
-            run.desired_frame_bytes=6400; run.qp_min=20; run.qp_max=45;
+            // Restore 6400 bytes per image at 30 FPS. Audio PTS are quantized;
+            // their interval must not starve an image or inflate a camera gap.
+            run.desired_frame_bytes=VideoFrameBudget;
+            run.qp_min=20; run.qp_max=45;
             unsigned char* coded=nullptr; int size=0;
             if (H264E_encode(encoder,static_cast<H264E_scratch_t*>(r.scratch),&run,&input,&coded,&size) || size<=0)
                 return fail(tr("vne.h264_encode"));
@@ -153,7 +159,7 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
             if ((rc=av_new_packet(r.packet,size))<0) return fail("H.264 packet",rc);
             std::memcpy(r.packet->data,coded,size);
             r.packet->pts=r.packet->dts=pts; r.packet->duration=next-pts;
-            if (frame_number%20==0) r.packet->flags |= AV_PKT_FLAG_KEY;
+            if (frame_number%KeyframeInterval==0) r.packet->flags |= AV_PKT_FLAG_KEY;
             av_packet_rescale_ts(r.packet,{1,SampleRate},video->time_base); r.packet->stream_index=video->index;
             rc=av_interleaved_write_frame(r.format,r.packet); av_packet_unref(r.packet);
             if (rc<0) return fail("MP4 video",rc);

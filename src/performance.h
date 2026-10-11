@@ -41,7 +41,9 @@ enum class Metric {
     TdActor, TdPoll, TdSocketRead, TdSocketWrite, TdFactorize, TdDhCheck, TdDns,
     TdFileIo, TdLogWrite, TdSocketConnect, MediaValidate, CacheApply,
     CacheRead, CacheParse, CacheMerge, CacheStartupSnapshot, CacheIndexRead, CacheDetailsLoad, CachePause, CacheService, JsonRelease, EventSelect, FirstHistoryRequestWait, FirstHistoryRawWait, FirstHistoryUiWait, FirstHistoryApply, FirstHistoryReady, ChatFirstPresent, ChatFirstLivePresent, FirstHistorySend, FirstHistoryResponse, FirstHistoryParse, ForumRequestWait, ForumSend, ForumResponse, ForumReady, TdFileSync, TdFileMeta, FontsFallback,
-    DirProfilePhotos, DirThumbnails, DirPhotos, DirStickers, DirTemp, MediaRotate, TrashRemove, FolderReady, ReactionResponse, VideoReady, StickerCompactMiss, MessagesCompactHit, MessagesCompactMiss, MessagesCompactUs, MessagesRememberUs, TdFileMetaSticker, TdFileMetaOther, TdFileMetaTemp, TdFileMetaPhotos, TdFileMetaThumbs, TdFileMetaDb, FolderFirstRow, FolderRequests, Count
+    DirProfilePhotos, DirThumbnails, DirPhotos, DirStickers, DirTemp, MediaRotate, TrashRemove, FolderReady, ReactionResponse, VideoReady, StickerCompactMiss, MessagesCompactHit, MessagesCompactMiss, MessagesCompactUs, MessagesRememberUs, TdFileMetaSticker, TdFileMetaOther, TdFileMetaTemp, TdFileMetaPhotos, TdFileMetaThumbs, TdFileMetaDb, FolderFirstRow, FolderRequests,
+    VideoCaptureRead, VideoCaptureCrop, VideoCapturePreview, VideoCaptureWrite, VideoCaptureGpuWait,
+    VideoCaptureQueuePeak, AudioCaptureQueuePeak, VideoCaptureDropped, Count
 };
 constexpr const char* names[] = {
     "frame_us", "ui_work_us", "input_submit_us", "gpu_wait_us", "swap_us", "image_decode_us", "image_upload_us", "emoji_decode_us",
@@ -55,7 +57,9 @@ constexpr const char* names[] = {
     "td_file_io_us", "td_log_write_us", "td_socket_connect_us", "media_validate_us", "cache_apply_us",
     "cache_read_us", "cache_parse_us", "cache_merge_us", "cache_startup_snapshot_us", "cache_index_read_us", "cache_details_load_us", "cache_pause_us", "cache_service_us", "json_release_us", "event_select_us", "first_history_request_wait_us", "first_history_raw_wait_us", "first_history_ui_wait_us", "first_history_apply_us", "first_history_ready_us", "chat_first_present_us", "chat_first_live_present_us", "first_history_send_us", "first_history_response_us", "first_history_parse_us", "forum_request_wait_us", "forum_send_us", "forum_response_us", "forum_ready_us", "td_file_sync_us", "td_file_meta_us", "fonts_fallback_us",
     "dir_profile_photos_entries", "dir_thumbnails_entries", "dir_photos_entries", "dir_stickers_entries", "dir_temp_entries",
-    "media_rotate_us", "trash_remove_us", "folder_ready_us", "reaction_response_us", "video_ready_us", "sticker_compact_miss", "messages_compact_hit", "messages_compact_miss", "messages_compact_us", "messages_remember_us", "td_file_meta_sticker_us", "td_file_meta_other_us", "td_file_meta_temp_us", "td_file_meta_photos_us", "td_file_meta_thumbs_us", "td_file_meta_db_us", "folder_first_row_us", "folder_requests"
+    "media_rotate_us", "trash_remove_us", "folder_ready_us", "reaction_response_us", "video_ready_us", "sticker_compact_miss", "messages_compact_hit", "messages_compact_miss", "messages_compact_us", "messages_remember_us", "td_file_meta_sticker_us", "td_file_meta_other_us", "td_file_meta_temp_us", "td_file_meta_photos_us", "td_file_meta_thumbs_us", "td_file_meta_db_us", "folder_first_row_us", "folder_requests",
+    "video_capture_read_us", "video_capture_crop_us", "video_capture_preview_us", "video_capture_write_us", "video_capture_gpu_wait_us",
+    "video_capture_queue_peak_frames", "audio_capture_queue_peak_blocks", "video_capture_dropped_frames"
 };
 constexpr size_t metric_count = static_cast<size_t>(Metric::Count);
 static_assert(sizeof(names)/sizeof(*names) == metric_count, "Metric names");

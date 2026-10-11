@@ -16,8 +16,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "36.21")
-set(VITAGRAM_VERSION "0.36.21")
+set(VITA_VERSION  "36.52")
+set(VITAGRAM_VERSION "0.36.52")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 
@@ -106,8 +106,54 @@ foreach(LANGUAGE_PATH ${LANGUAGE_FILES})
   list(APPEND LANGUAGE_VPK_FILES FILE "${LANGUAGE_PATH}" "lang/${LANGUAGE_NAME}")
 endforeach()
 
+# Themed L/R glyphs use sprite rectangles from the UI pack manifest.
+set(PHOTO_UI_ROOT "${CMAKE_SOURCE_DIR}/assets/VitaGram_UI_Assets_v1")
+set(PHOTO_UI_VPK_FILES) # The shared manifest is packaged once by UI_VPK_FILES below.
+foreach(PHOTO_UI_THEME dark light)
+  list(APPEND PHOTO_UI_VPK_FILES FILE "${PHOTO_UI_ROOT}/themes/${PHOTO_UI_THEME}/ps_buttons_atlas.png"
+    ui/themes/${PHOTO_UI_THEME}/ps_buttons_atlas.png)
+endforeach()
+
+# PNG UI skin: ship both themes, but keep only the selected theme in RAM.
+# PNG UI skin (assets/VitaGram_UI_Assets_v1): the manifest and only the textures src/ui_skin.cpp loads,
+# packaged as app0:ui/. The optional stronger wave wallpaper replaces the default one with
+# -DVITAGRAM_UI_ALT_BACKGROUND=ON.
+option(VITAGRAM_UI_ALT_BACKGROUND "Use background_alt_960x544.png as the wallpaper" OFF)
+set(UI_ASSET_ROOT "${CMAKE_SOURCE_DIR}/assets/VitaGram_UI_Assets_v1")
+set(UI_SLICES panel row row_focused tab_normal tab_active menu menu_item_focus date_chip media_frame focus_ring
+    progress_track progress_fill scroll_thumb dialog)
+set(UI_BACKGROUND background_960x544.png)
+if(VITAGRAM_UI_ALT_BACKGROUND)
+  set(UI_BACKGROUND background_alt_960x544.png)
+endif()
+set(UI_VPK_FILES)
+list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/manifest.json" ui/manifest.json)
+list(APPEND UI_VPK_FILES FILE "${CMAKE_SOURCE_DIR}/assets/ui_extra/corner_buttons.png" ui/corner_buttons.png)
+foreach(UI_THEME dark light)
+  set(UI_THEME_DIR "${UI_ASSET_ROOT}/themes/${UI_THEME}")
+  foreach(UI_SLICE ${UI_SLICES})
+    list(APPEND UI_VPK_FILES FILE "${UI_THEME_DIR}/9slice/${UI_SLICE}.png" ui/themes/${UI_THEME}/9slice/${UI_SLICE}.png)
+  endforeach()
+  foreach(UI_FIXED ${UI_BACKGROUND} header_960x40.png active_indicator_128x4.png)
+    list(APPEND UI_VPK_FILES FILE "${UI_THEME_DIR}/fixed/${UI_FIXED}" ui/themes/${UI_THEME}/fixed/${UI_FIXED})
+  endforeach()
+  list(APPEND UI_VPK_FILES FILE "${UI_THEME_DIR}/ui_icons_atlas.png" ui/themes/${UI_THEME}/ui_icons_atlas.png)
+  if(NOT DEFINED PHOTO_UI_VPK_FILES)
+    list(APPEND UI_VPK_FILES FILE "${UI_THEME_DIR}/ps_buttons_atlas.png" ui/themes/${UI_THEME}/ps_buttons_atlas.png)
+  endif()
+endforeach()
+foreach(UI_PATH ${UI_VPK_FILES})
+  if(NOT UI_PATH STREQUAL "FILE" AND IS_ABSOLUTE "${UI_PATH}" AND NOT EXISTS "${UI_PATH}")
+    message(FATAL_ERROR "Missing UI asset ${UI_PATH}")
+  endif()
+endforeach()
+if(VITAGRAM_UI_ALT_BACKGROUND)
+  set(UI_DEFINITIONS VITAGRAM_UI_ALT_BACKGROUND=1)
+endif()
+
 add_executable(${PROJECT_NAME}
   src/main.cpp
+  src/ui_battery.cpp
   src/i18n.cpp
   src/download_folder_picker.cpp
   src/upload_picker.cpp
@@ -115,6 +161,8 @@ add_executable(${PROJECT_NAME}
   src/cpu_scheduler.cpp
   src/td_diagnostics.cpp
   src/media_render.cpp
+  src/ui_skin.cpp
+  src/text_font.cpp
   src/image_decoder.cpp
   src/media_cache.cpp
   src/media_trash.cpp
@@ -147,7 +195,7 @@ add_executable(${PROJECT_NAME}
 set_source_files_properties(src/vault_crypto.cpp PROPERTIES COMPILE_OPTIONS "-O3")
 set_source_files_properties(src/download_folder_picker.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/upload_picker.cpp PROPERTIES COMPILE_OPTIONS "-Os")
-set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS "-Os")
+set_source_files_properties(src/main.cpp src/ui_skin.cpp src/vault_ui.cpp PROPERTIES COMPILE_OPTIONS "-Os")
 set_source_files_properties(src/portrait_video.cpp src/video_note_encoder.cpp src/qr_scanner.cpp src/update_core.cpp src/https_client.cpp src/updater.cpp
   PROPERTIES COMPILE_OPTIONS "-Os")
 
@@ -161,6 +209,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
+  ${UI_DEFINITIONS}
   VITAGRAM_VERSION="${VITAGRAM_VERSION}"
   VITAGRAM_PERFORMANCE=$<BOOL:${VITAGRAM_PERFORMANCE}>
   VITAGRAM_TGS_DIAGNOSTIC=$<BOOL:${VITAGRAM_TGS_DIAGNOSTIC}>
@@ -186,6 +235,9 @@ else()
 endif()
 
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=utf8_to_ucs2")
+# The prepared VitaSDK linker script reserves this gap for vita-elf-create's
+# SCE metadata, whose size can exceed the incidental padding after code.
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--defsym=__sce_headroom=0x10000")
 
 target_link_libraries(${PROJECT_NAME}
   Td::TdJsonStatic
@@ -263,6 +315,10 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE assets/NotoSansSymbols2-Regular.ttf assets/NotoSansSymbols2-Regular.ttf
   FILE assets/NotoSansSymbols2-LICENSE.txt assets/NotoSansSymbols2-LICENSE.txt
   FILE ${ANIMATION_FFMPEG_ROOT}/share/COPYING.LGPLv2.1 assets/FFmpeg-LICENSE.txt
+  FILE assets/VitaGram_UI_Assets_v1/themes/dark/buttons/L.png ui/themes/dark/buttons/L.png
+  FILE assets/VitaGram_UI_Assets_v1/themes/dark/buttons/R.png ui/themes/dark/buttons/R.png
+  ${PHOTO_UI_VPK_FILES}
   ${LANGUAGE_VPK_FILES}
+  ${UI_VPK_FILES}
   ${RLOTTIE_VPK_FILES}
 )

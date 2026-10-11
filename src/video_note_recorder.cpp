@@ -2,6 +2,7 @@
 #include "i18n.h"
 #include "video_note_recorder.h"
 #include "video_note_frame.h"
+#include "video_note_capture_buffer.h"
 #include "video_note_encoder.h"
 #include "cpu_scheduler.h"
 #include <vita2d.h>
@@ -16,10 +17,12 @@
 using namespace video_note;
 namespace {
 constexpr int Grain = 512;
+static_assert(Grain==CaptureBuffer::AudioGrain,"Audio queue block size");
 std::string camera_error(const std::string& text, int rc) {
     char code[24]; std::snprintf(code,sizeof(code)," (0x%08X)",(unsigned)rc); return text+code;
 }
 }
+VideoNoteRecorder::VideoNoteRecorder() = default;
 VideoNoteRecorder::~VideoNoteRecorder() { cancel(); pthread_mutex_destroy(&mutex_); }
 void VideoNoteRecorder::setStatus(const std::string& value) {
     pthread_mutex_lock(&mutex_); status_=value; pthread_mutex_unlock(&mutex_);
@@ -37,6 +40,7 @@ bool VideoNoteRecorder::open(const std::string& path) {
     samples_=0; device_=SCE_CAMERA_DEVICE_FRONT; progress_=0; level_=0;
     cancel_=begin_=finish_=switch_=false;
     audio_stop_=audio_done_=audio_error_=false;
+    writer_error_=false;
     preview_pixels_.assign(Side*Side,0); preview_ready_=false;
     vita2d_wait_rendering_done();
     texture_=vita2d_create_empty_texture(Side,Side);
@@ -81,7 +85,7 @@ bool VideoNoteRecorder::openCamera(int device) {
     device_=device;
     SceCameraInfo info{}; info.size=sizeof(info);
     info.priority=SCE_CAMERA_PRIORITY_SHARE; info.format=SCE_CAMERA_FORMAT_YUV420_PLANE;
-    info.resolution=SCE_CAMERA_RESOLUTION_320_240; info.framerate=SCE_CAMERA_FRAMERATE_15_FPS; info.range=1;
+    info.resolution=SCE_CAMERA_RESOLUTION_320_240; info.framerate=SCE_CAMERA_FRAMERATE_30_FPS; info.range=1;
     info.sizeIBase=320*240; info.sizeUBase=info.sizeVBase=320*240/4;
     info.pIBase=camera_; info.pUBase=camera_+info.sizeIBase; info.pVBase=camera_+info.sizeIBase+info.sizeUBase;
     rc=sceCameraOpen(device,&info);
@@ -98,31 +102,64 @@ void VideoNoteRecorder::closeCamera() {
 }
 void* VideoNoteRecorder::entry(void* self) { static_cast<VideoNoteRecorder*>(self)->run(); return nullptr; }
 void* VideoNoteRecorder::audioEntry(void* self) { static_cast<VideoNoteRecorder*>(self)->captureAudio(); return nullptr; }
+void* VideoNoteRecorder::writerEntry(void* self) { static_cast<VideoNoteRecorder*>(self)->writeCapture(); return nullptr; }
+
+void VideoNoteRecorder::writeCapture() {
+    cpu_scheduler::Thread role(cpu_scheduler::Role::Storage);
+    FILE* raw=std::fopen(raw_path_.c_str(),"wb");
+    FILE* pcm=std::fopen(pcm_path_.c_str(),"wb");
+    auto fail_write=[&](const char* key) {
+        setStatus(tr(key)); writer_error_=true; capture_->abort();
+    };
+    if (!raw || !pcm) fail_write(raw ? "vnr.audio_file_failed" : "vnr.record_file_space");
+    // Supply owned memory and check success: the old NULL-buffer request could
+    // fall back to a smaller allocation. These buffers remain alive until close.
+    else if (std::setvbuf(raw,capture_->video_stdio.data(),_IOFBF,capture_->video_stdio.size()) ||
+             std::setvbuf(pcm,capture_->audio_stdio.data(),_IOFBF,capture_->audio_stdio.size()))
+        fail_write("vnr.record_file_space");
+    CaptureBuffer::Item item{};
+    while (!writer_error_ && !cancel_ && capture_->next(item)) {
+        performance::Scope measurement(performance::Metric::VideoCaptureWrite);
+        FILE* file=item.audio ? pcm : raw;
+        bool ok=item.audio || std::fwrite(&item.pts,sizeof(item.pts),1,file)==1;
+        if (ok) ok=std::fwrite(item.data,1,item.bytes,file)==item.bytes;
+        capture_->complete(item);
+        if (!ok) fail_write(item.audio ? "vnr.audio_save_space" : "vnr.frame_save_space");
+    }
+    // The final stdio flush must finish before the encoder opens these files.
+    if (raw) {
+        performance::Scope measurement(performance::Metric::VideoCaptureWrite);
+        if (std::fclose(raw)) fail_write("vnr.video_save_error");
+    }
+    if (pcm) {
+        performance::Scope measurement(performance::Metric::VideoCaptureWrite);
+        if (std::fclose(pcm)) fail_write("vnr.audio_save_error");
+    }
+}
 
 void VideoNoteRecorder::captureAudio() {
     cpu_scheduler::Thread role(cpu_scheduler::Role::Audio);
     cpu_scheduler::Media workload(cpu_scheduler::Role::Audio);
     int port=sceAudioInOpenPort(SCE_AUDIO_IN_PORT_TYPE_VOICE,Grain,SampleRate,SCE_AUDIO_IN_PARAM_FORMAT_S16_MONO);
-    FILE* file=port>=0 ? std::fopen(pcm_path_.c_str(),"wb") : nullptr;
-    if (port<0 || !file) {
-        if (port>=0) sceAudioInReleasePort(port);
-        setStatus(port<0 ? tr("rec.mic_unavailable") : tr("vnr.audio_file_failed"));
+    if (port<0) {
+        setStatus(tr("rec.mic_unavailable"));
         audio_error_=true; audio_done_=true; return;
     }
     int16_t pcm[Grain];
-    while (!cancel_ && !audio_stop_ && samples_<SampleRate*MaxSeconds) {
+    while (!cancel_ && !audio_stop_ && !writer_error_ && samples_<SampleRate*MaxSeconds) {
         int rc=sceAudioInInput(port,pcm);
         if (rc<0) { setStatus(tr("rec.mic_read_error")); audio_error_=true; break; }
         int count=rc>0 && rc<=Grain ? rc : Grain;
         count=std::min<uint32_t>(count,SampleRate*MaxSeconds-samples_.load());
         int peak=0; for (int i=0;i<count;++i) peak=std::max(peak,std::abs((int)pcm[i]));
         level_=std::min(100,peak*100/32768);
-        if (std::fwrite(pcm,sizeof(int16_t),count,file)!=(size_t)count) {
-            setStatus(tr("vnr.audio_save_space")); audio_error_=true; break;
+        auto queued=capture_->audio(pcm,count);
+        if (queued!=CaptureBuffer::Result::Queued) {
+            if (queued==CaptureBuffer::Result::Full) setStatus(tr("vnr.audio_save_space"));
+            audio_error_=true; break;
         }
         samples_.fetch_add(count);
     }
-    if (std::fclose(file)) { setStatus(tr("vnr.audio_save_error")); audio_error_=true; }
     sceAudioInReleasePort(port); audio_done_=true;
 }
 
@@ -132,10 +169,11 @@ void VideoNoteRecorder::run() {
     if (!openCamera(SCE_CAMERA_DEVICE_FRONT)) { state_=State::Error; return; }
     state_=State::Preview; setStatus(tr("vnr.hint_preview"));
     std::vector<uint8_t> frame(FrameBytes);
+    std::vector<uint8_t> camera_copy(320*240*3/2);
+    std::vector<uint32_t> preview_frame(Side*Side);
     uint64_t last_frame=UINT64_MAX;
-    uint32_t next_capture=0;
+    uint32_t last_pts=0;
     unsigned frames=0;
-    FILE* raw=nullptr;
     bool error=false;
     while (!cancel_) {
         if (switch_.exchange(false)) {
@@ -147,43 +185,67 @@ void VideoNoteRecorder::run() {
             last_frame=UINT64_MAX;
         }
         if (begin_.exchange(false) && state()==State::Preview) {
-            raw=std::fopen(raw_path_.c_str(),"wb");
-            if (!raw) { setStatus(tr("vnr.record_file_space")); error=true; break; }
+            try { capture_.reset(new CaptureBuffer()); }
+            catch (const std::bad_alloc&) { setStatus(tr("vnr.err.camera_memory")); error=true; break; }
+            setStatus(tr("rec.recording"));
             pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr,128*1024);
-            int rc=pthread_create(&audio_thread_,&attr,audioEntry,this); pthread_attr_destroy(&attr);
+            int rc=pthread_create(&writer_thread_,&attr,writerEntry,this);
+            if (!rc) { writer_started_=true; rc=pthread_create(&audio_thread_,&attr,audioEntry,this); }
+            pthread_attr_destroy(&attr);
             if (rc) { setStatus(tr("vnr.mic_start_failed")); error=true; break; }
-            audio_started_=true; state_=State::Recording; setStatus(tr("rec.recording")); last_frame=UINT64_MAX;
+            audio_started_=true; state_=State::Recording; last_frame=UINT64_MAX;
         }
-        if (state()==State::Recording && (finish_ || audio_done_)) break;
+        if (state()==State::Recording && (finish_ || audio_done_ || writer_error_)) break;
         SceCameraRead read{}; read.size=sizeof(read); read.mode=1;
+        performance::Scope read_measurement(performance::Metric::VideoCaptureRead);
         int rc=sceCameraRead(device_,&read);
+        read_measurement.finish();
         if (rc>=0 && read.frame!=last_frame) {
-            last_frame=read.frame; crop(camera_,frame.data());
+            // Avoid thousands of individual reads from uncached DMA memory.
+            performance::Scope crop_measurement(performance::Metric::VideoCaptureCrop);
+            last_frame=read.frame; std::memcpy(camera_copy.data(),camera_,camera_copy.size());
+            crop(camera_copy.data(),frame.data()); crop_measurement.finish();
+            performance::Scope preview_measurement(performance::Metric::VideoCapturePreview);
+            rgba(frame.data(),preview_frame.data());
             pthread_mutex_lock(&mutex_);
-            rgba(frame.data(),preview_pixels_.data()); preview_ready_=true;
+            preview_pixels_.swap(preview_frame); preview_ready_=true;
             pthread_mutex_unlock(&mutex_);
+            preview_measurement.finish();
             uint32_t clock=samples_.load();
             // Anchor the first image at audio time zero. Subsequent camera samples
             // use the microphone sample clock, so switching cameras cannot drift A/V.
             uint32_t pts=clock>Grain ? clock-Grain : 0;
-            if (state()==State::Recording && (frames==0 || pts>=next_capture) && clock<SampleRate*MaxSeconds) {
+            // Keep every new camera image. The microphone clock advances in 32 ms
+            // blocks; a deadline measured from the last image discards good frames.
+            // Polling jitter can put two images in one audio block: keep their PTS
+            // strictly increasing, without extending past the recorded audio.
+            if (frames) pts=std::max(pts,last_pts+1);
+            if (state()==State::Recording && (!frames || pts<clock) && clock<SampleRate*MaxSeconds) {
                 if (!frames) pts=0;
-                if (std::fwrite(&pts,sizeof(pts),1,raw)!=1 || std::fwrite(frame.data(),1,FrameBytes,raw)!=FrameBytes) {
-                    setStatus(tr("vnr.frame_save_space")); error=true; break;
-                }
-                ++frames; next_capture=pts+FrameInterval;
+                auto queued=capture_->video(pts,frame.data());
+                if (queued==CaptureBuffer::Result::Stopped) { error=true; break; }
+                if (queued==CaptureBuffer::Result::Queued) { ++frames; last_pts=pts; }
             }
         } else if (rc<0 && rc!=(int)SCE_CAMERA_ERROR_ALREADY_READ && rc!=(int)SCE_CAMERA_ERROR_NOT_ACTIVE && rc!=(int)SCE_CAMERA_ERROR_TIMEOUT) {
             setStatus(camera_error(tr("cam.error"),rc)); error=true; break;
         }
-        sceKernelDelayThread(10000);
+        sceKernelDelayThread(2000);
     }
     audio_stop_=true;
     if (audio_started_) { pthread_join(audio_thread_,nullptr); audio_started_=false; }
     closeCamera();
-    if (raw && std::fclose(raw)) { setStatus(tr("vnr.video_save_error")); error=true; }
+    if (capture_) {
+        if (cancel_ || error || audio_error_ || writer_error_) capture_->abort();
+        else { state_=State::Encoding; setStatus(tr("vnr.encoding")); capture_->finish(); }
+        if (writer_started_) { pthread_join(writer_thread_,nullptr); writer_started_=false; }
+        auto stats=capture_->stats();
+        performance::observe(performance::Metric::VideoCaptureQueuePeak,stats.video_peak);
+        performance::observe(performance::Metric::AudioCaptureQueuePeak,stats.audio_peak);
+        performance::observe(performance::Metric::VideoCaptureDropped,stats.dropped);
+        capture_.reset();
+    }
     if (cancel_) return;
-    if (error || audio_error_) { state_=State::Error; return; }
+    if (error || audio_error_ || writer_error_) { state_=State::Error; return; }
     if (!frames || samples_<SampleRate) { fail(tr("vnr.too_short")); return; }
     state_=State::Encoding; setStatus(tr("vnr.encoding"));
     std::string message;
@@ -197,7 +259,14 @@ void VideoNoteRecorder::run() {
 }
 void VideoNoteRecorder::upload() {
     if (!texture_) return;
+    // UI runs at 60 Hz while the camera supplies 30 Hz. Do not wait on the GPU
+    // at all on iterations that have no fresh preview image.
+    if (pthread_mutex_trylock(&mutex_)) return;
+    bool ready=preview_ready_; pthread_mutex_unlock(&mutex_);
+    if (!ready) return;
+    performance::Scope wait_measurement(performance::Metric::VideoCaptureGpuWait);
     vita2d_wait_rendering_done();
+    wait_measurement.finish();
     pthread_mutex_lock(&mutex_);
     if (preview_ready_) {
         auto* data=static_cast<uint8_t*>(vita2d_texture_get_datap(texture_));

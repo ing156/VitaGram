@@ -11,11 +11,17 @@ external/font-tools-venv/
 /assets/NotoColorEmoji_b-64.ttf
 /assets/NotoSansJP-JIS.otf
 CMakeFiles/
+recovery/
 
 # test metrics
 docs/
 !docs/controls-analysis.md
-tests/
+tests/*
+!tests/video_note_capture_buffer_test.cpp
+!tests/text_font_test.cpp
+!tests/font-stubs/
+tests/font-stubs/*
+!tests/font-stubs/vita2d.h
 
 # executables and package outputs
 *.vpk

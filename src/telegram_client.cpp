@@ -949,6 +949,11 @@ void TelegramClient::sendJson(void* opaque) {
     const char* method = json_str(root, "@type");
     if (!std::strcmp(method, "sendMessage") && current_topic_ && !json_object_get(root, "topic_id"))
         json_object_set_new(root, "topic_id", json_pack("{s:s,s:i}", "@type", "messageTopicForum", "forum_topic_id", current_topic_));
+    // Anything sent from the comments view goes into that thread (media senders pass a null topic).
+    if (current_thread_ && json_i53(root, "chat_id") == current_chat_id_ &&
+        (!std::strcmp(method, "sendMessage") || !std::strcmp(method, "sendMessageAlbum") || !std::strcmp(method, "forwardMessages")) &&
+        !json_is_object(json_object_get(root, "topic_id")))
+        json_object_set_new(root, "topic_id", json_pack("{s:s,s:I}", "@type", "messageTopicThread", "message_thread_id", (json_int_t)current_thread_));
     const char* kind = json_str(json_object_get(root, "@extra"), "kind");
     if (!std::strcmp(kind, "media_upload")) {
         auto* options = json_object_get(root, "options");
@@ -960,7 +965,7 @@ void TelegramClient::sendJson(void* opaque) {
     }
     int priority = 1;
     if (!std::strncmp(kind, "poll_", 5) || !std::strncmp(kind, "reaction_", 9) || !std::strncmp(kind, "sticker_", 8) || !std::strncmp(kind, "forum_", 6) || !std::strcmp(kind, "proxy_check")) priority = 4;
-    if (!std::strcmp(method, "getChatHistory") || !std::strcmp(method, "getForumTopicHistory") || !std::strcmp(method, "getForumTopics")) priority = 9;
+    if (!std::strcmp(method, "getChatHistory") || !std::strcmp(method, "getForumTopicHistory") || !std::strcmp(method, "getMessageThreadHistory") || !std::strcmp(method, "getForumTopics")) priority = 9;
     else if (!std::strcmp(method, "downloadFile")) priority = json_i53(root, "priority") >= 32 ? 4 : 1;
     else if (!std::strcmp(method, "cancelDownloadFile") || !std::strcmp(method, "sendMessage") ||
              !std::strcmp(method, "openChat") || !std::strcmp(method, "closeChat")) priority = 4;
@@ -1035,7 +1040,7 @@ void TelegramClient::resendCode() {
 }
 
 void TelegramClient::cancelInput() {
-    if (input_kind_ == InputKind::Message) input_kind_ = InputKind::None;
+    if (input_kind_ == InputKind::Message) { input_kind_ = InputKind::None; reply_target_ = 0; }
 }
 
 void TelegramClient::submitInput(const std::string& value) {
@@ -1075,6 +1080,10 @@ void TelegramClient::submitInput(const std::string& value) {
         json_object_set_new(root, "chat_id", json_integer(current_chat_id_));
         json_object_set_new(root, "message_thread_id", json_integer(0));
         json_object_set_new(root, "reply_to_message_id", json_integer(0));
+        if (reply_target_) {
+            json_object_set_new(root, "reply_to", json_pack("{s:s,s:I}", "@type", "inputMessageReplyToMessage", "message_id", (json_int_t)reply_target_));
+            reply_target_ = 0;
+        }
         json_object_set_new(root, "options", json_null());
         json_object_set_new(root, "reply_markup", json_null());
 
@@ -1141,7 +1150,7 @@ void TelegramClient::processAuth(void* opaque) {
         if (vault::disabling()) migrateDatabaseKey();
         cache_restore_allowed_ = false;
         startup_chat_snapshots_.clear();
-        ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); supergroup_forum_.clear(); user_photos_.clear(); sender_requests_.clear();
+        ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); supergroup_forum_.clear(); supergroup_member_.clear(); basic_group_member_.clear(); supergroup_rights_.clear(); basic_group_rights_.clear(); reply_target_ = forward_chat_ = forward_message_ = 0; clearSearch(); user_photos_.clear(); sender_requests_.clear();
         folder_windows_.clear(); folders_.clear(); selected_folder_ = 0; user_presence_.clear();
         setInput(InputKind::Phone, tr("auth.prompt.phone"));
     } else if (!std::strcmp(type, "authorizationStateWaitCode")) {
@@ -1200,6 +1209,162 @@ void TelegramClient::processAuth(void* opaque) {
 bool TelegramClient::currentChatIsGroup() const {
     for (const auto& chat : known_chats_) if (chat.id == current_chat_id_) return chat.group;
     return false;
+}
+
+TelegramClient::Membership TelegramClient::membershipOf(void* opaque) {
+    json_t* status = static_cast<json_t*>(opaque);
+    const char* type = json_str(status, "@type");
+    const bool is_member = json_is_true(json_object_get(status, "is_member"));
+    if (!std::strcmp(type, "chatMemberStatusCreator")) return is_member ? Membership::Creator : Membership::NotMember;
+    if (!std::strcmp(type, "chatMemberStatusRestricted")) return is_member ? Membership::Member : Membership::NotMember;
+    if (!std::strcmp(type, "chatMemberStatusAdministrator") || !std::strcmp(type, "chatMemberStatusMember")) return Membership::Member;
+    if (!std::strcmp(type, "chatMemberStatusLeft") || !std::strcmp(type, "chatMemberStatusBanned")) return Membership::NotMember;
+    return Membership::Unknown;
+}
+
+TelegramClient::Membership TelegramClient::currentMembership() const {
+    for (const auto& chat : known_chats_) if (chat.id == current_chat_id_) {
+        if (chat.supergroup_id) {
+            auto known = supergroup_member_.find(chat.supergroup_id);
+            return known == supergroup_member_.end() ? Membership::Unknown : known->second;
+        }
+        if (chat.basic_group_id) {
+            auto known = basic_group_member_.find(chat.basic_group_id);
+            // A basic group cannot be joined again without an invitation.
+            if (known == basic_group_member_.end()) return Membership::Unknown;
+            return known->second == Membership::NotMember ? Membership::None : known->second;
+        }
+        break;
+    }
+    return Membership::None;
+}
+
+TelegramClient::PostRights TelegramClient::postRightsOf(void* opaque) {
+    json_t* status = static_cast<json_t*>(opaque);
+    const char* type = json_str(status, "@type");
+    PostRights r;
+    if (!std::strcmp(type, "chatMemberStatusCreator")) r.member = r.admin = json_is_true(json_object_get(status, "is_member"));
+    else if (!std::strcmp(type, "chatMemberStatusAdministrator")) {
+        r.member = true;
+        json_t* rights = json_object_get(status, "rights");
+        r.admin = json_is_true(json_object_get(rights ? rights : status, "can_post_messages"));
+    } else if (!std::strcmp(type, "chatMemberStatusMember")) r.member = true;
+    else if (!std::strcmp(type, "chatMemberStatusRestricted"))
+        r.member = json_is_true(json_object_get(status, "is_member")) &&
+                   json_is_true(json_object_get(json_object_get(status, "permissions"), "can_send_basic_messages"));
+    return r;
+}
+
+bool TelegramClient::canPostCurrent() const {
+    if (!ready_ || !current_chat_id_ || topics_open_) return false;
+    for (const auto& chat : known_chats_) if (chat.id == current_chat_id_) {
+        if (chat.user_id) return true;
+        const auto& rights = chat.supergroup_id ? supergroup_rights_ : basic_group_rights_;
+        auto known = rights.find(chat.supergroup_id ? chat.supergroup_id : chat.basic_group_id);
+        if (known == rights.end()) return false;
+        if (chat.channel) return known->second.admin;
+        // Restricted members already carry their own can_send_basic_messages in the rights.
+        return known->second.member && (known->second.admin || chat.can_send);
+    }
+    return false;
+}
+
+void TelegramClient::replyTo(int64_t message_id) {
+    if (!canPostCurrent() || !message_id) return;
+    reply_target_ = message_id;
+    requestCompose();
+}
+
+void TelegramClient::beginForward(int64_t message_id) {
+    if (!current_chat_id_ || !message_id) return;
+    forward_chat_ = current_chat_id_; forward_message_ = message_id;
+    notice_ = tr("notice.forward_picked");
+    notice_until_ = sceKernelGetSystemTimeWide() + 4000000;
+}
+
+bool TelegramClient::pasteForward() {
+    if (!forward_message_ || !canPostCurrent()) return false;
+    json_t* ids = json_array();
+    json_array_append_new(ids, json_integer(forward_message_));
+    auto* request = json_pack("{s:s,s:I,s:I,s:o,s:b,s:b}", "@type", "forwardMessages", "chat_id", (json_int_t)current_chat_id_,
+                              "from_chat_id", (json_int_t)forward_chat_, "message_ids", ids, "send_copy", 1, "remove_caption", 0);
+    if (current_topic_)
+        json_object_set_new(request, "topic_id", json_pack("{s:s,s:i}", "@type", "messageTopicForum", "forum_topic_id", current_topic_));
+    json_object_set_new(request, "@extra", json_string("send_message"));
+    sendJson(request);
+    forward_message_ = forward_chat_ = 0;
+    status_ = tr("common.sending");
+    return true;
+}
+
+void TelegramClient::joinCurrentChat() {
+    if (!ready_ || !current_chat_id_ || membership_pending_) return;
+    membership_pending_ = true;
+    auto* request = json_pack("{s:s,s:I}", "@type", "joinChat", "chat_id", (json_int_t)current_chat_id_);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:s,s:I}", "kind", "group_action", "action", "join", "chat", (json_int_t)current_chat_id_));
+    sendJson(request);
+}
+
+bool TelegramClient::currentChatIsPrivate() const {
+    for (const auto& chat : known_chats_) if (chat.id == current_chat_id_) return chat.user_id != 0;
+    return false;
+}
+
+void TelegramClient::deleteCurrentHistory(bool remove) {
+    if (!ready_ || !current_chat_id_ || membership_pending_ || !currentChatIsPrivate()) return;
+    membership_pending_ = true;
+    auto* request = json_pack("{s:s,s:I,s:b,s:b}", "@type", "deleteChatHistory", "chat_id", (json_int_t)current_chat_id_,
+                              "remove_from_chat_list", remove, "revoke", 0);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:s,s:I}", "kind", "history_action", "action", remove ? "delete" : "clear", "chat", (json_int_t)current_chat_id_));
+    sendJson(request);
+}
+
+void TelegramClient::leaveCurrentGroup() {
+    if (!ready_ || !current_chat_id_ || membership_pending_) return;
+    membership_pending_ = true;
+    auto* request = json_pack("{s:s,s:I}", "@type", "leaveChat", "chat_id", (json_int_t)current_chat_id_);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:s,s:I}", "kind", "group_action", "action", "leave", "chat", (json_int_t)current_chat_id_));
+    sendJson(request);
+}
+
+void TelegramClient::searchChats(const std::string& query) {
+    search_query_ = query;
+    ++search_generation_;
+    for (auto& ids : search_ids_) ids.clear();
+    search_pending_ = 0;
+    if (!ready_ || query.empty()) return;
+    static const char* const methods[3] = {"searchChats", "searchChatsOnServer", "searchPublicChats"};
+    for (int source = 0; source < 3; ++source) {
+        auto* request = json_pack("{s:s,s:s}", "@type", methods[source], "query", query.c_str());
+        if (source < 2) json_object_set_new(request, "limit", json_integer(20));
+        json_object_set_new(request, "@extra", json_pack("{s:s,s:i,s:i}", "kind", "search_chats", "generation", (int)search_generation_, "source", source));
+        sendJson(request);
+        ++search_pending_;
+    }
+}
+
+void TelegramClient::clearSearch() {
+    ++search_generation_;
+    search_pending_ = 0;
+    search_query_.clear();
+    for (auto& ids : search_ids_) ids.clear();
+}
+
+std::vector<ChatItem> TelegramClient::searchResults() const {
+    std::vector<ChatItem> out;
+    for (const auto& ids : search_ids_) for (int64_t id : ids) {
+        if (std::any_of(out.begin(), out.end(), [&](const ChatItem& c) { return c.id == id; })) continue;
+        auto found = std::find_if(known_chats_.begin(), known_chats_.end(), [&](const ChatItem& c) { return c.id == id; });
+        if (found != known_chats_.end()) out.push_back(*found);
+    }
+    return out;
+}
+
+void TelegramClient::ensureSearchMedia(int64_t chat_id) {
+    for (const auto& chat : known_chats_) if (chat.id == chat_id) {
+        if (chat.avatar_path.empty() && chat.avatar_file_id) requestFile(chat.avatar_file_id, 8, true);
+        return;
+    }
 }
 
 void TelegramClient::parseUser(void* opaque) {
@@ -1315,12 +1480,16 @@ void TelegramClient::parseChat(void* opaque) {
     ChatItem item;
     json_t* chat_type = json_object_get(chat, "type");
     item.supergroup_id = json_i53(chat_type, "supergroup_id");
+    item.basic_group_id = json_i53(chat_type, "basic_group_id");
+    item.channel = !std::strcmp(json_str(chat_type, "@type"), "chatTypeSupergroup") && json_is_true(json_object_get(chat_type, "is_channel"));
     if (!std::strcmp(json_str(chat_type, "@type"), "chatTypePrivate") || !std::strcmp(json_str(chat_type, "@type"), "chatTypeSecret"))
         item.user_id = json_i53(chat_type, "user_id");
     item.group = !std::strcmp(json_str(chat_type, "@type"), "chatTypeBasicGroup") ||
         (!std::strcmp(json_str(chat_type, "@type"), "chatTypeSupergroup") && !json_is_true(json_object_get(chat_type, "is_channel")));
     item.id = json_i53(chat, "id");
     if (!item.id) return;
+    if (json_t* permissions = json_object_get(chat, "permissions"))
+        item.can_send = json_is_true(json_object_get(permissions, "can_send_basic_messages"));
     updateReadOutbox(item.id, json_i53(chat, "last_read_outbox_message_id"));
 
     // Retain metadata across tabs; membership/order belongs to each TDLib list.
@@ -1370,16 +1539,63 @@ static void parse_reactions(MessageItem& message, json_t* info) {
     }
 }
 
+// Comments exist only for channel posts that have a discussion: TDLib then sends reply_info (null otherwise),
+// so nothing is invented for posts without one. `info` is a messageInteractionInfo or an update carrying it.
+static void parse_comments(MessageItem& message, json_t* info) {
+    auto* nested=json_object_get(info,"interaction_info");
+    if (nested) info=nested;
+    auto* reply=json_object_get(info,"reply_info");
+    message.has_comments=message.channel_post && json_is_object(reply);
+    message.comment_count=message.has_comments ? std::max(0,(int)json_i53(reply,"reply_count")) : 0;
+    message.comments_message_id=message.has_comments ? message.id : 0;
+}
+
+// voiceNote.waveform is base64 of 5-bit samples packed low bits first (Telegram's format).
+static std::vector<uint8_t> decode_waveform(const char* encoded) {
+    std::vector<uint8_t> bytes, samples;
+    if (!encoded || !*encoded) return samples;
+    uint32_t accumulator = 0; int bits = 0;
+    for (const char* p = encoded; *p && *p != '='; ++p) {
+        int v;
+        if (*p >= 'A' && *p <= 'Z') v = *p - 'A'; else if (*p >= 'a' && *p <= 'z') v = *p - 'a' + 26;
+        else if (*p >= '0' && *p <= '9') v = *p - '0' + 52; else if (*p == '+' || *p == '-') v = 62;
+        else if (*p == '/' || *p == '_') v = 63; else continue;
+        accumulator = (accumulator << 6) | (uint32_t)v; bits += 6;
+        if (bits >= 8) { bits -= 8; bytes.push_back((uint8_t)((accumulator >> bits) & 255)); }
+    }
+    const size_t count = std::min<size_t>(bytes.size() * 8 / 5, 256);
+    for (size_t i = 0; i < count; ++i) {
+        const size_t byte = i * 5 / 8, shift = i * 5 % 8;
+        const uint32_t pair = bytes[byte] | (byte + 1 < bytes.size() ? (uint32_t)bytes[byte + 1] << 8 : 0u);
+        samples.push_back((uint8_t)((pair >> shift) & 31));
+    }
+    return samples;
+}
+
 static void parse_transcription(MessageItem& message, json_t* note) {
     json_t* result = json_object_get(note, "speech_recognition_result");
     const char* type = json_str(result, "@type");
     message.transcription_pending = !std::strcmp(type, "speechRecognitionResultPending");
     message.transcription_complete = !std::strcmp(type, "speechRecognitionResultText");
+    message.transcription_error = !std::strcmp(type, "speechRecognitionResultError") ?
+        json_str(json_object_get(result, "error"), "message") : "";
     message.transcription = !std::strcmp(type, "speechRecognitionResultText") ? json_str(result, "text") :
         message.transcription_pending ? json_str(result, "partial_text") : "";
     if (message.transcription.find_first_not_of(" \t\r\n") == std::string::npos) message.transcription.clear();
 }
 
+
+// One-line preview of a message for reply quotes: its text, otherwise its media label.
+static std::string reply_preview_text(const MessageItem& item) {
+    std::string text = item.text.empty() ? item.media_label : item.text;
+    for (char& c : text) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    if (text.size() > 200) {
+        size_t end = 200;
+        while (end && ((unsigned char)text[end] & 0xc0) == 0x80) --end;
+        text.resize(end);
+    }
+    return text;
+}
 
 MessageItem TelegramClient::parseMessage(void* opaque) {
     json_t* msg = (json_t*)opaque;
@@ -1389,6 +1605,8 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
     out.sender_chat = !std::strcmp(json_str(sender, "@type"), "messageSenderChat");
     out.sender_id = json_i53(sender, out.sender_chat ? "chat_id" : "user_id");
     out.id = json_i53(msg, "id");
+    out.channel_post = json_is_true(json_object_get(msg, "is_channel_post"));
+    parse_comments(out, json_object_get(msg, "interaction_info"));
     out.date = json_i53(msg, "date");
     out.edit_date = json_i53(msg, "edit_date");
     out.media_album_id = json_i53(msg, "media_album_id");
@@ -1586,7 +1804,7 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         out.voice = true;
         out.audio = !std::strcmp(type, "messageAudio");
         json_t* note = json_object_get(content, out.audio ? "audio" : "voice_note");
-        if (!out.audio) parse_transcription(out, note);
+        if (!out.audio) { parse_transcription(out, note); out.waveform = decode_waveform(json_str(note, "waveform")); }
         json_t* file = json_object_get(note, out.audio ? "audio" : "voice");
         if (out.audio) {
             out.audio_title = json_str(note, "title");
@@ -1650,14 +1868,20 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         out.text = serviceMessageText(out);
     }
     else out.text = type[0] ? std::string("[") + type + "]" : "[" + tr("media.message") + "]";
-    auto add_link = [&](const std::string& url) {
+    // Returns the link in the form the UI opens, or "" when it is not an openable link.
+    auto normalize_link = [&](const std::string& url) -> std::string {
         std::string normalized = url;
         if (normalized.compare(0, 5, "t.me/") == 0 || normalized.compare(0, 12, "telegram.me/") == 0)
             normalized = "https://" + normalized;
         std::string prefix = normalized.substr(0, 8);
         std::transform(prefix.begin(), prefix.end(), prefix.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-        if (prefix.compare(0, 7, "http://") && prefix != "https://" && !is_proxy_link(normalized)) return;
-        if (normalized.find_first_of("\r\n\t ") != std::string::npos) return;
+        if (prefix.compare(0, 7, "http://") && prefix != "https://" && !is_proxy_link(normalized)) return "";
+        if (normalized.find_first_of("\r\n\t ") != std::string::npos) return "";
+        return normalized;
+    };
+    auto add_link = [&](const std::string& url) {
+        const std::string normalized = normalize_link(url);
+        if (normalized.empty()) return;
         if (std::find(out.links.begin(), out.links.end(), normalized) == out.links.end()) out.links.push_back(normalized);
     };
     if (!std::strcmp(type, "messageRichMessage"))
@@ -1678,14 +1902,65 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         add_link(url);
         pos = end;
     }
+    if (json_t* forward = json_object_get(msg, "forward_info"); json_is_object(forward)) {
+        if (json_t* origin = json_object_get(forward, "origin"); json_is_object(origin)) {
+            const char* origin_type = json_str(origin, "@type");
+            if (!std::strcmp(origin_type, "messageOriginUser")) { out.forwarded = true; out.forward_origin_id = json_i53(origin, "sender_user_id"); }
+            else if (!std::strcmp(origin_type, "messageOriginHiddenUser")) { out.forwarded = true; out.forward_hidden_name = json_str(origin, "sender_name"); }
+            else if (!std::strcmp(origin_type, "messageOriginChat")) { out.forwarded = true; out.forward_from_chat = true; out.forward_origin_id = json_i53(origin, "sender_chat_id"); }
+            else if (!std::strcmp(origin_type, "messageOriginChannel")) { out.forwarded = true; out.forward_from_chat = true; out.forward_origin_id = json_i53(origin, "chat_id"); }
+        }
+    }
+    // Reply reference: ids now, the preview text is resolved later (history, cache, one lookup).
+    if (json_t* reply = json_object_get(msg, "reply_to"); json_is_object(reply) && !std::strcmp(json_str(reply, "@type"), "messageReplyToMessage")) {
+        out.reply_to_id = json_i53(reply, "message_id");
+        out.reply_chat_id = json_i53(reply, "chat_id");
+        if (json_t* quote = json_object_get(reply, "quote"); json_is_object(quote)) out.reply_quote = json_str(json_object_get(quote, "text"), "text");
+        if (json_t* origin = json_object_get(reply, "origin"); json_is_object(origin) && !std::strcmp(json_str(origin, "@type"), "messageOriginHiddenUser"))
+            out.reply_origin_name = json_str(origin, "sender_name");
+        if (json_t* reply_content = json_object_get(reply, "content"); json_is_object(reply_content)) {
+            // Present for originals outside this chat/topic: the same parser gives their text or media label.
+            json_t* fake = json_pack("{s:O,s:I}", "content", reply_content, "id", (json_int_t)out.reply_to_id);
+            if (fake) { out.reply_text = reply_preview_text(parseMessage(fake)); json_decref(fake); }
+        }
+    }
     json_t* formatted = json_object_get(content, !std::strcmp(type, "messageText") ? "text" : "caption");
     json_t* entities = json_object_get(formatted, "entities");
     if (json_is_array(entities)) {
+        // Entity offsets count UTF-16 units; spans are only kept when they index the text shown as-is.
+        const bool spans_valid = json_is_object(formatted) && out.text == json_str(formatted, "text", "");
+        std::vector<int> unit_to_byte;
+        if (spans_valid) {
+            for (size_t b = 0; b < out.text.size();) {
+                const unsigned char c = (unsigned char)out.text[b];
+                const size_t length = c < 0x80 ? 1 : c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : 2;
+                unit_to_byte.push_back((int)b);
+                if (length == 4) unit_to_byte.push_back((int)b);   // surrogate pair: two units, one character
+                b += length;
+            }
+            unit_to_byte.push_back((int)out.text.size());
+        }
         size_t i; json_t* entity;
         json_array_foreach(entities, i, entity) {
             json_t* entity_type = json_object_get(entity, "type");
-            if (!std::strcmp(json_str(entity_type, "@type"), "textEntityTypeTextUrl")) add_link(json_str(entity_type, "url"));
+            const char* kind = json_str(entity_type, "@type");
+            const bool text_url = !std::strcmp(kind, "textEntityTypeTextUrl"), plain_url = !std::strcmp(kind, "textEntityTypeUrl");
+            if (!text_url && !plain_url) continue;
+            int begin = -1, end = -1;
+            const int64_t offset = json_i53(entity, "offset"), length = json_i53(entity, "length");
+            if (spans_valid && offset >= 0 && length > 0 && (size_t)(offset + length) < unit_to_byte.size()) {
+                begin = unit_to_byte[(size_t)offset]; end = unit_to_byte[(size_t)(offset + length)];
+            }
+            const std::string raw = text_url ? json_str(entity_type, "url") : (begin >= 0 ? out.text.substr(begin, end - begin) : "");
+            const std::string normalized = normalize_link(raw);
+            if (normalized.empty()) continue;
+            add_link(normalized);
+            if (begin >= 0 && end > begin) out.link_spans.push_back({begin, end, normalized});
         }
+        std::sort(out.link_spans.begin(), out.link_spans.end(), [](const LinkSpan& a, const LinkSpan& b) { return a.begin < b.begin; });
+        // Overlapping entities would draw twice.
+        for (size_t k = 1; k < out.link_spans.size();)
+            if (out.link_spans[k].begin < out.link_spans[k - 1].end) out.link_spans.erase(out.link_spans.begin() + k); else ++k;
     }
     return out;
 }
@@ -2044,6 +2319,51 @@ void TelegramClient::process(void* opaque) {
         retire_td_json(root,wire_bytes); return;
     }
     json_t* extra = json_object_get(root, "@extra");
+    if (!std::strcmp(json_str(extra, "kind"), "channel_full")) {
+        // Linked discussion now known to TDLib: ask again for the posts that came without reply_info.
+        if (!std::strcmp(type, "supergroupFullInfo") && json_i53(root, "linked_chat_id") && json_i53(extra, "chat") == current_chat_id_) {
+            comment_probed_.clear();
+            probeComments();
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "comments_probe")) {
+        // The server has been asked about the posts; read them back with whatever reply_info TDLib now holds.
+        if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "generation") == (json_int_t)history_generation_ && !current_thread_) {
+            auto* request = json_pack("{s:s,s:I,s:O}", "@type", "getMessages", "chat_id", (json_int_t)current_chat_id_, "message_ids", json_object_get(extra, "ids"));
+            json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "comments_refresh", "chat", (json_int_t)current_chat_id_, "generation", (json_int_t)history_generation_));
+            sendJson(request);
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "comments_refresh")) {
+        json_t* list = json_object_get(root, "messages");
+        if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "generation") == (json_int_t)history_generation_ && !current_thread_ && json_is_array(list)) {
+            size_t i; json_t* m;
+            json_array_foreach(list, i, m) if (json_is_object(m) && json_is_object(json_object_get(m, "interaction_info")) && json_i53(m, "chat_id") == current_chat_id_) {
+                const int64_t id = json_i53(m, "id");
+                for (auto& item : history_items_) if (item.id == id) parse_comments(item, json_object_get(m, "interaction_info"));
+            }
+            rebuildHistory();
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "comments_open")) {
+        if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "generation") == history_generation_ && !current_thread_) {
+            const int64_t discussion = json_i53(root, "chat_id"), thread = json_i53(root, "message_thread_id");
+            if (!std::strcmp(type, "messageThreadInfo") && discussion && thread) {
+                pending_return_ = {current_chat_id_, current_chat_title_, json_i53(extra, "message"), json_is_true(json_object_get(extra, "post"))};
+                pending_thread_ = thread;
+                link_chat_opened_ = true;   // the UI drops the expanded post / selection of the channel
+                openChat(discussion, current_chat_title_ + " / " + tr("comments.title"));
+            } else {
+                const bool known = !std::strcmp(type, "error");
+                notice_ = tr("comments.unavailable", {known ? json_str(root, "message", tr("comments.restricted").c_str()) : tr("comments.restricted").c_str()});
+                notice_until_ = sceKernelGetSystemTimeWide() + 8000000;
+            }
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "pin_target")) {
         if (json_i53(extra, "chat") == current_chat_id_ && json_i53(extra, "generation") == history_generation_) {
             if (!std::strcmp(type, "message") && json_i53(root, "chat_id") == current_chat_id_ && matchesTopic(root)) {
@@ -2056,12 +2376,89 @@ void TelegramClient::process(void* opaque) {
         }
         retire_td_json(root,wire_bytes); return;
     }
+    if (!std::strcmp(json_str(extra, "kind"), "reply_preview")) {
+        const std::pair<int64_t, int64_t> key{json_i53(extra, "chat"), json_i53(extra, "message")};
+        ReplyInfo info;
+        if (!std::strcmp(type, "message")) {
+            const MessageItem item = parseMessage(root);
+            info.sender_id = item.sender_id; info.sender_chat = item.sender_chat;
+            info.text = reply_preview_text(item);
+            if (info.text.empty()) info.text = tr("media.message");
+        } else info.missing = true;   // deleted, or not accessible
+        if (reply_cache_.size() > 256) reply_cache_.clear();
+        reply_cache_[key] = info;
+        reply_requested_.erase(key);
+        if (key.first == current_chat_id_) rebuildHistory();
+        retire_td_json(root,wire_bytes); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "speech_request")) {
         if (!std::strcmp(type, "error") && json_i53(extra, "chat") == current_chat_id_) {
             for (auto& item : history_items_) if (item.id == json_i53(extra, "message")) item.transcription_pending = false;
             rebuildHistory();
             notice_ = tr("post.transcription_failed", {json_str(root, "message")});
             notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+            setTranscriptionStatus(notice_, 12);
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "group_status")) {
+        if (!std::strcmp(type, "supergroup")) {
+            supergroup_member_[json_i53(root, "id")] = membershipOf(json_object_get(root, "status"));
+            supergroup_rights_[json_i53(root, "id")] = postRightsOf(json_object_get(root, "status"));
+        } else if (!std::strcmp(type, "basicGroup")) {
+            basic_group_member_[json_i53(root, "id")] = membershipOf(json_object_get(root, "status"));
+            basic_group_rights_[json_i53(root, "id")] = postRightsOf(json_object_get(root, "status"));
+        }
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "group_action")) {
+        const bool joining = !std::strcmp(json_str(extra, "action"), "join");
+        const int64_t chat_id = json_i53(extra, "chat");
+        membership_pending_ = false;
+        if (!std::strcmp(type, "error")) {
+            notice_ = tr(joining ? "notice.join_failed" : "notice.leave_failed", {json_str(root, "message")});
+        } else {
+            for (const auto& chat : known_chats_) if (chat.id == chat_id) {
+                const Membership state = joining ? Membership::Member : Membership::NotMember;
+                if (chat.supergroup_id) supergroup_member_[chat.supergroup_id] = state;
+                else if (chat.basic_group_id) basic_group_member_[chat.basic_group_id] = state;
+                break;
+            }
+            notice_ = tr(joining ? "notice.joined" : "notice.left");
+            if (!joining && chat_id == current_chat_id_) leaveChat();
+        }
+        notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "history_action")) {
+        const bool removed = !std::strcmp(json_str(extra, "action"), "delete");
+        membership_pending_ = false;
+        if (!std::strcmp(type, "error")) notice_ = tr("notice.action_failed", {json_str(root, "message")});
+        else {
+            notice_ = tr(removed ? "notice.deleted" : "notice.cleared");
+            if (json_i53(extra, "chat") == current_chat_id_) {
+                if (removed) leaveChat();
+                else { history_items_.clear(); rebuildHistory(); refreshHistory(); }
+            }
+        }
+        notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
+        retire_td_json(root,wire_bytes); return;
+    }
+    if (!std::strcmp(json_str(extra, "kind"), "search_chats")) {
+        if ((unsigned)json_i53(extra, "generation") == search_generation_) {
+            if (search_pending_ > 0) --search_pending_;
+            json_t* ids = json_object_get(root, "chat_ids");
+            const int source = std::max(0, std::min(2, (int)json_i53(extra, "source")));
+            if (!std::strcmp(type, "chats") && json_is_array(ids)) {
+                size_t i; json_t* v;
+                json_array_foreach(ids, i, v) {
+                    const int64_t id = json_is_integer(v) ? json_integer_value(v) : 0;
+                    if (!id) continue;
+                    search_ids_[source].push_back(id);
+                    if (std::none_of(known_chats_.begin(), known_chats_.end(), [&](const ChatItem& c) { return c.id == id; }))
+                        sendJson(json_pack("{s:s,s:I}", "@type", "getChat", "chat_id", (json_int_t)id));
+                }
+            }
         }
         retire_td_json(root,wire_bytes); return;
     }
@@ -2425,7 +2822,7 @@ void TelegramClient::process(void* opaque) {
             int64_t old_cursor = history_cursor_;
             size_t i; json_t* m;
             json_array_foreach(arr, i, m) {
-                if (json_is_object(m) && matchesTopic(m)) {
+                if (json_is_object(m) && ((history_reply && current_thread_) || matchesTopic(m))) {
                     MessageItem parsed = parseMessage(m);
                     if (!json_is_object(json_object_get(json_object_get(m, "interaction_info"), "reactions"))) {
                         auto known = cached_reactions_.find(parsed.id);
@@ -2442,11 +2839,28 @@ void TelegramClient::process(void* opaque) {
                 history_error_ = tr("history.no_older");
             history_done_ = history_end_ || (int)history_items_.size() >= history_target_;
             rebuildHistory();
+            probeComments();
             status_ = history_done_ ? tr("status.online") : tr("history.loading_older");
         }
     } else if (!std::strcmp(type, "updateSupergroup")) {
         json_t* group = json_object_get(root, "supergroup");
-        if (json_i53(group, "id")) supergroup_forum_[json_i53(group, "id")] = json_is_true(json_object_get(group, "is_forum"));
+        if (json_i53(group, "id")) {
+            supergroup_forum_[json_i53(group, "id")] = json_is_true(json_object_get(group, "is_forum"));
+            supergroup_member_[json_i53(group, "id")] = membershipOf(json_object_get(group, "status"));
+            supergroup_rights_[json_i53(group, "id")] = postRightsOf(json_object_get(group, "status"));
+        }
+    } else if (!std::strcmp(type, "updateBasicGroup")) {
+        json_t* group = json_object_get(root, "basic_group");
+        if (json_i53(group, "id")) {
+            basic_group_member_[json_i53(group, "id")] = membershipOf(json_object_get(group, "status"));
+            basic_group_rights_[json_i53(group, "id")] = postRightsOf(json_object_get(group, "status"));
+        }
+    } else if (!std::strcmp(type, "updateChatPermissions")) {
+        const int64_t id = json_i53(root, "chat_id");
+        for (auto& chat : known_chats_) if (chat.id == id) {
+            chat.can_send = json_is_true(json_object_get(json_object_get(root, "permissions"), "can_send_basic_messages"));
+            break;
+        }
     } else if (!std::strcmp(type, "updateNewChat")) {
         json_t* chat = json_object_get(root, "chat");
         if (json_is_object(chat)) parseChat(chat);
@@ -2484,8 +2898,10 @@ void TelegramClient::process(void* opaque) {
         storeMessage(root);
     } else if (!std::strcmp(type, "updateMessageInteractionInfo") || !std::strcmp(type,"updateMessageReactions")) {
         if (json_i53(root, "chat_id") == current_chat_id_) {
-            for (auto& message : history_items_) if (message.id == json_i53(root, "message_id"))
+            for (auto& message : history_items_) if (message.id == json_i53(root, "message_id")) {
                 parse_reactions(message, !std::strcmp(type,"updateMessageReactions") ? root : json_object_get(root, "interaction_info"));
+                if (!std::strcmp(type,"updateMessageInteractionInfo")) parse_comments(message, json_object_get(root, "interaction_info"));
+            }
             rebuildHistory();
         }
     } else if (!std::strcmp(type, "updateMessageEdited")) {
@@ -2501,8 +2917,15 @@ void TelegramClient::process(void* opaque) {
             json_t* note = !std::strcmp(kind, "messageVoiceNote") ? json_object_get(content, "voice_note") :
                 !std::strcmp(kind, "messageVideoNote") ? json_object_get(content, "video_note") : nullptr;
             if (note) {
-                for (auto& item : history_items_) if (item.id == json_i53(root, "message_id"))
+                for (auto& item : history_items_) if (item.id == json_i53(root, "message_id")) {
+                    const bool was_pending = item.transcription_pending;
                     parse_transcription(item, note);
+                    if (item.transcription_pending) setTranscriptionStatus(tr("post.transcription_pending"), 60);
+                    else if (!item.transcription_error.empty()) setTranscriptionStatus(tr("post.transcription_failed", {item.transcription_error}), 12);
+                    else if (item.transcription_complete)
+                        setTranscriptionStatus(tr(item.transcription.empty() ? "post.transcription_empty" : "post.transcription_done"), 8);
+                    else if (was_pending) setTranscriptionStatus("", 0);
+                }
                 rebuildHistory();
             }
         }
@@ -2755,14 +3178,71 @@ void TelegramClient::rebuildHistory() {
             album.photos.insert(album.photos.end(), item.photos.begin(), item.photos.end());
             for (const auto& url : item.links)
                 if (std::find(album.links.begin(), album.links.end(), url) == album.links.end()) album.links.push_back(url);
-            if (album.text.empty() && !item.text.empty()) album.text = item.text;
+            if (album.text.empty() && !item.text.empty()) { album.text = item.text; album.link_spans = item.link_spans; }
+            if (!album.has_comments && item.has_comments) {
+                album.has_comments = true; album.comment_count = item.comment_count; album.comments_message_id = item.comments_message_id;
+            }
             album.media_label = tr("media.photos_count", {std::to_string(album.photos.size())});
         } else messages_.push_back(item);
+    }
+    resolveReplies();
+}
+
+// Fills reply previews of the displayed messages: from loaded history first, then the lookup cache; an
+// original that is in neither is requested once (at most a few at a time), never per frame.
+void TelegramClient::resolveReplies() {
+    for (auto& message : messages_) {
+        if (message.forwarded) {
+            // Name of the original sender or channel; empty while unknown (the UI then shows a plain label).
+            std::string source = message.forward_hidden_name;
+            if (source.empty() && message.forward_from_chat) {
+                for (const auto& chat : known_chats_) if (chat.id == message.forward_origin_id) { source = chat.title; break; }
+            } else if (source.empty()) {
+                auto user = user_names_.find(message.forward_origin_id);
+                if (user != user_names_.end()) source = user->second;
+            }
+            message.forward_source = source;
+        }
+        if (!message.reply_to_id) continue;
+        const int64_t chat = message.reply_chat_id ? message.reply_chat_id : current_chat_id_;
+        const std::pair<int64_t, int64_t> key{chat, message.reply_to_id};
+        std::string sender, text = message.reply_text;
+        bool found = false, missing = false;
+        if (chat == current_chat_id_) {
+            auto it = std::lower_bound(history_items_.begin(), history_items_.end(), message.reply_to_id,
+                [](const MessageItem& item, int64_t id) { return item.id < id; });
+            if (it != history_items_.end() && it->id == message.reply_to_id) { found = true; sender = senderName(*it); text = reply_preview_text(*it); }
+        }
+        if (!found) {
+            auto cached = reply_cache_.find(key);
+            if (cached != reply_cache_.end()) {
+                found = true; missing = cached->second.missing; text = cached->second.text;
+                if (!missing) { MessageItem who; who.sender_id = cached->second.sender_id; who.sender_chat = cached->second.sender_chat; sender = senderName(who); }
+            }
+        }
+        if (!found && text.empty() && message.reply_quote.empty() && ready_ && worker_started_ &&
+            reply_requested_.size() < 6 && reply_requested_.insert(key).second) {
+            auto* request = json_pack("{s:s,s:I,s:I}", "@type", "getMessage", "chat_id", (json_int_t)chat, "message_id", (json_int_t)message.reply_to_id);
+            json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "reply_preview", "chat", (json_int_t)chat, "message", (json_int_t)message.reply_to_id));
+            sendJson(request);
+        }
+        if (sender.empty()) sender = message.reply_origin_name;
+        message.reply_sender = sender;
+        message.reply_missing = missing;
+        message.reply_text = missing ? tr("reply.deleted") : !message.reply_quote.empty() ? message.reply_quote : text;
     }
 }
 
 void TelegramClient::refreshChats() {
     checkChatUpdates(true);
+}
+
+void TelegramClient::setTranscriptionStatus(const std::string& text, int seconds) {
+    transcription_status_ = text;
+    transcription_status_until_ = sceKernelGetSystemTimeWide() + (int64_t)seconds * 1000000;
+}
+std::string TelegramClient::transcriptionStatus() const {
+    return sceKernelGetSystemTimeWide() < transcription_status_until_ ? transcription_status_ : "";
 }
 
 std::string TelegramClient::updateNotice() const {
@@ -2906,6 +3386,10 @@ void TelegramClient::dropListAvatarDownloads() {
 }
 
 void TelegramClient::openChat(int64_t id, const std::string& title) {
+    current_thread_ = pending_thread_; pending_thread_ = 0;
+    comments_return_ = pending_return_; pending_return_ = {};
+    comment_probed_.clear();
+    next_jump_post_ = true;
     current_topic_ = 0; topics_open_ = topics_pending_ = false; topics_.clear(); ++topics_generation_;
     forum_title_ = title;
     replaced_message_ids_.clear();
@@ -2914,11 +3398,33 @@ void TelegramClient::openChat(int64_t id, const std::string& title) {
     current_chat_id_ = id;
     syncOpenedChat();
     current_chat_title_ = title;
+    membership_pending_ = false;
+    if (ready_) for (const auto& chat : known_chats_) if (chat.id == id) {
+        const bool super = chat.supergroup_id != 0;
+        const int64_t group = super ? chat.supergroup_id : chat.basic_group_id;
+        if (group && !(super ? supergroup_member_ : basic_group_member_).count(group)) {
+            auto* request = json_pack("{s:s,s:I}", "@type", super ? "getSupergroup" : "getBasicGroup",
+                                      super ? "supergroup_id" : "basic_group_id", (json_int_t)group);
+            json_object_set_new(request, "@extra", json_pack("{s:s}", "kind", "group_status"));
+            sendJson(request);
+        }
+        break;
+    }
     if (ready_) for (const auto& chat : known_chats_) if (chat.id == id && chat.user_id) {
         sendJson(json_pack("{s:s,s:I,s:s}", "@type", "getUser", "user_id", (json_int_t)chat.user_id, "@extra", "sender_lookup"));
         break;
     }
-    if (ready_) for (const auto& chat : known_chats_) if (chat.id == id && chat.group && chat.supergroup_id) {
+    // TDLib reports a channel post's reply_info only once it knows the channel's linked discussion, which comes
+    // with the full info. Ask once per channel; the answer re-probes the posts already shown ("channel_full").
+    if (ready_ && !current_thread_) for (const auto& chat : known_chats_) if (chat.id == id && chat.channel && chat.supergroup_id) {
+        if (channel_full_requested_.insert(chat.supergroup_id).second) {
+            auto* request = json_pack("{s:s,s:I}", "@type", "getSupergroupFullInfo", "supergroup_id", (json_int_t)chat.supergroup_id);
+            json_object_set_new(request, "@extra", json_pack("{s:s,s:I}", "kind", "channel_full", "chat", (json_int_t)id));
+            sendJson(request);
+        }
+        break;
+    }
+    if (ready_ && !current_thread_) for (const auto& chat : known_chats_) if (chat.id == id && chat.group && chat.supergroup_id) {
         auto known = supergroup_forum_.find(chat.supergroup_id);
         if (known != supergroup_forum_.end()) {
             if (!known->second) break; // Ordinary group: history without getSupergroup.
@@ -2969,6 +3475,22 @@ void TelegramClient::showTopicsList() {
 
 bool TelegramClient::matchesTopic(void* opaque) const {
     if (topics_open_) return false;
+    if (current_thread_) {
+        // Comments view: a message belongs to the thread when TDLib says so, or when it is the root or answers
+        // something already shown. Cached or live messages of other threads in the same group are left out.
+        json_t* message = (json_t*)opaque;
+        const int64_t id = json_i53(message, "id");
+        if (id == current_thread_) return true;
+        auto* topic = json_object_get(message, "topic_id");
+        if (!std::strcmp(json_str(topic, "@type"), "messageTopicThread")) return json_i53(topic, "message_thread_id") == current_thread_;
+        auto* reply = json_object_get(message, "reply_to");
+        if (!std::strcmp(json_str(reply, "@type"), "messageReplyToMessage")) {
+            const int64_t target = json_i53(reply, "message_id");
+            if (target == current_thread_) return true;
+            for (const auto& item : history_items_) if (item.id == target) return true;
+        }
+        return false;
+    }
     return !current_topic_ || json_i53(json_object_get((json_t*)opaque, "topic_id"), "forum_topic_id") == current_topic_;
 }
 
@@ -3001,6 +3523,7 @@ bool TelegramClient::openPinnedMessage(int64_t message_id) {
         for (const auto& displayed : messages_) if (displayed.id == message_id ||
             (item.media_album_id && displayed.media_album_id == item.media_album_id)) {
             message_jump_ = displayed.id;
+            message_jump_post_ = next_jump_post_; next_jump_post_ = true;
             message_jump_generation_ = history_generation_;
             return true;
         }
@@ -3012,12 +3535,52 @@ bool TelegramClient::openPinnedMessage(int64_t message_id) {
     return true;
 }
 
+bool TelegramClient::openComments(int64_t message_id, bool from_post) {
+    if (!ready_ || !worker_started_ || !current_chat_id_ || current_thread_ || topics_open_) return false;
+    int64_t target = 0;
+    for (const auto& item : messages_) if (item.id == message_id && item.has_comments) { target = item.comments_message_id; break; }
+    if (!target) return false;
+    notice_ = tr("comments.opening"); notice_until_ = sceKernelGetSystemTimeWide() + 4000000;
+    auto* request = json_pack("{s:s,s:I,s:I}", "@type", "getMessageThread", "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)target);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I,s:b,s:i}", "kind", "comments_open", "chat", (json_int_t)current_chat_id_,
+        "message", (json_int_t)message_id, "post", from_post, "generation", (int)history_generation_));
+    sendJson(request);
+    return true;
+}
+
+// History pages often carry no reply_info for channel posts; TDLib fills it in once the server has been asked about
+// the posts, which viewMessages does. Probe each shown post once, newest first, then read them back.
+void TelegramClient::probeComments() {
+    if (!ready_ || !worker_started_ || !current_chat_id_ || current_thread_ || topics_open_) return;
+    json_t* ids = json_array();
+    for (auto it = history_items_.rbegin(); it != history_items_.rend() && json_array_size(ids) < 20; ++it)
+        if (it->channel_post && !it->has_comments && it->id > 0 && comment_probed_.insert(it->id).second) json_array_append_new(ids, json_integer(it->id));
+    if (!json_array_size(ids)) { json_decref(ids); return; }
+    auto* request = json_pack("{s:s,s:I,s:{s:s},s:b,s:o}", "@type", "viewMessages", "chat_id", (json_int_t)current_chat_id_,
+        "source", "@type", "messageSourceChatHistory", "force_read", 0, "message_ids", ids);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I,s:O}", "kind", "comments_probe", "chat", (json_int_t)current_chat_id_,
+        "generation", (json_int_t)history_generation_, "ids", json_object_get(request, "message_ids")));
+    sendJson(request);
+}
+
+void TelegramClient::closeComments() {
+    if (!current_thread_) return;
+    const CommentsReturn back = comments_return_;
+    leaveChat();
+    if (!back.chat) return;
+    openChat(back.chat, back.title);
+    link_chat_opened_ = true;
+    next_jump_post_ = back.post;
+    openPinnedMessage(back.message);
+}
+
 bool TelegramClient::requestTranscription(int64_t message_id) {
     if (!ready_ || !worker_started_ || !current_chat_id_) return false;
     auto found = std::find_if(history_items_.begin(), history_items_.end(), [&](const MessageItem& item) { return item.id == message_id; });
     if (found == history_items_.end() || !((found->voice && !found->audio) || found->video_note) ||
         found->transcription_pending || found->transcription_complete || !found->transcription.empty()) return false;
     found->transcription_pending = true;
+    setTranscriptionStatus(tr("post.transcription_wait"), 30);
     rebuildHistory();
     auto* request = json_pack("{s:s,s:I,s:I}", "@type", "recognizeSpeech", "chat_id", (json_int_t)current_chat_id_, "message_id", (json_int_t)message_id);
     json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I}", "kind", "speech_request", "chat", (json_int_t)current_chat_id_, "message", (json_int_t)message_id));
@@ -3034,6 +3597,11 @@ void TelegramClient::storeMessage(void* opaque, int64_t old_id) {
     // known counts until TDLib supplies the info or an explicit reactions update.
     if (!json_is_object(json_object_get(json_object_get(message,"interaction_info"),"reactions")))
         for (const auto& item:history_items_) if (item.id==parsed.id) { parsed.reactions=item.reactions;break; }
+    if (!json_is_object(json_object_get(message,"interaction_info")))
+        for (const auto& item:history_items_) if (item.id==parsed.id) {
+            parsed.has_comments=item.has_comments; parsed.comment_count=item.comment_count; parsed.comments_message_id=item.comments_message_id;
+            break;
+        }
     if (old_id && old_id != parsed.id) {
         replaced_message_ids_.insert(old_id);
         history_items_.erase(std::remove_if(history_items_.begin(), history_items_.end(),
@@ -3097,7 +3665,11 @@ void TelegramClient::requestHistoryPage() {
     json_t* extra = json_pack("{s:s,s:I,s:i}", "kind", "history", "chat", (json_int_t)current_chat_id_, "generation", (int)history_generation_);
     json_object_set_new(extra,"first",json_boolean(history_cursor_==0));
     if (!history_cursor_) json_object_set_new(extra,"requested_at",json_integer(performance::now()));
-    if (current_topic_) {
+    if (current_thread_) {
+        json_object_set_new(req, "@type", json_string("getMessageThreadHistory"));
+        json_object_set_new(req, "message_id", json_integer(current_thread_));
+        json_object_del(req, "only_local");
+    } else if (current_topic_) {
         json_object_set_new(req, "@type", json_string("getForumTopicHistory"));
         json_object_set_new(req, "forum_topic_id", json_integer(current_topic_));
         json_object_del(req, "only_local");
@@ -3322,7 +3894,7 @@ void TelegramClient::viewMessage(int64_t id) {
     const bool opened=viewed_message_!=id;
     viewed_message_=id;viewed_message_at_=now;
     if (opened) loadReactions(id);
-    auto* request=json_pack("{s:s,s:I,s:{s:s},s:b}","@type","viewMessages","chat_id",(json_int_t)current_chat_id_,"source","@type",current_topic_ ? "messageSourceForumTopicHistory" : "messageSourceChatHistory","force_read",0);
+    auto* request=json_pack("{s:s,s:I,s:{s:s},s:b}","@type","viewMessages","chat_id",(json_int_t)current_chat_id_,"source","@type",current_thread_ ? "messageSourceMessageThreadHistory" : current_topic_ ? "messageSourceForumTopicHistory" : "messageSourceChatHistory","force_read",0);
     auto* ids=json_array();json_array_append_new(ids,json_integer(id));json_object_set_new(request,"message_ids",ids);
     json_object_set_new(request,"@extra",json_pack("{s:s,s:I,s:I}","kind","post_view","chat",(json_int_t)current_chat_id_,"generation",(json_int_t)history_generation_));
     sendJson(request);
@@ -3422,6 +3994,8 @@ void TelegramClient::toggleReaction(int64_t id, const std::string& emoji) {
 }
 
 void TelegramClient::leaveChat() {
+    reply_target_ = 0;
+    current_thread_ = pending_thread_ = 0; comments_return_ = pending_return_ = {}; next_jump_post_ = true;
     current_topic_ = 0; topics_open_ = topics_pending_ = false; topics_.clear(); ++topics_generation_;
     reaction_message_ = 0; reaction_choices_.clear(); reaction_custom_choices_.clear(); reaction_previews_.clear(); reaction_pending_ = false;
     reaction_loading_ = reaction_loaded_ = false;
@@ -3465,7 +4039,7 @@ void TelegramClient::clearAccountMemory() {
     startup_chat_snapshots_.clear();
     known_chats_.clear(); chats_.clear(); leaveChat();
     ui_cache_.clear(); media_cache_.clear();
-    user_names_.clear(); user_photos_.clear(); sender_requests_.clear(); user_presence_.clear(); supergroup_forum_.clear();
+    user_names_.clear(); user_photos_.clear(); sender_requests_.clear(); user_presence_.clear(); supergroup_forum_.clear(); supergroup_member_.clear(); basic_group_member_.clear(); clearSearch();
     folder_windows_.clear(); folders_.clear(); selected_folder_ = 0;
     stickers_.clear(); sticker_packs_.clear(); sticker_set_ids_.clear(); sticker_status_.clear();
     sticker_packs_fresh_ = false; sticker_icon_retry_.clear();

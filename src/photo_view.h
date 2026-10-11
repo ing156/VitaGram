@@ -12,11 +12,18 @@ struct PhotoView {
     int fingers = 0, first_id = -1, second_id = -1;
     int rotation = 0, candidate = 0;
     unsigned long long candidate_since = 0;
-    bool captured = false, sampling = false;
+    bool captured = false, sampling = false, manual_rotation = false;
 
     void reset() { zoom = 1; pan_x = pan_y = 0; fingers = 0; distance = 0; captured = false; }
+    void begin() { rotation = candidate = 0; candidate_since = 0; manual_rotation = false; reset(); }
+    void rotate(int direction) {
+        rotation = (rotation + direction + 4) % 4;
+        manual_rotation = true;
+        candidate_since = 0;
+        reset();
+    }
     void updateMotion(bool open, unsigned long long now, bool touching) {
-        if (!open) {
+        if (!open || manual_rotation) {
             if (sampling) sceMotionStopSampling();
             sampling = false;
             candidate_since = 0;
@@ -34,7 +41,7 @@ struct PhotoView {
         if (g.x > 0.5f) next = 1;
         else if (g.x < -0.5f) next = 3;
         else if (g.y > 0.5f) next = 0;
-        else if (g.y < -0.5f) next = 2;
+        else if (g.y < -0.5f) next = 0; // Upside down: never auto-rotate by 180 degrees.
         // Lying flat: retain the last unambiguous orientation.
         if (next != candidate || !candidate_since) { candidate = next; candidate_since = now; }
         if (next != rotation && now - candidate_since >= 350000) {
@@ -58,7 +65,7 @@ struct PhotoView {
                 float next = std::max(1.0f, std::min(6.0f, zoom*d/distance));
                 float ratio = next/zoom;
                 pan_x = x-480-(last_x-480-pan_x)*ratio;
-                pan_y = y-290-(last_y-290-pan_y)*ratio;
+                pan_y = y-272-(last_y-272-pan_y)*ratio;
                 zoom = next;
             } else if (zoom > 1.01f) { pan_x += x-last_x; pan_y += y-last_y; }
         }
@@ -69,14 +76,15 @@ struct PhotoView {
         float w = vita2d_texture_get_width(image), h = vita2d_texture_get_height(image);
         if (w <= 0 || h <= 0) return;
         float bw = (rotation & 1) ? h : w, bh = (rotation & 1) ? w : h;
-        float scale = std::min(960.0f/bw, 508.0f/bh)*zoom;
+        // Fullscreen like the video player: the picture is fitted to the whole 960x544 screen.
+        float scale = std::min(960.0f/bw, 544.0f/bh)*zoom;
         float mx = std::max(0.0f, (bw*scale-960)*0.5f);
-        float my = std::max(0.0f, (bh*scale-508)*0.5f);
+        float my = std::max(0.0f, (bh*scale-544)*0.5f);
         pan_x = std::max(-mx, std::min(mx, pan_x));
         pan_y = std::max(-my, std::min(my, pan_y));
         vita2d_enable_clipping();
-        vita2d_set_clip_rectangle(0, 36, 960, 544);
-        vita2d_draw_texture_scale_rotate_hotspot(image, 480+pan_x, 290+pan_y,
+        vita2d_set_clip_rectangle(0, 0, 960, 544);
+        vita2d_draw_texture_scale_rotate_hotspot(image, 480+pan_x, 272+pan_y,
             scale, scale, rotation*1.57079632679f, w*0.5f, h*0.5f);
         vita2d_disable_clipping();
     }

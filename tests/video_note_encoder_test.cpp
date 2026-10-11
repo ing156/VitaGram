@@ -21,7 +21,10 @@ int main(int argc,char** argv) {
     FILE* f=std::fopen(raw.c_str(),"wb"); assert(f);
     std::vector<uint8_t> camera(320*240*3/2,128), square(FrameBytes);
     // Include an irregular frame interval, as occurs when switching cameras.
-    const uint32_t timestamps[]={0,1600,3200,8000,9600,12800,16000,19200,22400,27200,30400};
+    std::vector<uint32_t> timestamps(90);
+    for (unsigned i=0;i<timestamps.size();++i) timestamps[i]=i*SampleRate/FrameRate+(i>=45 ? 4000 : 0);
+    timestamps[30]=timestamps[29]+1;
+    constexpr unsigned samples=52000;
     for (uint32_t pts : timestamps) {
         std::fill(camera.begin(),camera.begin()+320*240,100+pts/400);
         crop(camera.data(),square.data());
@@ -29,16 +32,16 @@ int main(int argc,char** argv) {
     }
     std::fclose(f);
     f=std::fopen(pcm.c_str(),"wb"); assert(f);
-    for (int i=0;i<32000;++i) { int16_t v=std::sin(i*6.283185307*440/SampleRate)*10000; assert(std::fwrite(&v,2,1,f)==1); }
+    for (unsigned i=0;i<samples;++i) { int16_t v=std::sin(i*6.283185307*440/SampleRate)*10000; assert(std::fwrite(&v,2,1,f)==1); }
     std::fclose(f);
     std::atomic<bool> cancel{false}; std::atomic<int> progress{0};
-    bool ok=encode_video_note(raw,pcm,mp4,32000,cancel,progress,error);
+    bool ok=encode_video_note(raw,pcm,mp4,samples,cancel,progress,error);
     if (!ok) std::cerr << error << '\n';
     assert(ok && error.empty() && progress==100);
     AVFormatContext* input=nullptr;
     assert(avformat_open_input(&input,mp4.c_str(),nullptr,nullptr)>=0);
     assert(avformat_find_stream_info(input,nullptr)>=0);
-    assert(input->nb_streams==2 && input->duration>=1900000 && input->duration<=2100000);
+    assert(input->nb_streams==2 && input->duration>=3200000 && input->duration<=3350000);
     AVCodecContext* decoders[2]{}; int video=-1,audio=-1;
     for (unsigned i=0;i<input->nb_streams;++i) {
         auto* par=input->streams[i]->codecpar;
@@ -51,7 +54,7 @@ int main(int argc,char** argv) {
     }
     assert(video>=0 && audio>=0);
     AVPacket* packet=av_packet_alloc(); AVFrame* frame=av_frame_alloc();
-    int pictures=0,audio_samples=0; bool sound=false; int64_t last[2]={INT64_MIN,INT64_MIN};
+    int pictures=0,audio_samples=0; unsigned video_packets=0; bool sound=false; int64_t last[2]={INT64_MIN,INT64_MIN};
     auto receive=[&](int index) {
         int rc;
         while ((rc=avcodec_receive_frame(decoders[index],frame))>=0) {
@@ -71,10 +74,15 @@ int main(int argc,char** argv) {
     while (av_read_frame(input,packet)>=0) {
         int i=packet->stream_index;
         assert(packet->dts>last[i]); last[i]=packet->dts;
+        if (i==video) {
+            assert(video_packets<timestamps.size());
+            assert(packet->pts==av_rescale_q(timestamps[video_packets],AVRational{1,SampleRate},input->streams[i]->time_base));
+            assert(bool(packet->flags&AV_PKT_FLAG_KEY)==(video_packets%KeyframeInterval==0)); ++video_packets;
+        }
         assert(avcodec_send_packet(decoders[i],packet)>=0); receive(i); av_packet_unref(packet);
     }
     for (int i=0;i<2;++i) { assert(avcodec_send_packet(decoders[i],nullptr)>=0); receive(i); avcodec_free_context(&decoders[i]); }
-    assert(pictures==11 && audio_samples>=31000 && audio_samples<=34000 && sound);
+    assert(pictures==90 && video_packets==90 && audio_samples>=51000 && audio_samples<=54000 && sound);
     av_packet_free(&packet); av_frame_free(&frame); avformat_close_input(&input);
     cancel=true;
     assert(!encode_video_note(raw,pcm,base+"-cancel.mp4",32000,cancel,progress,error));

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include "ui_skin.h"
 #include <string>
 #include <vector>
 
@@ -32,6 +33,8 @@ Colors colors(bool dark) {
     c.ok = RGBA8(20, 143, 82, 255);
     c.warn = RGBA8(224, 146, 36, 255);
     c.separator = dark ? RGBA8(53, 70, 86, 255) : RGBA8(205, 216, 226, 255);
+    // Screens sit on a themed card: hollow marks must be filled with the card color.
+    if (ui_skin::ready()) c.background = c.panel = ui_skin::surface_color(c.panel);
     return c;
 }
 
@@ -129,14 +132,21 @@ std::vector<std::string> wrap(vita2d_pgf* font, const std::string& text, int wid
 }
 
 void begin_frame(const Env& env, const std::string& title, const std::string& footer) {
+    ui_skin::load(env.dark);   // no-op once this theme is loaded; the gate runs before the main loop
     Colors c = colors(env.dark);
     vita2d_set_clear_color(c.background);
     vita2d_start_drawing();
     vita2d_clear_screen();
-    vita2d_draw_rectangle(0, 0, 960, 36, env.dark ? c.panel : c.accent);
+    // Same wallpaper, header and panel PNGs as the main screens; flat shapes remain the fallback.
+    ui_skin::background();
+    if (!ui_skin::header(36)) vita2d_draw_rectangle(0, 0, 960, 36, env.dark ? c.panel : c.accent);
     rich_text_draw(env.font, 20, 25, RGBA8(240, 247, 255, 255), 0.65f, title.c_str());
-    vita2d_draw_rectangle(0, 500, 960, 44, c.panel);
-    vita2d_draw_rectangle(0, 499, 960, 1, c.separator);
+    const unsigned int tint = RGBA8(255, 255, 255, 235);
+    ui_skin::nine(ui_skin::Slice::Panel, 20, 48, 920, 444, tint);
+    if (!ui_skin::nine(ui_skin::Slice::Panel, 4, 502, 952, 40, tint)) {
+        vita2d_draw_rectangle(0, 500, 960, 44, c.panel);
+        vita2d_draw_rectangle(0, 499, 960, 1, c.separator);
+    }
     if (!footer.empty()) rich_text_draw(env.font, 28, 528, c.ink, 0.6f, footer.c_str());
 }
 

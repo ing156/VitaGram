@@ -6,6 +6,7 @@
 #include <vector>
 #ifdef __vita__
 #include <psp2/kernel/openpsid.h>
+#include <psp2/kernel/rng.h>
 #endif
 
 namespace {
@@ -27,6 +28,16 @@ bool console_id(unsigned char out[16]) {
 #endif
     for (int i = 0; i < 16; ++i) if (out[i]) return true;
     return false;
+}
+
+// OpenSSL 1.0.2 has no entropy source on the Vita (RAND_bytes fails or is weakly seeded), so the
+// kernel generator supplies the GCM IV; a repeated IV would break AES-GCM.
+bool random_iv(unsigned char* out, size_t len) {
+#ifdef __vita__
+    return sceKernelGetRandomNumber(out, (SceSize)len) >= 0;
+#else
+    return RAND_bytes(out, (int)len) == 1;
+#endif
 }
 
 bool derive(const char* label, unsigned char key[32]) {
@@ -65,7 +76,8 @@ bool is_protected(const std::string& stored) { return stored.compare(0, kPrefixL
 std::string protect(const std::string& plain) {
     if (plain.empty() || is_protected(plain)) return plain;
     unsigned char key[32], iv[kIv], tag[kTag];
-    if (!derive("VitaGram-settings-v1", key) || RAND_bytes(iv, kIv) != 1) return plain;
+    if (!derive("VitaGram-settings-v1", key)) return plain; // no console id: documented plain-text mode
+    if (!random_iv(iv, kIv)) return std::string(); // never store a secret unprotected or with a weak IV
     std::vector<unsigned char> cipher(plain.size());
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     int len = 0, total = 0;
@@ -75,7 +87,7 @@ std::string protect(const std::string& plain) {
     ok = ok && EVP_EncryptFinal_ex(ctx, cipher.data() + total, &len) && (total += len) == (int)plain.size() &&
          EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, kTag, tag) == 1;
     if (ctx) EVP_CIPHER_CTX_free(ctx);
-    if (!ok) return plain;
+    if (!ok) return std::string(); // fail closed: drop the value rather than write it in plain text
     return std::string(kPrefix) + to_hex(iv, kIv) + to_hex(tag, kTag) + to_hex(cipher.data(), cipher.size());
 }
 

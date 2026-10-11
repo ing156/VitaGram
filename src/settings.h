@@ -10,7 +10,10 @@
 
 struct AppSettings {
     int retention = 2, capacity = 2, theme = 0, font = 5, request_batch_size = 32; // Оптимизация: увеличил с 16 до 32 для более быстрой загрузки
+    int opacity = 75;       // percent of the surface PNGs (rows, message cards) over the wallpaper, 5% steps
+    int avatar_shape = 0;   // 0 rounded square, 1 circle
     bool show_threads = false;
+    bool gyroscope_enabled = true;
     bool check_updates = true; // look for a newer GitHub release shortly after startup
     bool proxy_enabled = false;
     std::string proxy_server, proxy_secret;
@@ -35,6 +38,23 @@ struct AppSettings {
         for (int i = 1; i < 5; ++i) if (std::abs(values[i] - value) < std::abs(values[best] - value)) best = i;
         return best;
     }
+    static constexpr int kMinOpacity = 20, kMaxOpacity = 100, kOpacityStep = 5;
+    // The theme alone is also kept in a plain file: with the vault on, settings.json is sealed, yet the
+    // unlock screens (shown before the key is entered) must already use the chosen theme.
+    static constexpr const char* kThemeHint = "ux0:data/vitagram/theme.txt";
+    static int themeHint(int fallback) {
+        int value = fallback;
+        if (FILE* file = std::fopen(kThemeHint, "r")) {
+            char c = 0;
+            if (std::fread(&c, 1, 1, file) == 1 && (c == '0' || c == '1')) value = c - '0';
+            std::fclose(file);
+        }
+        return value;
+    }
+    void saveThemeHint() const {
+        if (themeHint(-1) == theme) return;
+        if (FILE* file = std::fopen(kThemeHint, "w")) { std::fputc(theme ? '1' : '0', file); std::fclose(file); }
+    }
     float fontScale() const { return 0.7f + font * 0.1f; }
     void load() {
         // Sealed when the vault is on; the vault must be unlocked first, or this reads defaults.
@@ -50,9 +70,13 @@ struct AppSettings {
         retention = value("retention", 2, 4); capacity = value("capacity", 2, 5);
         theme = value("theme", 0, 1); font = value("font_size", 5, 6);
         request_batch_size = value("request_batch_size", 16, 64);
+        opacity = std::max(kMinOpacity, std::min(kMaxOpacity, (value("opacity", 75, 100) + kOpacityStep / 2) / kOpacityStep * kOpacityStep));
+        avatar_shape = value("avatar_shape", 0, 1);
         cache_storage = value("cache_storage", 0, 1);
         show_threads = json_is_true(json_object_get(root, "show_threads"));
         if (json_t* v = json_object_get(root, "check_updates")) check_updates = json_is_true(v);
+        if (json_t* v = json_object_get(root, "gyroscope_enabled"))
+            if (json_is_boolean(v)) gyroscope_enabled = json_is_true(v);
         proxy_enabled = json_is_true(json_object_get(root, "proxy_enabled"));
         proxy_port = value("proxy_port", 443, 65535);
         proxy_type = value("proxy_type", 0, 2);
@@ -77,11 +101,15 @@ struct AppSettings {
         if (!saved_download_dir.empty() && saved_download_dir != "ux0:download/vitagram" &&
             saved_download_dir != "ux0:/download/vitagram") download_dir = saved_download_dir;
         json_decref(root);
+        saveThemeHint();
         if (migrate) save();
     }
     bool save() const {
         json_t* root = json_pack("{s:i,s:i,s:i,s:i,s:i,s:b}", "retention", retention, "capacity", capacity,
             "theme", theme, "font_size", font, "request_batch_size", request_batch_size, "show_threads", show_threads);
+        json_object_set_new(root, "gyroscope_enabled", json_boolean(gyroscope_enabled));
+        json_object_set_new(root, "opacity", json_integer(opacity));
+        json_object_set_new(root, "avatar_shape", json_integer(avatar_shape));
         json_object_set_new(root, "check_updates", json_boolean(check_updates));
         json_object_set_new(root, "proxy_enabled", json_boolean(proxy_enabled));
         json_object_set_new(root, "proxy_server", json_string(proxy_server.c_str()));
@@ -93,6 +121,7 @@ struct AppSettings {
         json_object_set_new(root, "cache_storage", json_integer(cache_storage));
         json_object_set_new(root, "download_dir", json_string(download_dir.c_str()));
         json_object_set_new(root, "language", json_string(language.c_str()));
+        saveThemeHint();
         char* dumped = json_dumps(root, JSON_COMPACT);
         json_decref(root);
         if (!dumped) return false;
