@@ -1,0 +1,9 @@
+[submodule "external/jansson"]
+	path = external/jansson
+	url = https://github.com/akheron/jansson.git
+[submodule "external/rlottie-vita/source"]
+	path = external/rlottie-vita/source
+	url = https://github.com/Samsung/rlottie.git
+[submodule "external/tdlib-upstream"]
+	path = external/tdlib-upstream
+	url = https://github.com/tdlib/td.git

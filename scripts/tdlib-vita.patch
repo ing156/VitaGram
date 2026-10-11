@@ -1,0 +1,942 @@
+diff --git a/CMake/TdSetUpCompiler.cmake b/CMake/TdSetUpCompiler.cmake
+index 8e84343..b98d498 100644
+--- a/CMake/TdSetUpCompiler.cmake
++++ b/CMake/TdSetUpCompiler.cmake
+@@ -4,6 +4,10 @@ function(td_set_up_compiler)
+   set(CMAKE_EXPORT_COMPILE_COMMANDS 1 PARENT_SCOPE)
+ 
+   set(CMAKE_POSITION_INDEPENDENT_CODE ON PARENT_SCOPE)
++  if (__vita__)
++    set(CMAKE_POSITION_INDEPENDENT_CODE OFF PARENT_SCOPE)
++    add_definitions(-D_POSIX_REALTIME_SIGNALS -D__rtems__ -DSQLITE_MAX_MMAP_SIZE=0 -DSQLITE_OMIT_WAL)
++  endif()
+ 
+   include(illumos)
+ 
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7ebc948..ede47f9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
+ 
+ project(TDLib VERSION 1.8.67 LANGUAGES CXX C)
+ 
++if (__vita__)
++  set(CMAKE_DL_LIBS "")
++endif()
++
+ if (NOT DEFINED CMAKE_MODULE_PATH)
+   set(CMAKE_MODULE_PATH "")
+ endif()
+@@ -1372,7 +1376,7 @@ if (NOT CMAKE_CROSSCOMPILING)
+ endif()
+ 
+ # tdcore - internal TDLib interface
+-if (MSVC AND TD_ENABLE_LTO)
++if ((MSVC AND TD_ENABLE_LTO) OR __vita__)
+   add_library(tdcore_part1 STATIC ${TDLIB_SOURCE_PART1})
+   target_include_directories(tdcore_part1 PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<BUILD_INTERFACE:${TL_TD_AUTO_INCLUDE_DIR}>)
+   target_link_libraries(tdcore_part1 PUBLIC tdapi tdnet tddb tdactor tde2e tdutils PRIVATE tdmtproto)
+@@ -1382,7 +1386,11 @@ if (MSVC AND TD_ENABLE_LTO)
+   target_link_libraries(tdcore_part2 PUBLIC tdapi tdnet tddb tdactor tde2e tdutils PRIVATE tdmtproto)
+ 
+   add_library(tdcore INTERFACE)
+-  target_link_libraries(tdcore INTERFACE tdcore_part1 tdcore_part2)
++  if (__vita__)
++    target_link_libraries(tdcore INTERFACE "-Wl,--start-group" tdcore_part1 tdcore_part2 "-Wl,--end-group")
++  else()
++    target_link_libraries(tdcore INTERFACE tdcore_part1 tdcore_part2)
++  endif()
+ 
+   set(TD_CORE_PART_TARGETS tdcore_part1 tdcore_part2)
+ else()
+diff --git a/sqlite/CMakeLists.txt b/sqlite/CMakeLists.txt
+index 3464dfd..485e31a 100644
+--- a/sqlite/CMakeLists.txt
++++ b/sqlite/CMakeLists.txt
+@@ -55,6 +55,9 @@ target_compile_definitions(tdsqlite PRIVATE
+ if (NOT WIN32)
+   target_compile_definitions(tdsqlite PRIVATE -DHAVE_USLEEP -DNDEBUG=1)
+ endif()
++if (__vita__)
++  target_compile_options(tdsqlite PRIVATE "-include" "sys/unistd.h")
++endif()
+ 
+ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+   target_compile_definitions(tdsqlite PRIVATE -DSQLITE_OS_WINRT=1)
+diff --git a/td/mtproto/DhHandshake.cpp b/td/mtproto/DhHandshake.cpp
+index ca410d3..a518e5f 100644
+--- a/td/mtproto/DhHandshake.cpp
++++ b/td/mtproto/DhHandshake.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/mtproto/DhHandshake.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include "td/mtproto/DhCallback.h"
+ 
+@@ -20,6 +21,7 @@ namespace mtproto {
+ 
+ Status DhHandshake::check_config(Slice prime_str, const BigNum &prime, int32 g_int, BigNumContext &ctx,
+                                  DhCallback *callback) {
++  VitaTrace trace(VitaPhase::DhCheck);
+   // check that 2^2047 <= p < 2^2048
+   if (prime.get_num_bits() != 2048) {
+     return Status::Error("p is not 2048-bit number");
+diff --git a/td/telegram/files/FileLoaderUtils.cpp b/td/telegram/files/FileLoaderUtils.cpp
+index 02aa5e4..bc95351 100644
+--- a/td/telegram/files/FileLoaderUtils.cpp
++++ b/td/telegram/files/FileLoaderUtils.cpp
+@@ -35,6 +35,19 @@ Result<std::pair<FileFd, string>> try_create_new_file(CSlice path, CSlice file_n
+   auto r_fd = FileFd::open(name, FileFd::Read | FileFd::Write | FileFd::CreateNew, 0640);
+   if (r_fd.is_error()) {
+     auto status = mkdir(path, 0750);
++    if (status.is_error()) {
++      // Bucket directories live one level below the type directory, which may not exist yet.
++      string parent = path.str();
++      while (parent.size() > 1 && parent.back() == TD_DIR_SLASH) {
++        parent.pop_back();
++      }
++      auto slash = parent.find_last_of(TD_DIR_SLASH);
++      if (slash != string::npos && slash > 0) {
++        parent.resize(slash);
++        mkdir(parent, 0750).ignore();
++        status = mkdir(path, 0750);
++      }
++    }
+     if (status.is_error()) {
+       auto r_stat = stat(path);
+       if (r_stat.is_ok() && r_stat.ok().is_dir_) {
+@@ -123,13 +136,36 @@ bool for_suggested_file_name(CSlice name, bool use_pmc, bool use_random, F &&cal
+   return active;
+ }
+ 
++// Vita exFAT scans a directory linearly for every open/stat, so profile photos, thumbnails,
++// photos and stickers are spread over buckets of 32 counter names ("file_<id>"): one scan stays short however
++// many files exist. Files already stored flat keep working: their paths are kept by the app.
++static string bucket_dir_for(FileType file_type, const string &dir, CSlice name) {
++  if (file_type != FileType::ProfilePhoto && file_type != FileType::Thumbnail && file_type != FileType::Photo &&
++      file_type != FileType::Sticker) {
++    return dir;
++  }
++  Slice slice = name;
++  if (!begins_with(slice, "file_")) {
++    return dir;
++  }
++  slice.remove_prefix(5);
++  size_t digits = 0;
++  while (digits < slice.size() && digits < 9 && slice[digits] >= '0' && slice[digits] <= '9') {
++    digits++;
++  }
++  if (digits == 0) {
++    return dir;
++  }
++  return PSTRING() << dir << 'b' << to_integer<int32>(slice.substr(0, digits)) / 32 << TD_DIR_SLASH;
++}
++
+ Result<string> create_from_temp(FileType file_type, CSlice temp_path, CSlice name) {
+   auto dir = get_files_dir(file_type);
+   LOG(INFO) << "Create file of type " << file_type << " in directory " << dir << " with suggested name " << name
+             << " from temporary file " << temp_path;
+   Result<std::pair<FileFd, string>> res = Status::Error(500, "Can't find suitable file name");
+   for_suggested_file_name(name, true, true, [&](CSlice suggested_name) {
+-    res = try_create_new_file(dir, suggested_name);
++    res = try_create_new_file(bucket_dir_for(file_type, dir, suggested_name), suggested_name);
+     return res.is_error();
+   });
+   TRY_RESULT(tmp, std::move(res));
+diff --git a/tdactor/td/actor/ConcurrentScheduler.cpp b/tdactor/td/actor/ConcurrentScheduler.cpp
+index 40c9c9f..2051f49 100644
+--- a/tdactor/td/actor/ConcurrentScheduler.cpp
++++ b/tdactor/td/actor/ConcurrentScheduler.cpp
+@@ -70,7 +70,7 @@ void ConcurrentScheduler::test_one_thread_run() {
+   } while (!is_finished_.load(std::memory_order_relaxed));
+ }
+ 
+-#if !TD_THREAD_UNSUPPORTED
++#if !TD_THREAD_UNSUPPORTED && !TD_EVENTFD_UNSUPPORTED
+ thread::id ConcurrentScheduler::get_scheduler_thread_id(int32 sched_id) {
+   auto thread_pos = static_cast<size_t>(sched_id - 1);
+   CHECK(thread_pos < threads_.size());
+diff --git a/tdactor/td/actor/ConcurrentScheduler.h b/tdactor/td/actor/ConcurrentScheduler.h
+index 9677957..f98f0d5 100644
+--- a/tdactor/td/actor/ConcurrentScheduler.h
++++ b/tdactor/td/actor/ConcurrentScheduler.h
+@@ -51,7 +51,7 @@ class ConcurrentScheduler final : private Scheduler::Callback {
+     return is_finished_.load(std::memory_order_relaxed);
+   }
+ 
+-#if TD_THREAD_UNSUPPORTED
++#if TD_THREAD_UNSUPPORTED || TD_EVENTFD_UNSUPPORTED
+   int get_scheduler_thread_id(int32 sched_id) {
+     return 1;
+   }
+diff --git a/tdactor/td/actor/impl/Scheduler.cpp b/tdactor/td/actor/impl/Scheduler.cpp
+index dd5a1d7..9d35e90 100644
+--- a/tdactor/td/actor/impl/Scheduler.cpp
++++ b/tdactor/td/actor/impl/Scheduler.cpp
+@@ -26,6 +26,7 @@
+ #include "td/utils/ScopeGuard.h"
+ #include "td/utils/SliceBuilder.h"
+ #include "td/utils/Time.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include <functional>
+ #include <memory>
+@@ -33,6 +34,15 @@
+ 
+ namespace td {
+ 
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++// receive(0) runs this scheduler on the embedding application's network thread.
++// Bound batches between callbacks; never interrupt an actor in mid-callback.
++static TD_THREAD_LOCAL double vita_run_deadline;
++static bool vita_budget_expired() {
++  return vita_run_deadline != 0 && Time::now() >= vita_run_deadline;
++}
++#endif
++
+ int VERBOSITY_NAME(actor) = VERBOSITY_NAME(DEBUG) + 10;
+ 
+ TD_THREAD_LOCAL Scheduler *Scheduler::scheduler_;   // static zero-initialized
+@@ -264,6 +274,7 @@ void Scheduler::clear() {
+ }
+ 
+ void Scheduler::do_event(ActorInfo *actor_info, Event &&event) {
++  VitaTrace trace(VitaPhase::Actor);
+   event_context_ptr_->link_token = event.link_token;
+   auto actor = actor_info->get_actor_unsafe();
+   VLOG(actor) << *actor_info << ' ' << event;
+@@ -510,8 +521,13 @@ void Scheduler::set_actor_timeout_at(ActorInfo *actor_info, double timeout_at) {
+ }
+ 
+ void Scheduler::run_poll(Timestamp timeout) {
++  VitaTrace trace(VitaPhase::Poll);
+   // we can't wait for less than 1ms
+   auto timeout_ms = static_cast<int>(clamp(timeout.in(), 0.0, 1000000.0) * 1000 + 1);
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++  if (timeout.is_in_past() || vita_budget_expired()) timeout_ms = 0;
++  else if (vita_run_deadline != 0) timeout_ms = min(timeout_ms, static_cast<int>(max(0.0, vita_run_deadline - Time::now()) * 1000));
++#endif
+ #if TD_PORT_WINDOWS
+   CHECK(inbound_queue_);
+   inbound_queue_->reader_get_event_fd().wait(timeout_ms);
+@@ -528,6 +544,9 @@ void Scheduler::flush_mailbox(ActorInfo *actor_info) {
+   EventGuard guard(this, actor_info);
+   size_t i = 0;
+   for (; i < mailbox_size && guard.can_run(); i++) {
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++    if (i != 0 && vita_budget_expired()) break;
++#endif
+     do_event(actor_info, std::move(mailbox[i]));
+   }
+   mailbox.erase(mailbox.begin(), mailbox.begin() + i);
+@@ -536,7 +555,19 @@ void Scheduler::flush_mailbox(ActorInfo *actor_info) {
+ void Scheduler::run_mailbox() {
+   VLOG(actor) << "Run mailbox : begin";
+   ListNode ready_actors = std::move(ready_actors_);
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++  SCOPE_EXIT {
++    // Unvisited actors stay ahead of actors requeued during this slice. Preserve
++    // FIFO even if an actor destroys another actor still in this intrusive list.
++    ListNode newly_ready = std::move(ready_actors_);
++    ready_actors_ = std::move(ready_actors);
++    while (auto node = newly_ready.get()) ready_actors_.put(node);
++  };
++#endif
+   while (!ready_actors.empty()) {
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++    if (vita_budget_expired()) break;
++#endif
+     ListNode *node = ready_actors.get();
+     CHECK(node);
+     auto actor_info = ActorInfo::from_list_node(node);
+@@ -564,8 +595,15 @@ void Scheduler::run_mailbox() {
+ 
+ Timestamp Scheduler::run_timeout() {
+   double now = Time::now();
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++  unsigned handled = 0;
++#endif
+   //TODO: use Timestamp().is_in_past()
+   while (!timeout_queue_.empty() && timeout_queue_.top_key() < now) {
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++    // At least one overdue timer must run even under a continuous mailbox flood.
++    if (handled++ != 0 && vita_budget_expired()) break;
++#endif
+     HeapNode *node = timeout_queue_.pop();
+     ActorInfo *actor_info = ActorInfo::from_heap_node(node);
+     send_immediately(actor_info->actor_id(), Event::timeout());
+@@ -580,12 +618,21 @@ Timestamp Scheduler::run_events(Timestamp timeout) {
+   do {
+     run_mailbox();
+     res = run_timeout();
+-  } while (!ready_actors_.empty() && !timeout.is_in_past());
++  } while (!ready_actors_.empty() && !timeout.is_in_past()
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++           && !vita_budget_expired()
++#endif
++  );
+   return res;
+ }
+ 
+ void Scheduler::run_no_guard(Timestamp timeout) {
+   CHECK(has_guard_);
++#if TD_VITA || defined(TD_VITA_COOPERATIVE)
++  const auto previous_deadline = vita_run_deadline;
++  vita_run_deadline = Time::now() + 0.002;
++  SCOPE_EXIT { vita_run_deadline = previous_deadline; };
++#endif
+   SCOPE_EXIT {
+     yield_flag_ = false;
+   };
+diff --git a/tdnet/td/net/GetHostByNameActor.cpp b/tdnet/td/net/GetHostByNameActor.cpp
+index 3e37113..e82c054 100644
+--- a/tdnet/td/net/GetHostByNameActor.cpp
++++ b/tdnet/td/net/GetHostByNameActor.cpp
+@@ -51,7 +51,7 @@ class GoogleDnsResolver final : public Actor {
+         "GoogleDnsResolver", std::move(wget_promise),
+         PSTRING() << "https://dns.google/resolve?name=" << url_encode(host_) << "&type=" << (prefer_ipv6_ ? 28 : 1),
+         std::vector<std::pair<string, string>>({{"Host", "dns.google"}}), timeout, ttl, prefer_ipv6_,
+-        SslCtx::VerifyPeer::Off);
++        SslCtx::VerifyPeer::On);  // an unverified answer would let any network attacker choose the proxy address
+   }
+ 
+   static Result<IPAddress> get_ip_address(Result<unique_ptr<HttpQuery>> r_http_query) {
+diff --git a/tdnet/td/net/HttpProxy.cpp b/tdnet/td/net/HttpProxy.cpp
+index 2585ad7..a5045a5 100644
+--- a/tdnet/td/net/HttpProxy.cpp
++++ b/tdnet/td/net/HttpProxy.cpp
+@@ -26,7 +26,7 @@ void HttpProxy::send_connect() {
+   if (!username_.empty() || !password_.empty()) {
+     auto userinfo = PSTRING() << username_ << ':' << password_;
+     proxy_authorization = PSTRING() << "Proxy-Authorization: Basic " << base64_encode(userinfo) << "\r\n";
+-    VLOG(proxy) << "Use credentials to connect to proxy: " << proxy_authorization;
++    VLOG(proxy) << "Use credentials to connect to proxy";  // never log the reversible Basic header
+   }
+   fd_.output_buffer().append(PSLICE() << "CONNECT " << host << " HTTP/1.1\r\n"
+                                       << "Host: " << host << "\r\n"
+diff --git a/tdnet/td/net/SslCtx.cpp b/tdnet/td/net/SslCtx.cpp
+index 3af7103..d737cae 100644
+--- a/tdnet/td/net/SslCtx.cpp
++++ b/tdnet/td/net/SslCtx.cpp
+@@ -182,6 +182,15 @@ Result<SslCtxPtr> do_create_ssl_ctx(CSlice cert_file, SslCtx::VerifyPeer verify_
+ #endif
+   SSL_CTX_set_mode(ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_ENABLE_PARTIAL_WRITE);
+ 
++#if TD_VITA
++  // The Vita has no system certificate store, so verified connections would always fail and callers
++  // would be pushed towards unverified ones. Use the root list packaged with the application.
++  if (cert_file.empty() && verify_peer == SslCtx::VerifyPeer::On) {
++    if (SSL_CTX_load_verify_locations(ssl_ctx, "app0:certs/cacert.pem", nullptr) == 0) {
++      return create_openssl_error(-8, "Failed to load app0:certs/cacert.pem");
++    }
++  } else
++#endif
+   if (cert_file.empty()) {
+     auto *store = load_system_certificate_store();
+     if (store == nullptr) {
+diff --git a/tdutils/CMakeLists.txt b/tdutils/CMakeLists.txt
+index 5576fed..344114c 100644
+--- a/tdutils/CMakeLists.txt
++++ b/tdutils/CMakeLists.txt
+@@ -351,6 +351,10 @@ set(TDUTILS_TEST_SOURCE
+   PARENT_SCOPE
+ )
+ 
++if (__vita__)
++  list(REMOVE_ITEM TDUTILS_SOURCE td/utils/AsyncFileLog.cpp)
++endif()
++
+ add_library(tdutils STATIC ${TDUTILS_SOURCE})
+ 
+ if (NOT CMAKE_CROSSCOMPILING AND TDUTILS_MIME_TYPE)
+diff --git a/tdutils/td/utils/TsCerr.cpp b/tdutils/td/utils/TsCerr.cpp
+index f6c896c..4ff014a 100644
+--- a/tdutils/td/utils/TsCerr.cpp
++++ b/tdutils/td/utils/TsCerr.cpp
+@@ -32,6 +32,11 @@ TsCerr &TsCerr::operator<<(Slice slice) {
+   double end_time = 0;
+   while (!slice.empty()) {
+     auto res = fd.write(slice);
++#if TD_VITA || defined(TD_VITA_STDERR_BEST_EFFORT)
++    // A missing/full Vita debug sink must not stall the only TDLib worker.
++    // Logging is best effort: don't spin on errors or successful zero writes.
++    if (res.is_error() || res.ok() == 0) break;
++#endif
+     if (res.is_error()) {
+       if (res.error().code() == EPIPE) {
+         break;
+diff --git a/tdutils/td/utils/crypto.cpp b/tdutils/td/utils/crypto.cpp
+index 8b8f85a..29aa298 100644
+--- a/tdutils/td/utils/crypto.cpp
++++ b/tdutils/td/utils/crypto.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/utils/crypto.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include "td/utils/as.h"
+ #include "td/utils/BigNum.h"
+@@ -231,6 +232,7 @@ static int pq_factorize_big(Slice pq_str, string *p_str, string *q_str) {
+ }
+ 
+ int pq_factorize(Slice pq_str, string *p_str, string *q_str) {
++  VitaTrace trace(VitaPhase::Factorize);
+   size_t size = pq_str.size();
+   if (static_cast<int>(size) > 8 || (static_cast<int>(size) == 8 && (pq_str.begin()[0] & 128) != 0)) {
+     return pq_factorize_big(pq_str, p_str, q_str);
+diff --git a/tdutils/td/utils/logging.cpp b/tdutils/td/utils/logging.cpp
+index c42a432..7e6a4b2 100644
+--- a/tdutils/td/utils/logging.cpp
++++ b/tdutils/td/utils/logging.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/utils/logging.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include "td/utils/ExitGuard.h"
+ #include "td/utils/port/Clocks.h"
+@@ -152,6 +153,7 @@ Logger::~Logger() {
+ 
+ class DefaultLog final : public LogInterface {
+   void do_append(int log_level, CSlice slice) final {
++    VitaTrace trace(VitaPhase::LogWrite);
+ #if TD_ANDROID
+     switch (log_level) {
+       case VERBOSITY_NAME(FATAL):
+diff --git a/tdutils/td/utils/port/FileFd.cpp b/tdutils/td/utils/port/FileFd.cpp
+index 8927647..de83434 100644
+--- a/tdutils/td/utils/port/FileFd.cpp
++++ b/tdutils/td/utils/port/FileFd.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/utils/port/FileFd.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #if TD_PORT_WINDOWS
+ #include "td/utils/port/FromApp.h"
+@@ -36,7 +37,9 @@
+ #include <fcntl.h>
+ #include <sys/file.h>
+ #include <sys/types.h>
++#if !TD_VITA
+ #include <sys/uio.h>
++#endif
+ #include <unistd.h>
+ #else
+ #include <limits>
+@@ -117,6 +120,8 @@ FileFd::FileFd(unique_ptr<detail::FileFdImpl> impl) : impl_(std::move(impl)) {
+ }
+ 
+ Result<FileFd> FileFd::open(CSlice filepath, int32 flags, int32 mode) {
++  VitaTrace trace(VitaPhase::FileMeta);
++  vita_trace_path(filepath.c_str());
+   if (flags & ~(Write | Read | Truncate | Create | Append | CreateNew | Direct | WinStat)) {
+     return Status::Error(PSLICE() << "File \"" << filepath << "\" has failed to be " << PrintFlags{flags});
+   }
+@@ -266,6 +271,7 @@ FileFd FileFd::from_native_fd(NativeFd native_fd) {
+ }
+ 
+ Result<size_t> FileFd::write(Slice slice) {
++  VitaTrace trace(get_native_fd().fd() == 2 ? VitaPhase::LogWrite : VitaPhase::FileIo);
+   auto native_fd = get_native_fd().fd();
+ #if TD_PORT_POSIX
+   auto bytes_written = detail::skip_eintr([&] { return ::write(native_fd, slice.begin(), slice.size()); });
+@@ -283,7 +289,8 @@ Result<size_t> FileFd::write(Slice slice) {
+ }
+ 
+ Result<size_t> FileFd::writev(Span<IoSlice> slices) {
+-#if TD_PORT_POSIX
++  VitaTrace trace(VitaPhase::FileIo);
++#if TD_PORT_POSIX && !TD_VITA
+   auto native_fd = get_native_fd().fd();
+   TRY_RESULT(slices_size, narrow_cast_safe<int>(slices.size()));
+   auto bytes_written = detail::skip_eintr([&] { return ::writev(native_fd, slices.begin(), slices_size); });
+@@ -318,6 +325,7 @@ Result<size_t> FileFd::writev(Span<IoSlice> slices) {
+ }
+ 
+ Result<size_t> FileFd::read(MutableSlice slice) {
++  VitaTrace trace(VitaPhase::FileIo);
+   auto native_fd = get_native_fd().fd();
+ #if TD_PORT_POSIX
+   auto bytes_read = detail::skip_eintr([&] { return ::read(native_fd, slice.begin(), slice.size()); });
+@@ -351,6 +359,7 @@ Result<size_t> FileFd::read(MutableSlice slice) {
+ }
+ 
+ Result<size_t> FileFd::pwrite(Slice slice, int64 offset) {
++  VitaTrace trace(VitaPhase::FileIo);
+   if (offset < 0) {
+     return Status::Error("Offset must be non-negative");
+   }
+@@ -377,6 +386,7 @@ Result<size_t> FileFd::pwrite(Slice slice, int64 offset) {
+ }
+ 
+ Result<size_t> FileFd::pread(MutableSlice slice, int64 offset) const {
++  VitaTrace trace(VitaPhase::FileIo);
+   if (offset < 0) {
+     return Status::Error("Offset must be non-negative");
+   }
+@@ -426,6 +436,12 @@ static Status create_local_lock(const string &path, int32 &max_tries) {
+ }
+ 
+ Status FileFd::lock(LockFlags flags, const string &path, int32 max_tries) {
++#if TD_VITA
++  static_cast<void>(flags);
++  static_cast<void>(path);
++  static_cast<void>(max_tries);
++  return Status::OK();
++#else
+   if (max_tries <= 0) {
+     return Status::Error("Can't lock file: wrong max_tries");
+   }
+@@ -514,9 +530,14 @@ Status FileFd::lock(LockFlags flags, const string &path, int32 max_tries) {
+     need_local_unlock = false;
+   }
+   return Status::OK();
++#endif
+ }
+ 
+ void FileFd::remove_local_lock(const string &path) {
++#if TD_VITA
++  static_cast<void>(path);
++  return;
++#else
+   if (path.empty() || ExitGuard::is_exited()) {
+     return;
+   }
+@@ -524,6 +545,7 @@ void FileFd::remove_local_lock(const string &path) {
+   std::unique_lock<std::mutex> lock(in_process_lock_mutex);
+   auto erased_count = locked_files.erase(path);
+   CHECK(erased_count > 0 || path.empty() || ExitGuard::is_exited());
++#endif
+ }
+ 
+ void FileFd::close() {
+@@ -634,6 +656,7 @@ Result<Stat> FileFd::stat() const {
+ }
+ 
+ Status FileFd::sync() {
++  VitaTrace trace(VitaPhase::FileSync);
+   CHECK(!empty());
+ #if TD_PORT_POSIX
+ #if TD_DARWIN
+diff --git a/tdutils/td/utils/port/IPAddress.cpp b/tdutils/td/utils/port/IPAddress.cpp
+index 8a08d34..2108476 100644
+--- a/tdutils/td/utils/port/IPAddress.cpp
++++ b/tdutils/td/utils/port/IPAddress.cpp
+@@ -7,6 +7,7 @@
+ #define _WINSOCK_DEPRECATED_NO_WARNINGS  // we need to use inet_addr instead of inet_pton
+ 
+ #include "td/utils/port/IPAddress.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include "td/utils/format.h"
+ #include "td/utils/logging.h"
+@@ -303,7 +304,11 @@ void IPAddress::init_ipv6_any() {
+   is_valid_ = true;
+   std::memset(&ipv6_addr_, 0, sizeof(ipv6_addr_));
+   ipv6_addr_.sin6_family = AF_INET6;
++#if TD_VITA
++  std::memset(&ipv6_addr_.sin6_addr, 0, sizeof(ipv6_addr_.sin6_addr));
++#else
+   ipv6_addr_.sin6_addr = in6addr_any;
++#endif
+   ipv6_addr_.sin6_port = 0;
+ }
+ 
+@@ -399,6 +404,7 @@ Status IPAddress::init_host_port(CSlice host, int port, bool prefer_ipv6) {
+ }
+ 
+ Status IPAddress::init_host_port(CSlice host, CSlice port, bool prefer_ipv6) {
++  VitaTrace trace(VitaPhase::Dns);
+   is_valid_ = false;
+   if (host.empty()) {
+     return Status::Error("Host is empty");
+diff --git a/tdutils/td/utils/port/IoSlice.h b/tdutils/td/utils/port/IoSlice.h
+index aea2613..6dfb9d2 100644
+--- a/tdutils/td/utils/port/IoSlice.h
++++ b/tdutils/td/utils/port/IoSlice.h
+@@ -9,13 +9,13 @@
+ #include "td/utils/port/config.h"
+ #include "td/utils/Slice.h"
+ 
+-#if TD_PORT_POSIX
++#if TD_PORT_POSIX && !TD_VITA
+ #include <sys/uio.h>
+ #endif
+ 
+ namespace td {
+ 
+-#if TD_PORT_POSIX
++#if TD_PORT_POSIX && !TD_VITA
+ 
+ using IoSlice = struct iovec;
+ 
+diff --git a/tdutils/td/utils/port/MemoryMapping.cpp b/tdutils/td/utils/port/MemoryMapping.cpp
+index 29ac027..a2f8dbc 100644
+--- a/tdutils/td/utils/port/MemoryMapping.cpp
++++ b/tdutils/td/utils/port/MemoryMapping.cpp
+@@ -14,7 +14,7 @@
+ // anonymous maps,
+ // huge pages?
+ 
+-#if TD_WINDOWS
++#if TD_WINDOWS || TD_VITA
+ #else
+ #include <sys/mman.h>
+ #include <unistd.h>
+@@ -38,7 +38,7 @@ class MemoryMapping::Impl {
+   int64 offset_;
+ };
+ 
+-#if !TD_WINDOWS
++#if !TD_WINDOWS && !TD_VITA
+ static Result<int64> get_page_size() {
+   static Result<int64> page_size = []() -> Result<int64> {
+     auto page_size = sysconf(_SC_PAGESIZE);
+@@ -56,7 +56,7 @@ Result<MemoryMapping> MemoryMapping::create_anonymous(const MemoryMapping::Optio
+ }
+ 
+ Result<MemoryMapping> MemoryMapping::create_from_file(const FileFd &file_fd, const MemoryMapping::Options &options) {
+-#if TD_WINDOWS
++#if TD_WINDOWS || TD_VITA
+   return Status::Error("Unsupported yet");
+ #else
+   if (file_fd.empty()) {
+diff --git a/tdutils/td/utils/port/SocketFd.cpp b/tdutils/td/utils/port/SocketFd.cpp
+index 5f784c4..bb9f075 100644
+--- a/tdutils/td/utils/port/SocketFd.cpp
++++ b/tdutils/td/utils/port/SocketFd.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/utils/port/SocketFd.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include "td/utils/common.h"
+ #include "td/utils/format.h"
+@@ -408,6 +409,17 @@ class SocketFdImpl {
+   }
+ 
+   Result<size_t> writev(Span<IoSlice> slices) {
++#if TD_VITA
++    size_t total = 0;
++    for (const auto &slice : slices) {
++      TRY_RESULT(written, write(slice));
++      total += written;
++      if (written != slice.size()) {
++        break;
++      }
++    }
++    return total;
++#else
+     int native_fd = get_native_fd().socket();
+     TRY_RESULT(slices_size, narrow_cast_safe<int>(slices.size()));
+     auto write_res = detail::skip_eintr([&] {
+@@ -435,9 +447,11 @@ class SocketFdImpl {
+                  << " bytes";
+     }
+     return write_finish();
++#endif
+   }
+ 
+   Result<size_t> write(Slice slice) {
++    VitaTrace trace(VitaPhase::SocketWrite);
+     int native_fd = get_native_fd().socket();
+     auto write_res = detail::skip_eintr([&] {
+       return
+@@ -492,6 +506,7 @@ class SocketFdImpl {
+     }
+   }
+   Result<size_t> read(MutableSlice slice) {
++    VitaTrace trace(VitaPhase::SocketRead);
+     if (get_poll_info().get_flags_local().has_pending_error()) {
+       TRY_STATUS(get_pending_error());
+     }
+@@ -629,6 +644,7 @@ Result<SocketFd> SocketFd::from_native_fd(NativeFd fd) {
+ }
+ 
+ Result<SocketFd> SocketFd::open(const IPAddress &address) {
++  VitaTrace trace(VitaPhase::SocketConnect);
+ #if TD_DARWIN_WATCH_OS
+   return SocketFd{};
+ #endif
+diff --git a/tdutils/td/utils/port/Stat.cpp b/tdutils/td/utils/port/Stat.cpp
+index 98b96d8..728a956 100644
+--- a/tdutils/td/utils/port/Stat.cpp
++++ b/tdutils/td/utils/port/Stat.cpp
+@@ -5,6 +5,7 @@
+ // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ //
+ #include "td/utils/port/Stat.h"
++#include "td/utils/VitaTrace.h"
+ 
+ #include "td/utils/port/FileFd.h"
+ 
+@@ -70,7 +71,9 @@ using void_t = typename voider<T...>::type;
+ template <class T, class = void>
+ struct TimeNsec {
+   static std::pair<int, int> get(const T &) {
++#if !TD_VITA
+     T().warning("Platform lacks support of precise access/modification file times, comment this line to continue");
++#endif
+     return {0, 0};
+   }
+ };
+@@ -132,6 +135,7 @@ Stat from_native_stat(const struct ::stat &buf) {
+ }
+ 
+ Result<Stat> fstat(int native_fd) {
++  VitaTrace trace(VitaPhase::FileMeta);
+   struct ::stat buf;
+   if (detail::skip_eintr([&] { return ::fstat(native_fd, &buf); }) < 0) {
+     return OS_ERROR(PSLICE() << "Stat for fd " << native_fd << " failed");
+@@ -198,6 +202,8 @@ Status update_atime(CSlice path) {
+ #endif
+ 
+ Result<Stat> stat(CSlice path) {
++  VitaTrace trace(VitaPhase::FileMeta);
++  vita_trace_path(path.c_str());
+ #if TD_PORT_POSIX
+   struct ::stat buf;
+   int err = detail::skip_eintr([&] { return ::stat(path.c_str(), &buf); });
+diff --git a/tdutils/td/utils/port/config.h b/tdutils/td/utils/port/config.h
+index 901576f..ceb95d1 100644
+--- a/tdutils/td/utils/port/config.h
++++ b/tdutils/td/utils/port/config.h
+@@ -40,6 +40,9 @@
+ #elif TD_SOLARIS
+   #define TD_POLL_POLL 1
+   #define TD_EVENTFD_BSD 1
++#elif TD_VITA
++  #define TD_POLL_SELECT 1
++  #define TD_EVENTFD_UNSUPPORTED 1
+ #else
+   #error "Poll's implementation is not defined"
+ #endif
+@@ -48,6 +51,8 @@
+   #define TD_THREAD_UNSUPPORTED 1
+ #elif TD_WINDOWS
+   #define TD_THREAD_STL 1
++#elif TD_VITA
++  #define TD_THREAD_PTHREAD 1
+ #else
+   #define TD_THREAD_PTHREAD 1
+ #endif
+diff --git a/tdutils/td/utils/port/detail/ThreadPthread.cpp b/tdutils/td/utils/port/detail/ThreadPthread.cpp
+index b292db2..7deb38f 100644
+--- a/tdutils/td/utils/port/detail/ThreadPthread.cpp
++++ b/tdutils/td/utils/port/detail/ThreadPthread.cpp
+@@ -33,6 +33,10 @@ char disable_linker_warning_about_empty_file_thread_pthread_cpp TD_UNUSED;
+ namespace td {
+ namespace detail {
+ unsigned ThreadPthread::hardware_concurrency() {
++#if TD_VITA
++  return 3;
++#endif
++
+ // Linux and macOS
+ #if defined(_SC_NPROCESSORS_ONLN)
+   {
+diff --git a/tdutils/td/utils/port/path.cpp b/tdutils/td/utils/port/path.cpp
+index a641f79..eb37a33 100644
+--- a/tdutils/td/utils/port/path.cpp
++++ b/tdutils/td/utils/port/path.cpp
+@@ -44,6 +44,10 @@
+ #include <sys/syslimits.h>
+ #endif
+ 
++#if TD_VITA && !defined(PATH_MAX)
++#define PATH_MAX 4096
++#endif
++
+ #include <cerrno>
+ #include <cstdlib>
+ #include <string>
+diff --git a/tdutils/td/utils/port/platform.h b/tdutils/td/utils/port/platform.h
+index 20894ec..252a635 100644
+--- a/tdutils/td/utils/port/platform.h
++++ b/tdutils/td/utils/port/platform.h
+@@ -58,6 +58,8 @@
+ #elif defined(__sun)
+   #define TD_SOLARIS 1
+   // TD_ILLUMOS can be already defined by CMake
++#elif defined(__vita__) || defined(__psp2__)
++  #define TD_VITA 1
+ #elif defined(__unix__)  // all unices not caught above
+   #define TD_UNIX_UNKNOWN 1
+   #define TD_CYGWIN 1
+diff --git a/tdutils/td/utils/port/signals.cpp b/tdutils/td/utils/port/signals.cpp
+index 880bb35..05d8bba 100644
+--- a/tdutils/td/utils/port/signals.cpp
++++ b/tdutils/td/utils/port/signals.cpp
+@@ -13,7 +13,7 @@
+ #include "td/utils/common.h"
+ #include "td/utils/format.h"
+ 
+-#if TD_PORT_POSIX
++#if TD_PORT_POSIX && !TD_VITA
+ #include <signal.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
+@@ -31,7 +31,7 @@
+ 
+ namespace td {
+ 
+-#if TD_PORT_POSIX && !TD_DARWIN_TV_OS && !TD_DARWIN_WATCH_OS
++#if TD_PORT_POSIX && !TD_DARWIN_TV_OS && !TD_DARWIN_WATCH_OS && !TD_VITA
+ static Status protect_memory(void *addr, size_t len) {
+   if (mprotect(addr, len, PROT_NONE) != 0) {
+     return OS_ERROR("mprotect failed");
+@@ -41,7 +41,7 @@ static Status protect_memory(void *addr, size_t len) {
+ #endif
+ 
+ Status setup_signals_alt_stack() {
+-#if TD_PORT_POSIX && !TD_DARWIN_TV_OS && !TD_DARWIN_WATCH_OS
++#if TD_PORT_POSIX && !TD_DARWIN_TV_OS && !TD_DARWIN_WATCH_OS && !TD_VITA
+   auto page_size = getpagesize();
+   auto stack_size = (MINSIGSTKSZ + 16 * page_size - 1) / page_size * page_size;
+ 
+@@ -65,7 +65,13 @@ Status setup_signals_alt_stack() {
+   return Status::OK();
+ }
+ 
+-#if TD_PORT_POSIX
++#if TD_PORT_POSIX || TD_VITA
++#if TD_VITA
++template <class F>
++static Status set_signal_handler_impl(vector<int> &&, F) {
++  return Status::OK();
++}
++#else
+ static void set_handler(struct sigaction &act, decltype(act.sa_handler) handler) {
+   act.sa_handler = handler;
+ }
+@@ -92,8 +98,13 @@ static Status set_signal_handler_impl(vector<int> &&signals, F func) {
+   }
+   return Status::OK();
+ }
++#endif
+ 
+ static vector<int> get_native_signals(SignalType type) {
++#if TD_VITA
++  static_cast<void>(type);
++  return {};
++#else
+   switch (type) {
+     case SignalType::Abort:
+       return {SIGABRT, SIGXCPU, SIGXFSZ};
+@@ -112,6 +123,7 @@ static vector<int> get_native_signals(SignalType type) {
+     default:
+       return {};
+   }
++#endif
+ }
+ #elif TD_PORT_WINDOWS
+ using signal_handler = void (*)(int sig);
+@@ -166,12 +178,12 @@ Status set_signal_handler(SignalType type, void (*func)(int sig)) {
+ using extended_signal_handler = void (*)(int sig, void *addr);
+ static extended_signal_handler extended_signal_handlers[NSIG] = {};
+ 
+-#if TD_PORT_POSIX
++#if TD_PORT_POSIX && !TD_VITA
+ static void siginfo_handler(int signum, siginfo_t *info, void *data) {
+   auto handler = extended_signal_handlers[signum];
+   handler(signum, info->si_addr);
+ }
+-#elif TD_PORT_WINDOWS
++#elif TD_PORT_WINDOWS || TD_VITA
+ static void siginfo_handler(int signum) {
+   auto handler = extended_signal_handlers[signum];
+   handler(signum, nullptr);
+@@ -227,7 +239,7 @@ static void signal_safe_append_int(char **s, Slice name, int number) {
+ }
+ 
+ static void signal_safe_write_data(Slice data) {
+-#if TD_PORT_POSIX
++#if TD_PORT_POSIX && !TD_VITA
+   while (!data.empty()) {
+     auto res = write(2, data.begin(), data.size());
+     if (res < 0 && errno == EINTR) {
+@@ -253,7 +265,9 @@ static void signal_safe_write_data(Slice data) {
+ }
+ 
+ static int get_process_id() {
+-#if TD_PORT_POSIX
++#if TD_VITA
++  return 0;
++#elif TD_PORT_POSIX
+   return getpid();
+ #elif TD_PORT_WINDOWS
+   return GetCurrentProcessId();
+diff --git a/tdutils/td/utils/port/uname.cpp b/tdutils/td/utils/port/uname.cpp
+index 0e62df7..f3d4d53 100644
+--- a/tdutils/td/utils/port/uname.cpp
++++ b/tdutils/td/utils/port/uname.cpp
+@@ -198,6 +198,9 @@ Slice get_operating_system_version() {
+     }
+ #endif
+ 
++#if TD_VITA
++    return "PS Vita";
++#else
+     struct utsname name;
+     int err = uname(&name);
+     if (err == 0) {
+@@ -207,6 +210,7 @@ Slice get_operating_system_version() {
+         return os_name;
+       }
+     }
++#endif
+ #endif
+     LOG(ERROR) << "Failed to identify OS name; use generic one";
+ 
+@@ -224,6 +228,8 @@ Slice get_operating_system_version() {
+     return "NetBSD";
+ #elif TD_CYGWIN
+     return "Cygwin";
++#elif TD_VITA
++    return "PS Vita";
+ #else
+     return "Unix";
+ #endif
+diff --git a/tdutils/td/utils/VitaTrace.h b/tdutils/td/utils/VitaTrace.h
+new file mode 100644
+index 0000000..b4486fa
+--- /dev/null
++++ b/tdutils/td/utils/VitaTrace.h
+@@ -0,0 +1,29 @@
++#pragma once
++#include <cstdint>
++
++// Optional embedding hooks. No event payloads, actor names or keys cross here.
++namespace td {
++enum class VitaPhase : unsigned { Idle, Actor, Poll, SocketRead, SocketWrite, Factorize, DhCheck, Dns,
++                                 FileIo, LogWrite, SocketConnect, FileSync, FileMeta };
++#if defined(__vita__) || defined(VITAGRAM_TD_TRACE_TEST)
++extern "C" uint64_t vitagram_td_enter(unsigned phase) __attribute__((weak));
++extern "C" void vitagram_td_leave(uint64_t previous) __attribute__((weak));
++// Directory of the file being opened/stat'ed/synced, for slow-operation reports.
++extern "C" void vitagram_td_path(const char* path) __attribute__((weak));
++inline void vita_trace_path(const char* path) { if (vitagram_td_path && path) vitagram_td_path(path); }
++class VitaTrace {
++ public:
++  explicit VitaTrace(VitaPhase phase) {
++    if (vitagram_td_enter && vitagram_td_leave) previous_ = vitagram_td_enter(static_cast<unsigned>(phase));
++  }
++  ~VitaTrace() { if (vitagram_td_enter && vitagram_td_leave) vitagram_td_leave(previous_); }
++  VitaTrace(const VitaTrace &) = delete;
++  VitaTrace &operator=(const VitaTrace &) = delete;
++ private:
++  uint64_t previous_ = 0;
++};
++#else
++class VitaTrace { public: explicit VitaTrace(VitaPhase) {} };
++inline void vita_trace_path(const char*) {}
++#endif
++}  // namespace td

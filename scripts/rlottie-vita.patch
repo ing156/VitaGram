@@ -1,0 +1,77 @@
+diff --git a/src/lottie/lottieitem.cpp b/src/lottie/lottieitem.cpp
+index 7dc6cfb..dc04cd8 100644
+--- a/src/lottie/lottieitem.cpp
++++ b/src/lottie/lottieitem.cpp
+@@ -830,29 +830,59 @@ renderer::NullLayer::NullLayer(model::Layer *layerData)
+ }
+ void renderer::NullLayer::updateContent() {}
+ 
++namespace {
++
++constexpr float kMaxPolyPoints = 1024.0f;
++
++static float estimatedPointCount(const model::Property<float> &points)
++{
++    if (points.isStatic()) {
++        float pts = points.value();
++        if (!std::isfinite(pts)) return 1.0f;
++        return std::min(std::max(pts, 1.0f), kMaxPolyPoints);
++    }
++
++    float maxPts = 1.0f;
++    for (const auto &frame : points.animation().frames_) {
++        maxPts = std::max(maxPts, frame.value_.start_);
++        maxPts = std::max(maxPts, frame.value_.end_);
++    }
++    if (!std::isfinite(maxPts)) return 1.0f;
++    return std::min(std::max(maxPts, 1.0f), kMaxPolyPoints);
++}
++
++static size_t estimatedPathPoints(const model::Path *path)
++{
++    if (!path) return 1;
++
++    if (path->mShape.isStatic()) {
++        return std::max<size_t>(1, path->mShape.value().mPoints.size());
++    }
++
++    size_t maxPts = 1;
++    for (const auto &frame : path->mShape.animation().frames_) {
++        maxPts = std::max(maxPts, size_t(frame.value_.start_.mPoints.size()));
++        maxPts = std::max(maxPts, size_t(frame.value_.end_.mPoints.size()));
++    }
++    return std::min(maxPts, size_t(kMaxPolyPoints));
++}
++
++} // namespace
++
+ // Weighted cost of a single content item against kMaxShapeContentBudget.
+ // Point-heavy shapes (polystar/polygon, custom path) charge their actual
+-// point count (worst case MAX_POLY_POINTS for animated polystars, since the
+-// per-frame value isn't known yet); everything else is a cheap wrapper/paint
+-// node and charges a flat 1.
++// point count; animated values estimate the worst frame, and all estimates are
++// still capped by a safety ceiling to avoid runaway budgets.
+ static size_t contentItemCost(model::Object *contentData)
+ {
+-    constexpr float kMaxPolyPoints = 1024.0f;
+     switch (contentData->type()) {
+     case model::Object::Type::Polystar: {
+         auto *data = static_cast<model::Polystar *>(contentData);
+-        float pts = data->mPointCount.isStatic() ? data->mPointCount.value(0)
+-                                                 : kMaxPolyPoints;
+-        if (!std::isfinite(pts)) pts = kMaxPolyPoints;
+-        pts = std::min(std::max(pts, 1.0f), kMaxPolyPoints);
+-        return size_t(pts);
++        return size_t(estimatedPointCount(data->mPointCount));
+     }
+     case model::Object::Type::Path: {
+         auto *data = static_cast<model::Path *>(contentData);
+-        if (data->mShape.isStatic()) {
+-            return std::max<size_t>(1, data->mShape.value().mPoints.size());
+-        }
+-        return size_t(kMaxPolyPoints);
++        return estimatedPathPoints(data);
+     }
+     default:
+         return 1;

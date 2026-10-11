@@ -1,0 +1,201 @@
+--- a/crypto/bio/bio_addr.c
++++ b/crypto/bio/bio_addr.c
+@@ -855,8 +855,8 @@
+                  * anyway [above getaddrinfo/gai_strerror is]. We just let
+                  * system administrator figure this out...
+                  */
+-#if defined(OPENSSL_SYS_VXWORKS)
+-                /* h_errno doesn't exist on VxWorks */
++#if defined(OPENSSL_SYS_VXWORKS) || defined(__vita__)
++                /* h_errno doesn't exist on VxWorks or the Vita */
+                 ERR_raise_data(ERR_LIB_SYS, 1000,
+                     "calling gethostbyname()");
+ #else
+--- a/crypto/mem.c
++++ b/crypto/mem.c
+@@ -251,12 +251,13 @@
+ 
+     /* Allow non-malloc() allocations as long as no malloc_impl is provided. */
+     if (malloc_impl == CRYPTO_malloc) {
+-#if defined(_BSD_SOURCE) || (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L)
++#if (defined(_BSD_SOURCE) || (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L)) && !defined(__vita__)
+         if (posix_memalign(&ret, alignment, num))
+             return NULL;
+         *freeptr = ret;
+         return ret;
+-#elif defined(_ISOC11_SOURCE)
++#elif defined(_ISOC11_SOURCE) || defined(__vita__)
++        /* The Vita's newlib has aligned_alloc() but no posix_memalign(). */
+         ret = *freeptr = aligned_alloc(alignment, num);
+         return ret;
+ #endif
+--- a/crypto/threads_pthread.c
++++ b/crypto/threads_pthread.c
+@@ -618,6 +618,85 @@
+     OPENSSL_free(rlock);
+ }
+ 
++#if defined(__vita__)
++/*
++ * The Vita's pthread-embedded builds every rwlock from two mutexes and a
++ * condition variable, each backed by kernel semaphores. OpenSSL 3 creates a
++ * lock per certificate, key and connection, so loading a CA bundle of about
++ * 120 roots exhausts the process's kernel objects and later lock creation
++ * fails silently. These locks live in user memory instead: one atomic word,
++ * bit 31 = writer, the rest = number of readers. A waiter spins briefly and
++ * then sleeps, so a high-priority thread cannot starve a lower-priority lock
++ * holder on the same core (the Vita scheduler is strictly priority-based).
++ * Readers may nest, as with pthread rwlocks; writers do not.
++ */
++#include <psp2/kernel/threadmgr.h>
++
++#define VITA_LOCK_WRITER 0x80000000u
++
++static void vita_lock_backoff(unsigned int *spins)
++{
++    if (++*spins < 64)
++        return;
++    sceKernelDelayThread(50);
++}
++
++CRYPTO_RWLOCK *CRYPTO_THREAD_lock_new(void)
++{
++    /* Don't set error, to avoid recursion blowup. */
++    return OPENSSL_zalloc(sizeof(unsigned int));
++}
++
++__owur int CRYPTO_THREAD_read_lock(CRYPTO_RWLOCK *lock)
++{
++    unsigned int *word = lock, spins = 0, seen;
++
++    for (;;) {
++        seen = __atomic_load_n(word, __ATOMIC_RELAXED);
++        if ((seen & VITA_LOCK_WRITER) == 0
++            && __atomic_compare_exchange_n(word, &seen, seen + 1, 1,
++                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
++            return 1;
++        vita_lock_backoff(&spins);
++    }
++}
++
++__owur int CRYPTO_THREAD_write_lock(CRYPTO_RWLOCK *lock)
++{
++    unsigned int *word = lock, spins = 0, expected;
++
++    for (;;) {
++        expected = 0;
++        if (__atomic_compare_exchange_n(word, &expected, VITA_LOCK_WRITER, 1,
++                __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
++            return 1;
++        vita_lock_backoff(&spins);
++    }
++}
++
++int CRYPTO_THREAD_unlock(CRYPTO_RWLOCK *lock)
++{
++    unsigned int *word = lock;
++    unsigned int seen = __atomic_load_n(word, __ATOMIC_RELAXED);
++
++    /* Only the holder unlocks: a set writer bit means this thread is the writer. */
++    if ((seen & VITA_LOCK_WRITER) != 0) {
++        __atomic_store_n(word, 0, __ATOMIC_RELEASE);
++        return 1;
++    }
++    if (seen == 0)
++        return 0;
++    __atomic_fetch_sub(word, 1, __ATOMIC_RELEASE);
++    return 1;
++}
++
++void CRYPTO_THREAD_lock_free(CRYPTO_RWLOCK *lock)
++{
++    OPENSSL_free(lock);
++}
++
++#else
++
+ CRYPTO_RWLOCK *CRYPTO_THREAD_lock_new(void)
+ {
+ #ifdef USE_RWLOCK
+@@ -723,6 +802,8 @@
+     return;
+ }
+ 
++#endif /* __vita__ */
++
+ int CRYPTO_THREAD_run_once(CRYPTO_ONCE *once, void (*init)(void))
+ {
+     if (pthread_once(once, init) != 0)
+--- a/crypto/uid.c
++++ b/crypto/uid.c
+@@ -10,7 +10,8 @@
+ #include <openssl/crypto.h>
+ #include <openssl/opensslconf.h>
+ 
+-#if defined(OPENSSL_SYS_WIN32) || defined(OPENSSL_SYS_VXWORKS) || defined(OPENSSL_SYS_UEFI) || defined(__wasi__)
++#if defined(OPENSSL_SYS_WIN32) || defined(OPENSSL_SYS_VXWORKS) || defined(OPENSSL_SYS_UEFI) || defined(__wasi__) \
++    || defined(__vita__) /* no set-uid on the Vita; also keeps libc's ids.o (geteuid) out of the link */
+ 
+ int OPENSSL_issetugid(void)
+ {
+--- a/include/internal/sockets.h
++++ b/include/internal/sockets.h
+@@ -124,7 +124,9 @@
+ #include <errno.h>
+ #endif
+ 
+-#ifndef VMS
++#if defined(__vita__)
++/* No ioctl() on the Vita: BIO_socket_nbio() is unsupported (VitaGram and TDLib do not use it). */
++#elif !defined(VMS)
+ #include <sys/ioctl.h>
+ #else
+ #if !defined(TCPIP_TYPE_SOCKETSHR) && defined(__VMS_VER) && (__VMS_VER > 70000000)
+@@ -190,6 +192,11 @@
+ #define closesocket(s) close(s)
+ #define readsocket(s, b, n) read((s), (b), (n))
+ #define writesocket(s, b, n) write((s), (char *)(b), (n))
++#elif defined(__vita__)
++#define ioctlsocket(a, b, c) (errno = EOPNOTSUPP, -1)
++#define closesocket(s) close(s)
++#define readsocket(s, b, n) recv((s), (b), (n), 0)
++#define writesocket(s, b, n) send((s), (b), (n), 0)
+ #elif defined(OPENSSL_SYS_TANDEM)
+ #define readsocket(s, b, n) read((s), (b), (n))
+ #define writesocket(s, b, n) write((s), (b), (n))
+--- a/providers/implementations/rands/seeding/rand_unix.c
++++ b/providers/implementations/rands/seeding/rand_unix.c
+@@ -13,6 +13,9 @@
+ #include "internal/e_os.h"
+ #include <stdio.h>
+ #include "internal/cryptlib.h"
++#if defined(__vita__)
++#include <psp2/kernel/rng.h>
++#endif
+ #include <openssl/rand.h>
+ #include <openssl/crypto.h>
+ #include "crypto/rand_pool.h"
+@@ -329,6 +332,23 @@
+  */
+ static ssize_t syscall_random(void *buf, size_t buflen)
+ {
++#if defined(__vita__)
++    /*
++     * The Vita kernel generator returns at most 256 bytes per call. Return
++     * what one call produced; ossl_pool_acquire_entropy() asks again for the
++     * rest. A failure is reported, never papered over with an unfilled buffer.
++     */
++    size_t chunk = buflen < 256 ? buflen : 256;
++
++    if (chunk == 0)
++        return 0;
++    if (sceKernelGetRandomNumber(buf, (SceSize)chunk) < 0) {
++        errno = EIO;
++        return -1;
++    }
++    return (ssize_t)chunk;
++#endif
++
+     /*
+      * Note: 'buflen' equals the size of the buffer which is used by the
+      * get_entropy() callback of the RAND_DRBG. It is roughly bounded by
