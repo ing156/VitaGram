@@ -24,26 +24,43 @@ std::string normalized(std::string path) {
 
 bool has_prefix(const std::string& path, const std::string& prefix) { return !path.compare(0, prefix.size(), prefix); }
 
-void walk(const std::string& directory, bool top_of_db, std::vector<std::string>& out) {
+// `errors` counts what could not be listed (unreadable directory or entry, too deep): a migration
+// that could not see a file must not be reported as complete. Links are never followed.
+void walk(const std::string& directory, bool top_of_db, std::vector<std::string>& out, size_t& errors, int depth = 0) {
+    // The directory itself is checked too: a link put in place of a root is not followed.
+    struct stat self{};
+    if (lstat(directory.c_str(), &self) != 0) return;               // absent: nothing to convert
+    if (!S_ISDIR(self.st_mode)) { ++errors; return; }                // link or file instead of a directory
     DIR* dir = opendir(directory.c_str());
-    if (!dir) return;
+    if (!dir) { ++errors; return; }                                  // exists but cannot be read
+    if (depth > 16) { ++errors; closedir(dir); return; }
+    errno = 0;
     while (auto* entry = readdir(dir)) {
         std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
         std::string path = directory + "/" + name;
         struct stat info{};
-        if (stat(path.c_str(), &info)) continue;
+        if (lstat(path.c_str(), &info)) { ++errors; continue; }
+        if (S_ISLNK(info.st_mode)) continue;
         if (S_ISDIR(info.st_mode)) {
-            if (!ends_with(name, ".trash")) walk(path, false, out); // trash is being emptied anyway
+            if (!ends_with(name, ".trash")) walk(path, false, out, errors, depth + 1); // trash is being emptied anyway
         } else if (S_ISREG(info.st_mode) && info.st_size > 0) {
             if (ends_with(name, ".vgs") || ends_with(name, ".tmp")) { if (ends_with(name, ".vgs")) std::remove(path.c_str()); continue; }
             // Database root: only the JSON caches are ours, the rest belongs to TDLib.
             if (top_of_db && !ends_with(name, ".json")) continue;
             out.push_back(path);
         }
+        errno = 0;
     }
+    if (errno) ++errors; // readdir stopped on an error, not at the end
     closedir(dir);
 }
+}
+
+bool is_db_cache(const std::string& raw) {
+    std::string path = normalized(raw);
+    const std::string db = std::string(VITAGRAM_DB_DIR) + "/";
+    return has_prefix(path, db) && path.find('/', db.size()) == std::string::npos && ends_with(path, ".json");
 }
 
 bool is_user_file(const std::string& raw) {
@@ -58,29 +75,45 @@ bool is_user_file(const std::string& raw) {
     return false;
 }
 
-std::vector<std::string> list_user_files() {
+std::vector<std::string> list_user_files(size_t* listing_errors) {
     std::vector<std::string> files;
-    walk(VITAGRAM_FILES_DIR, false, files);
-    walk(VITAGRAM_DB_DIR, true, files);
-    // Derived portrait videos live next to the settings.
+    size_t errors = 0;
+    walk(VITAGRAM_FILES_DIR, false, files, errors);
+    walk(VITAGRAM_DB_DIR, true, files, errors);
+    // Derived portrait videos live next to the settings; only regular files, never links.
     if (DIR* dir = opendir("ux0:data/vitagram")) {
+        errno = 0;
         while (auto* entry = readdir(dir)) {
-            std::string name = entry->d_name;
-            if (name.compare(0, 9, "portrait-") == 0 && ends_with(name, ".mp4")) files.push_back("ux0:data/vitagram/" + name);
-            if (ends_with(name, ".mp4.part")) std::remove(("ux0:data/vitagram/" + name).c_str());
+            std::string name = entry->d_name, path = "ux0:data/vitagram/" + name;
+            struct stat info{};
+            if (name.compare(0, 9, "portrait-") == 0 && ends_with(name, ".mp4")) {
+                if (lstat(path.c_str(), &info) != 0) ++errors;
+                else if (S_ISREG(info.st_mode)) files.push_back(path);
+            }
+            if (ends_with(name, ".mp4.part")) std::remove(path.c_str());
+            errno = 0;
         }
+        if (errno) ++errors;
         closedir(dir);
     }
+    if (listing_errors) *listing_errors = errors;
     return files;
 }
 
 Outcome convert_all(bool to_sealed, Proceed proceed, void* context, Report report, void* report_context) {
     Outcome outcome;
-    auto files = list_user_files();
+    auto files = list_user_files(&outcome.unlisted);
     outcome.total = files.size();
     size_t done = 0;
     for (const auto& path : files) {
         if (proceed && !proceed(context)) { if (report) report(report_context, done, outcome.total); return outcome; }
+        // Without an authenticated vault state, a cache that is not already vault-sealed may have been
+        // put there from outside: sealing it would make it look trusted. Caches are rebuilt, so drop it.
+        if (to_sealed && vault::state_unauthenticated() && is_db_cache(path) && !vault::is_vault_sealed(path)) {
+            if (std::remove(path.c_str()) == 0) ++outcome.converted; else ++outcome.failed;
+            ++done;
+            continue;
+        }
         auto result = to_sealed ? vault::seal_file(path, proceed, context) : vault::unseal_file(path, proceed, context);
         if (result == vault::Convert::Interrupted) return outcome;
         if (result == vault::Convert::Done) ++outcome.converted;

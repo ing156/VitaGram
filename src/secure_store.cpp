@@ -30,8 +30,8 @@ bool console_id(unsigned char out[16]) {
     return false;
 }
 
-// OpenSSL 1.0.2 has no entropy source on the Vita (RAND_bytes fails or is weakly seeded), so the
-// kernel generator supplies the GCM IV; a repeated IV would break AES-GCM.
+// The kernel generator supplies the GCM IV directly (a repeated IV would break AES-GCM). The bundled
+// OpenSSL is seeded from the same generator (scripts/openssl-vita.patch), so RAND_bytes would also do.
 bool random_iv(unsigned char* out, size_t len) {
 #ifdef __vita__
     return sceKernelGetRandomNumber(out, (SceSize)len) >= 0;

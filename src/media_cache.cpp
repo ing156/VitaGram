@@ -88,7 +88,8 @@ void MediaCache::load() {
     json_error_t error{};
     json_t* loaded = nullptr;
     std::string text; // the index is sealed with the rest of the cache when the vault is on
-    if (vault::read_file(index_path, 4 * 1024 * 1024, text) && !text.empty())
+    if (vault::read_file(index_path, 4 * 1024 * 1024, text, nullptr, nullptr,
+                         vault::caches_must_be_sealed() ? vault::Require::Vault : vault::Require::Any) && !text.empty())
         loaded = json_loadb(text.data(), text.size(), 0, &error);
     if (!json_is_object(loaded) || json_object_size(loaded) > 8192) { if (loaded) json_decref(loaded); loaded = json_object(); }
     lockAs(__func__, __LINE__);

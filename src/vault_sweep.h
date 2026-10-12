@@ -16,10 +16,20 @@
 // encrypts those itself with the vault-derived key).
 namespace vault_sweep {
 bool is_user_file(const std::string& path);
-// Absolute list of user files; stale ".vgs" conversion leftovers are deleted on the way.
-std::vector<std::string> list_user_files();
+// A JSON cache directly in the database directory (ui-cache.json and the like).
+bool is_db_cache(const std::string& path);
+// Absolute list of user files; stale ".vgs" conversion leftovers are deleted on the way. Links are
+// not followed. `listing_errors` (optional) receives how many directories or entries could not be read.
+std::vector<std::string> list_user_files(size_t* listing_errors = nullptr);
 
-struct Outcome { size_t total = 0, converted = 0, failed = 0; bool completed = false; };
+// `completed`: the loop ran to the end (not interrupted). `clean()`: in addition every file was
+// listed and converted - only then may the migration be considered done (and, when switching the
+// vault off, the key be discarded).
+struct Outcome {
+    size_t total = 0, converted = 0, failed = 0, unlisted = 0;
+    bool completed = false;
+    bool clean() const { return completed && failed == 0 && unlisted == 0; }
+};
 using Proceed = bool (*)(void*);
 using Report = void (*)(void*, size_t done, size_t total);
 // Converts every user file to sealed (to_sealed) or back to plain. Stops early when `proceed`

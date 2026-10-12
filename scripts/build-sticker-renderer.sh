@@ -6,11 +6,16 @@ root="$PWD/external/rlottie-vita"
 compatibility_script="$PWD/scripts/patch-rlottie.cmake"
 compatibility_header="$PWD/scripts/rlottie-vita-compat.h"
 mkdir -p "$root"
-if ! test -d "$root/source"; then
-    git clone --depth 1 https://github.com/Samsung/rlottie.git "$root/source"
+# rlottie is a pinned git submodule (.gitmodules); VitaGram's changes are scripts/rlottie-vita.patch
+# (polygon/star point limits) and patch-rlottie.cmake (static loader, no embedded images).
+if ! test -e "$root/source/.git"; then
+    echo "external/rlottie-vita/source is missing. Run: git submodule update --init" >&2
+    exit 1
 fi
-# Keep the checked-out revision on subsequent builds; no automatic source updates.
 git -C "$root/source" rev-parse HEAD
+if ! git -C "$root/source" apply --reverse --check "$PWD/scripts/rlottie-vita.patch" 2>/dev/null; then
+    git -C "$root/source" apply "$PWD/scripts/rlottie-vita.patch"
+fi
 cmake -DSOURCE_FILE="$root/source/src/vector/vimageloader.cpp" -P "$compatibility_script"
 cmake -S "$root/source" -B "$root/build" \
     -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \

@@ -25,6 +25,12 @@ extern "C" int __wrap_stat(const char* path, struct stat* info) {
 #include "config.h"
 
 int sceKernelDelayThread(unsigned us) { std::this_thread::sleep_for(std::chrono::microseconds(us)); return 0; }
+// The cache is sealed with the console key while the vault is off: never plain JSON on the card.
+static json_t* load_cache(const char* path) {
+    assert(vault::is_sealed(path) && !vault::is_vault_sealed(path));
+    std::string text; if (!vault::read_file(path, 8*1024*1024, text)) return nullptr;
+    json_error_t e{}; return json_loadb(text.data(), text.size(), 0, &e);
+}
 static json_t* parse(const char* s) { json_error_t e{}; auto* v=json_loads(s,0,&e); assert(v); return v; }
 static std::string dump(json_t* v) { char* s=json_dumps(v,JSON_COMPACT); assert(s); std::string r=s; free(s); return r; }
 static void event(UiCache& c, const char* s) { auto* v=parse(s); c.remember(v); json_decref(v); }
@@ -78,17 +84,16 @@ int main() {
     auto update=std::async(std::launch::async,[&]{ event(c,R"({"@type":"updateChatTitle","chat_id":42,"title":"new"})"); });
     assert(update.wait_for(std::chrono::seconds(2))==std::future_status::ready); update.get();
     gate.release=true; writer.get();
-    json_error_t error{};
-    json_t* saved=json_load_file(VITAGRAM_DB_DIR "/ui-cache.json",0,&error); assert(saved);
+    json_t* saved=load_cache(VITAGRAM_DB_DIR "/ui-cache.json"); assert(saved);
     assert(!std::strcmp(json_string_value(json_object_get(json_object_get(json_object_get(saved,"chats"),"42"),"title")),"old"));
     json_decref(saved); assert(c.saved_!=c.revision_); c.flush(); assert(c.saved_==c.revision_);
-    saved=json_load_file(VITAGRAM_DB_DIR "/ui-cache.json",0,&error); assert(saved);
+    saved=load_cache(VITAGRAM_DB_DIR "/ui-cache.json"); assert(saved);
     const auto saved_text=dump(saved); json_decref(saved);
     event(c,R"({"@type":"updateChatTitle","chat_id":42,"title":"interrupted"})");
     int calls=0;
     c.flush([](void* p){return ++*static_cast<int*>(p)<3;},&calls);
     assert(c.saved_!=c.revision_);
-    saved=json_load_file(VITAGRAM_DB_DIR "/ui-cache.json",0,&error); assert(saved);
+    saved=load_cache(VITAGRAM_DB_DIR "/ui-cache.json"); assert(saved);
     assert(dump(saved)==saved_text); json_decref(saved);
     struct stat info{}; assert(stat(VITAGRAM_DB_DIR "/ui-cache.json.tmp",&info));
     auto* big=json_pack("{s:s}","text",large.c_str());

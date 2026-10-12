@@ -1,3 +1,4 @@
+#include "diag_log.h"
 #include "performance.h"
 #include "i18n.h"
 #include "voice_player.h"
@@ -95,6 +96,9 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     VaultAvio sealed_input;
     AVCodecContext* codec = nullptr;
     SwrContext* resampler = nullptr;
+    // Input the resampler was built for. Decoders (MP3, AAC, FLAC) may change it between frames.
+    AVChannelLayout resampler_layout{};
+    int resampler_format = -1, resampler_rate = 0;
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
     int port = -1, result = 0;
@@ -349,12 +353,26 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                         audio_start_us = std::max<int64_t>(0, audio_start_us);
                     }
                 }
+                if (resampler && (frame->format != resampler_format || frame->sample_rate != resampler_rate ||
+                                  av_channel_layout_compare(&frame->ch_layout, &resampler_layout) != 0)) {
+                    // swr_convert trusts the frame to match its configuration: a stereo-built resampler
+                    // fed a mono planar frame reads a missing plane. Flush the old one and rebuild.
+                    int16_t tail[8192]; uint8_t* dest = reinterpret_cast<uint8_t*>(tail);
+                    int n;
+                    while ((n = swr_convert(resampler, &dest, 4096, nullptr, 0)) > 0 && current())
+                        if (!output(tail, n)) break;
+                    swr_free(&resampler);
+                    av_channel_layout_uninit(&resampler_layout);
+                }
                 if (!resampler) {
+                    if (frame->sample_rate <= 0 || frame->ch_layout.nb_channels <= 0) { result = AVERROR_INVALIDDATA; break; }
                     AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
                     result = swr_alloc_set_opts2(&resampler, &stereo, AV_SAMPLE_FMT_S16, 48000,
                         &frame->ch_layout, (AVSampleFormat)frame->format, frame->sample_rate, 0, nullptr);
                     if (result >= 0) result = swr_init(resampler);
+                    if (result >= 0) result = av_channel_layout_copy(&resampler_layout, &frame->ch_layout);
                     if (result < 0) break;
+                    resampler_format = frame->format; resampler_rate = frame->sample_rate;
                 }
                 int capacity = swr_get_out_samples(resampler, frame->nb_samples);
                 if (capacity < 0 || capacity > 48000) { error = tr("voice.frame_size"); break; }
@@ -384,7 +402,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     if (output_started) pthread_join(output_thread, nullptr);
     if (ring.failed && error.empty()) error = tr("voice.output_failed");
     if (video && generation_ == gen) {
-        FILE* log = std::fopen("ux0:data/vitagram/audio-video.log", "w");
+        FILE* log = diag_log::open(diag_log::Kind::Audio, "ux0:data/vitagram/audio-video.log", "w");
         if (log) {
             std::fprintf(log, "VitaGram %s\nqueue_limit=%u startup_grains=%u grains=%u empty_waits=%u max_gap_us=%lld peak_queued=%u samples=%lld failed=%d\n",
                 VITAGRAM_VERSION, queued_limit, startup_grains, ring.grains.load(), ring.empty_waits.load(),
@@ -396,7 +414,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     if (port >= 0) { sceAudioOutOutput(port, nullptr); sceAudioOutReleasePort(port); }
     pthread_mutex_destroy(&ring.mutex);
     std::free(audio_buffers);
-    swr_free(&resampler); av_frame_free(&frame); av_packet_free(&packet);
+    swr_free(&resampler); av_channel_layout_uninit(&resampler_layout); av_frame_free(&frame); av_packet_free(&packet);
     avcodec_free_context(&codec); avformat_close_input(&format);
     sealed_input.release();
     pthread_mutex_lock(&mutex_);

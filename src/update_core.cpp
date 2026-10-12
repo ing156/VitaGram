@@ -1,8 +1,10 @@
 #include "update_core.h"
 #include "update_key.h"
 #include <jansson.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/x509.h>
 #include <zlib.h>
 #include <algorithm>
 #include <cctype>
@@ -262,6 +264,50 @@ bool SignatureVerifier::finish(const unsigned char* signature, size_t size) {
     return EVP_DigestVerifyFinal(impl_->ctx, signature, size) == 1;
 }
 
+int load_ca_bundle(X509_STORE* store, const std::string& path, std::string& error) {
+    error.clear();
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (!file) { error = "cannot open the CA bundle " + path + " (errno " + std::to_string(errno) + ")"; return 0; }
+    std::string text;
+    char buffer[16384];
+    size_t n;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), file)) > 0 && text.size() <= (4u << 20)) text.append(buffer, n);
+    const bool read_failed = std::ferror(file) != 0;
+    std::fclose(file);
+    if (read_failed || text.size() > (4u << 20)) {
+        error = "cannot read the CA bundle " + path + " (" + std::to_string(text.size()) + " bytes read)";
+        return 0;
+    }
+    static const char begin_marker[] = "-----BEGIN CERTIFICATE-----", end_marker[] = "-----END CERTIFICATE-----";
+    int found = 0, added = 0;
+    std::string first_failure;
+    for (size_t at = text.find(begin_marker); at != std::string::npos; at = text.find(begin_marker, at)) {
+        size_t end = text.find(end_marker, at);
+        if (end == std::string::npos) break;
+        end += sizeof(end_marker) - 1;
+        ++found;
+        ERR_clear_error();
+        BIO* bio = BIO_new_mem_buf(text.data() + at, (int)(end - at));
+        X509* cert = bio ? PEM_read_bio_X509(bio, nullptr, nullptr, nullptr) : nullptr;
+        bool ok = cert && X509_STORE_add_cert(store, cert) == 1;
+        if (!ok && first_failure.empty()) {
+            unsigned long code = ERR_peek_last_error();
+            char reason[160] = "no OpenSSL error";
+            if (code) ERR_error_string_n(code, reason, sizeof(reason));
+            first_failure = std::string(cert ? "adding" : "parsing") + " certificate " + std::to_string(found) + ": " + reason;
+        }
+        if (ok) ++added;
+        X509_free(cert);
+        BIO_free(bio);
+        at = end;
+    }
+    ERR_clear_error();
+    if (!added)
+        error = "cannot load the CA bundle " + path + ": " + std::to_string(text.size()) + " bytes, " +
+                std::to_string(found) + " certificates" + (first_failure.empty() ? "" : ", " + first_failure);
+    return added;
+}
+
 bool safe_entry_name(const std::string& name) {
     if (name.empty() || name.size() > 240 || name[0] == '/') return false;
     size_t start = 0;
@@ -293,8 +339,9 @@ bool make_directories(const std::string& path) {
 }
 
 bool remove_tree(const std::string& path) {
+    // lstat: a link is removed itself, never followed out of the tree being deleted.
     struct stat st;
-    if (stat(path.c_str(), &st) != 0) return true;
+    if (lstat(path.c_str(), &st) != 0) return true;
     if (!S_ISDIR(st.st_mode)) return std::remove(path.c_str()) == 0;
     if (DIR* dir = opendir(path.c_str())) {
         std::vector<std::string> names;
@@ -320,6 +367,11 @@ bool extract_zip(const std::string& zip_path, const std::string& dest,
     FILE* zip = std::fopen(zip_path.c_str(), "rb");
     if (!zip) { error = "cannot open the package"; return false; }
     struct Closer { FILE* f; ~Closer() { std::fclose(f); } } closer{zip};
+    return extract_zip(zip, dest, progress, error);
+}
+
+bool extract_zip(FILE* zip, const std::string& dest,
+                 const std::function<bool(uint64_t, uint64_t)>& progress, std::string& error) {
     std::fseek(zip, 0, SEEK_END);
     long file_size = std::ftell(zip);
     if (file_size < 22) { error = "package is too small"; return false; }
@@ -375,16 +427,20 @@ bool extract_zip(const std::string& zip_path, const std::string& dest,
         FILE* file = std::fopen(target.c_str(), "wb");
         if (!file) { error = "cannot write " + target; return false; }
         uint32_t crc = crc32(0, nullptr, 0);
-        uint32_t left = e.csize, produced = 0;
+        uint32_t left = e.csize;
+        uint64_t produced = 0;
         bool ok = true;
         z_stream stream{};
         bool inflating = e.method == 8;
         if (e.method != 0 && e.method != 8) { error = "unsupported compression in " + e.name; ok = false; }
         if (ok && inflating && inflateInit2(&stream, -15) != Z_OK) { error = "zlib init failed"; ok = false; }
         auto emit = [&](const unsigned char* data, size_t n) {
+            // Limits are checked before writing: an entry may not produce more than it declares,
+            // nor the archive more than the declared total that was checked above.
+            if (produced + n > e.usize || done + n > total) { error = "entry larger than declared: " + e.name; return false; }
             if (n && std::fwrite(data, 1, n, file) != n) { error = "disk write failed (storage full?)"; return false; }
             crc = crc32(crc, data, (uInt)n);
-            produced += (uint32_t)n; done += n;
+            produced += n; done += n;
             if (progress && !progress(done, total)) { error = "cancelled"; return false; }
             return true;
         };
@@ -405,7 +461,7 @@ bool extract_zip(const std::string& zip_path, const std::string& dest,
         if (inflating) { if (ok && zr != Z_STREAM_END && e.usize) { error = "truncated data in " + e.name; ok = false; } inflateEnd(&stream); }
         if (std::fclose(file) != 0 && ok) { error = "disk write failed (storage full?)"; ok = false; }
         if (ok && (produced != e.usize || crc != e.crc)) { error = "checksum mismatch in " + e.name; ok = false; }
-        if (!ok) return false;
+        if (!ok) { std::remove(target.c_str()); return false; }
     }
     return true;
 }

@@ -56,7 +56,9 @@ json_t* read_cache(const char* filename, size_t limit, bool (*proceed)(void*) = 
     // The limit counts plain bytes; a sealed snapshot is a little larger on disk.
     if (stat(filename, &info) || info.st_size <= 0 || (uint64_t)info.st_size > (uint64_t)vault::sealed_size((int64_t)limit)) return nullptr;
     vault::Reader file; // sealed or plain; sealed snapshots need the unlocked vault
-    if (!file.open(filename) || file.size() <= 0 || (uint64_t)file.size() > limit) return nullptr;
+    // With the vault on and no migration pending, a cache that is not vault-sealed was put there
+    // from outside: it is ignored (and rebuilt) rather than shown.
+    if (!file.open(filename, vault::caches_must_be_sealed() ? vault::Require::Vault : vault::Require::Any) || file.size() <= 0 || (uint64_t)file.size() > limit) return nullptr;
     std::string bytes(static_cast<size_t>(file.size()), '\0');
     size_t size = 0;
     bool failed = false;

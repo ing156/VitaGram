@@ -5,32 +5,34 @@
 # VitaGram — Telegram for PS Vita
 
 An unofficial homebrew Telegram client built with VitaSDK, vita2d and TDLib.
-Source version: **0.36.37**. VPK package version: **36.37**. This project is under development.
+Source version: **0.36.79**. VPK package version: **36.79**. This project is under development.
 
 **0.36 is the first public release.**
 
-Performance measurements are written in the background to `ux0:data/vitagram/performance.log`.
+Diagnostic logs (performance, GIF search, media upload, video, video audio, encrypted playback) are **off by default**; switch them on one by one in Start → *Diagnostic logs*. When on, performance measurements are written in the background to `ux0:data/vitagram/performance.log`.
 The Select diagnostics window has been removed; Select alone has no action.
 
 ## Features
 
 - Sign in with a phone number, Telegram code and two-step verification password.
 - Native Vita keyboard, Cyrillic text and color emoji.
-- Non-archived chats, Telegram folders, incremental loading and list updates.
+- Chats, Telegram folders and an *Archived* tab with archived chats (can be hidden in Start → *Show archived chats*), incremental loading and list updates.
 - Cached chat lists, history and media for faster reopening.
 - Text messages, participant names, date separators, timestamps and delivery states.
 - Online/last-seen status in private chats, respecting Telegram privacy settings.
 - Photos, albums, expanded posts and navigation between posts.
 - Centered fullscreen photos, automatic image rotation and pinch-to-zoom up to 6×.
 - Static and animated stickers; send from recent, favorite and installed sticker sets.
+- Search and send GIFs, or choose from saved GIFs, from the chat corner menu.
 - Standard emoji reactions, voice messages, audio and supported animations.
+- Visible GIF message cards load their separate JPEG/PNG/WebP/MP4/GIF thumbnails before the message is opened. Embedded JPEG minithumbnails appear while they load, including in cached history. MP4/GIF thumbnails use one frame decoded on the image worker; the full animation is downloaded only when the message is opened.
 - Microphone recording and sending audio messages from the current chat.
 - Forum groups: topic lists, separate topic history, text and sticker sending to the selected topic.
 - Light/dark themes, font size, cache retention settings, interface language and account logout.
 - Connection indicator, HTTP(S) links opened in the browser, and a startup screen showing initialization stages.
-- Self-update from GitHub Releases (Start → *Update*; also checked automatically about a minute after launch). The release `.vpk` is verified against a built-in public key before it is installed — see the Russian section «Обновление через GitHub» below.
+- Self-update from GitHub Releases (Start → *Update*; also checked automatically about a minute after launch, except while a Telegram proxy is on: the update check connects to GitHub directly, so with a proxy it runs only when you start it). The release `.vpk` is verified against a built-in public key before it is installed — see the Russian section «Обновление через GitHub» below.
 - Optional encryption of everything on the memory card (database, photos, videos, stickers, caches, settings) with a key made of console buttons — Start → *Data encryption*; see «Data encryption» below.
-- Proxy support: MTProxy, SOCKS5 and HTTPS (HTTP CONNECT) — Start → Proxy; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials are encrypted in `settings.json` with a key bound to the console (plain text only if the console id is unreadable).
+- Proxy support: MTProxy, SOCKS5 and HTTP (CONNECT) — Start → Proxy. SOCKS5 and HTTP proxies send their login and password unencrypted (Telegram data itself stays MTProto-encrypted); the proxy screen warns about it; `tg://socks` / `t.me/socks` links and QR codes are imported too. Credentials in `settings.json` are only obfuscated (AES-GCM with a key derived from the console's OpenPSID, which is not secret): this stops a copied file from working on another console, not software or a person with access to the memory card and console id. Turn on Data encryption (Start → *Data encryption*) for real protection; without a readable console id the values are stored as plain text. The same console key seals the chat-list and message-history caches (`db/ui-cache.json`, `db/ui-startup.json`, `db/media-cache.json`) while Data encryption is off; downloaded photos, videos and other media stay in plain text unless Data encryption is on.
 
 A feature being present in the source does not mean every scenario has been tested on hardware.
 The latest sticker and forum-topic changes still require build and PS Vita testing.
@@ -41,7 +43,7 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 
 - **![D-pad](assets/controller-icons/dpad.svg) / touch** — select and scroll; **![X](assets/controller-icons/cross.svg) / tap** — open a chat.
 - Vertical dragging moves the chat list with your finger; a tap opens the chat under it.
-- **L / R** — switch folders; folder tabs also support touch and horizontal scrolling.
+- **L / R** — switch folders; folder tabs also support touch and horizontal scrolling. The last tab, *Archived*, lists archived chats; it can be turned off in Start → *Show archived chats*.
 - **![Triangle](assets/controller-icons/triangle.svg)** — refresh the list.
 - The search field under the status line (select it with Up from the first chat and press **![X](assets/controller-icons/cross.svg)**, touch it, or press **![Square](assets/controller-icons/square.svg)**) — search chats, users, groups and channels (TDLib `searchChats`, `searchChatsOnServer`, `searchPublicChats`); **![Square](assets/controller-icons/square.svg)** edits the query, **![X](assets/controller-icons/cross.svg)** opens a result, **![O](assets/controller-icons/circle.svg)** returns to the list.
 - **![Start](assets/controller-icons/start.svg)** — settings.
@@ -96,6 +98,37 @@ The latest sticker and forum-topic changes still require build and PS Vita testi
 - In a sticker grid, **![O](assets/controller-icons/circle.svg)** — return to sets; **![Square](assets/controller-icons/square.svg)** — close the picker. In the set list, **![O](assets/controller-icons/circle.svg)** — close the picker.
 - Up to 18 stickers per page; only visible previews are downloaded. Animated stickers use static thumbnails in the picker.
 
+### GIF picker
+
+Open **Start → GIFs** in a chat where you can post. Saved GIFs appear first.
+**Square / tap the search field** opens the keyboard; an empty query returns to saved GIFs.
+**D-pad** selects a GIF; **Cross / tap a thumbnail** sends it to the current chat,
+forum topic or discussion thread. **L / R / on-screen buttons** switch pages and
+load further search results; **Triangle** returns to saved GIFs; **Circle** closes
+the picker. There are 12 still-image previews per page, with at most 240 search
+results kept in memory; previews are downloaded only for visible items. Search
+uses Telegram's configured animation search bot through TDLib inline queries.
+`bash tests/run-gif-tests.sh` checks result parsing, stale-request scopes,
+pagination, limits and send requests, including TDLib's string-encoded query IDs,
+GIF reply priority and timeout recovery. Requests time out after 30 seconds per
+stage; Square retries search and Triangle reloads saved GIFs. JPEG/PNG/WebP and
+MP4/GIF thumbnails are downloaded for visible items. The image worker extracts
+one frame from MP4/GIF thumbnails with software decoding, up to 320 pixels on
+the longest side. Embedded JPEG minithumbnails are temporary placeholders while
+the sharper thumbnail loads, or fallbacks when it is missing or unsupported.
+Full animations are not downloaded for the picker.
+`bash tests/run-video-thumbnail-tests.sh` checks actual GIF frame decoding,
+invalid input and cancellation; an optional MP4 path also checks H.264 decoding. GIF stages
+(queued, sent, received, parsed, accepted/ignored, completed/error/timeout) are
+recorded in `ux0:data/vitagram/gif.log`, written by the background cache worker
+about every five seconds and rotated to `gif.previous.log` at 256 KiB. No query
+text or account IDs are logged. Visible preview diagnostics include the result
+number, session file ID, thumbnail format and dimensions, download completion,
+decode/upload outcome and whether the fallback or sharper preview was shown.
+Failed texture loads retry after 1, 3, 10 and then 30 seconds while visible;
+failed loads are not permanently cached. No filenames or embedded JPEG data
+are logged. Live search and sending still need Vita testing.
+
 ## Languages
 
 The interface language follows the console's system language; if no matching language file exists, English is used.
@@ -112,16 +145,14 @@ Characters outside the packaged fonts (for example Arabic) need a suitable font 
 ## Building
 
 Build on Linux or WSL. You need VitaSDK with its ARM toolchain, CMake, Make, Git, curl and archive extraction tools.
-Vita dependencies: vita2d, OpenSSL, zlib, libpng, libjpeg, libwebp, FreeType and bzip2. Jansson is built from `external/jansson`.
+Vita dependencies: vita2d, zlib, libpng, libjpeg, libwebp, FreeType and bzip2. Jansson is built from `external/jansson`. OpenSSL 3.5 LTS is built from source by `scripts/build-openssl.sh` (see «OpenSSL» below); the SDK's OpenSSL 1.0.2 package is not used.
 
 ### TDLib compatibility
 
-The current client targets the modern TDLib schema in the prepared `external/tdlib-upstream` source tree.
-Use a **Vita-patched version**, not an unmodified upstream clone: POSIX compatibility, file locking, SQLite and build support have been adapted separately.
-There is not yet a single script that reproduces all these changes against an arbitrary upstream revision.
+TDLib (`external/tdlib-upstream`), Jansson (`external/jansson`) and rlottie (`external/rlottie-vita/source`) are git submodules pinned to tested commits: clone with `git clone --recurse-submodules`, or run `git submodule update --init` in an existing checkout.
+VitaGram's changes to them are kept as patches and applied automatically to the pinned commits: `scripts/tdlib-vita.patch` (the Vita port — POSIX compatibility, file locking, SQLite, sockets, scheduler — plus the TLS/DNS fixes described below) and `scripts/jansson-vita.patch` during CMake configuration, `scripts/rlottie-vita.patch` and `scripts/patch-rlottie.cmake` by `scripts/build-sticker-renderer.sh`. The patches target exactly the pinned revisions; moving a submodule to another upstream revision means regenerating them.
 
-The `external/tdlib-vita` directory is also required: CMake uses its Vita compatibility functions.
-CMake defaults to the older fork; explicitly set `TDLIB_SOURCE_DIR` for the current client.
+`external/tdlib-vita` is no longer required: the few POSIX stubs that the build took from it now live in `src/vita_compat/vita_posix_stubs.cpp`, and `TDLIB_SOURCE_DIR` defaults to `external/tdlib-upstream`.
 Do not replace prepared dependencies without preserving local changes.
 
 ### Preparation
@@ -188,12 +219,15 @@ export PATH="$VITASDK/bin:$PATH"
 bash scripts/fetch-emoji-font.sh
 bash scripts/fetch-fallback-fonts.sh
 bash scripts/fetch-ca-bundle.sh
+bash scripts/build-openssl.sh
+bash scripts/prepare-tdlib.sh
 bash scripts/shrink-fonts.sh
-bash scripts/build-hardware-video-decoder.sh
+bash scripts/build-ffmpeg-vita.sh
 bash scripts/build-sticker-renderer.sh
 ```
 
-Clone the `vita` branch of `fish47/FFmpeg-vita` into `external/ffmpeg-vita` at commit `3736b0c78da9553b2098dbb0ade0a2e0ddd1753f` before running the hardware decoder build script. FFmpeg is built locally in `external/ffmpeg-hardware/install`, without replacing SDK packages.
+`prepare-tdlib.sh` builds TDLib's code generators on the host (needs CMake, a C++ compiler and `gperf`) and writes the generated TL/MIME sources that the Vita build compiles; rerun it whenever the TDLib submodule moves. `build-openssl.sh` downloads OpenSSL 3.5.9, checks the pinned SHA-256 of the release, applies `scripts/openssl-vita.patch` (kernel random source, no `ioctl`/`h_errno`/`sys/un.h` on the Vita) and installs static libraries into `external/openssl-vita/install` using the `vita-cross` target from `scripts/openssl-vita.conf`. Nothing is written to the SDK. CMake stops with a hint when the libraries are missing.
+`build-ffmpeg-vita.sh` downloads FFmpeg 7.1.5 (the 7.1 'Péter' LTS branch, supported at least until September 2027), checks its pinned SHA-256, applies `scripts/ffmpeg-vita-7.1.patch` (the Vita hardware H.264 decoder from `fish47/FFmpeg-vita`, ported to 7.1) and installs into `external/ffmpeg-vita71/install`, without replacing SDK packages. `bash scripts/build-native-ffmpeg.sh` builds the same release for the PC; `export FFMPEG_NATIVE_BUILD="$PWD/external/ffmpeg-native/build"` then enables the WebM and video-note tests.
 rlottie is built in `external/rlottie-vita/install` and is needed for TGS animations. Building without it is possible, with limited sticker support.
 Fonts and license notices are included in the VPK.
 `shrink-fonts.sh` creates smaller packaged copies of the two largest fonts; the upstream files are not modified:
@@ -209,7 +243,6 @@ The script installs fontTools, Pillow and imagequant into `external/font-tools-v
 cmake -S . -B build-modern \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DTDLIB_SOURCE_DIR="$PWD/external/tdlib-upstream" \
   -DTD_ENABLE_TESTS=OFF
 
 cmake --build build-modern -j$(nproc)
@@ -226,7 +259,7 @@ Rerun CMake configuration after adding rlottie.
 - **Undefined reference to BZ2_…** — check the Vita bzip2 library and ensure the main `CMakeLists.txt` is up to date.
 - **photo_view.h: No such file or directory** — copy new headers along with `.cpp` files when transferring an update.
 - **rlottie patch failure** — preserve local changes and inspect the build script output; do not blindly reset the dependency tree.
-- **UPDATE_APP_TO_LOGIN** — the old TDLib fork may be incompatible with Telegram login; use the prepared modern TDLib.
+- **UPDATE_APP_TO_LOGIN** — an outdated TDLib may be incompatible with Telegram login; use the prepared modern TDLib.
 
 ## Top bar
 
@@ -238,10 +271,28 @@ The chat title stays on the left, with the contact's online/last-seen status cen
 Decorative UI elements (wallpaper, header, rows, tabs, message cards, date chips, menus, progress bars, controller buttons) are drawn from the PNG pack in `assets/VitaGram_UI_Assets_v1` and packaged as `app0:ui/` (manifest, 9-slice textures, wave wallpapers, icon and button atlases of both themes). `src/ui_skin.cpp` reads `manifest.json` for paths, 9-slice insets and sprite rectangles, loads only the textures of the active theme once, and swaps them when the theme changes. If a texture or the manifest cannot be loaded, that element falls back to the original drawn shapes.
 The stronger wallpaper variant can be selected at configure time with `-DVITAGRAM_UI_ALT_BACKGROUND=ON`.
 
+## OpenSSL
+
+VitaGram links OpenSSL **3.5.9** (3.5 is an LTS series, supported until 2030-04-08) for TDLib and for the updater, built by `scripts/build-openssl.sh`. VitaSDK's own package is OpenSSL 1.0.2i-dev from 2016, without years of security fixes. That matters even though Telegram traffic itself is MTProto: TDLib also opens TLS connections without certificate checks (DNS-over-HTTPS for proxy host names, fallback configuration from Google, Mozilla and Azure), so a network attacker can hand a crafted certificate to the TLS library; the updater parses server certificates before verifying them as well. VitaSDK also offers an `openssl-1.1.1` package, but 1.1.1 has been end-of-life since 2023.
+
+- The port is small: a `vita-cross` target (`scripts/openssl-vita.conf`) and `scripts/openssl-vita.patch`, which seeds the random generator from `sceKernelGetRandomNumber` (at most 256 bytes per call, failures reported) and works around the missing `ioctl`, `h_errno`, `sys/un.h` and `posix_memalign`. OpenSSL's locks are replaced by user-space read/write locks on an atomic word: OpenSSL 3 creates one lock per certificate, key and connection, and on the Vita every pthread rwlock costs several kernel semaphores, so the 121-root CA bundle alone used to exhaust the process's kernel objects (symptoms: `cannot load the CA bundle`, then `TLS init failed … reason(20)`).
+- Disabled because neither the app nor TDLib needs them: apps, engines, dynamic modules, QUIC, DTLS, SSLv3, compression, CMS/TS/CMP, SRP, the HTTP client, binary elliptic curves and the legacy provider. That is less code reachable from the network, including the subsystems behind most recent advisories. `no-atexit` keeps OpenSSL from tearing itself down at exit while TDLib threads still use it.
+- Not available on the Vita: `BIO_socket_nbio()` (no `ioctl`); the updater uses blocking sockets and TDLib its own BIO. No assembler (`no-asm`), as with the SDK package.
+- Updating: change `version` in `scripts/build-openssl.sh`, check the release signature (`openssl-<version>.tar.gz.asc`, key `B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40` from <https://openssl-library.org/source/>), pin the new SHA-256, rebuild OpenSSL and reconfigure CMake.
+
+## Media and network hardening
+
+- **Shipping FFmpeg.** The app links FFmpeg **7.1.5** (LTS branch 7.1, supported at least until September 2027) with the Vita hardware H.264 decoder ported from the FFmpeg-vita fork (`scripts/ffmpeg-vita-7.1.patch`). The fork itself was FFmpeg 6.0 exactly, without even the 6.0.1 fixes. Porting needed one API adjustment and fixed one real incompatibility: FFmpeg 7 stores parameter sets directly (RefStruct), so the old code would have read the SPS through a wrong pointer type. The fork's Vita AAC/MP3 decoders, unused by the app, were dropped, as was its change to the `h264_mp4toannexb` filter (in 7.1 it would skip new-extradata handling). All FFmpeg security advisories after 6.0 had already been checked against the enabled components; 7.1.5 also brings the fixes FFmpeg made without CVEs.
+- **TGS stickers** are checked before rlottie parses them (`src/tgs_policy.h`): no embedded images or image layers, no expressions, canvas up to 1024×1024, up to 120 fps and 1800 frames, bounded nesting, node and layer counts, at most 256 KiB compressed, no duplicate keys. As a second line, VitaGram's rlottie build has its image loader disabled (`scripts/patch-rlottie.cmake`), so the bundled stb_image decoder is unreachable. Telegram's own sticker rules are well inside these limits.
+- **TDLib update queue.** When received updates pile up beyond 8 MiB or 4000 events, values that the next update replaces anyway (online status, "typing…", online member counts, emoji click effects) are dropped before parsing. Other updates are never dropped — that would desynchronise the client. Above 16 MiB or 8000 events VitaGram stops running TDLib (on the Vita TDLib only works inside `receive()`, so it then reads no sockets and produces nothing) until parsing and the UI bring the queue back under 8 MiB; a long pause may cost a reconnect, not data. The limit counts wire bytes; parsed JSON takes more memory.
+- **DNS-over-HTTPS.** TDLib (with Telegram's `expect_blocking`) resolves proxy host names through `dns.google`. Upstream TDLib does this without certificate checks; VitaGram's TDLib verifies it against `app0:certs/cacert.pem` (the Vita has no system certificate store). The fallback is the ordinary system resolver, which no application can authenticate: prefer IP addresses for proxies.
+
 ## Data encryption
 
 On the first launch (and after updating from a version without it) VitaGram asks whether to encrypt your data. If you agree, you choose how to unlock: a **text passphrase** typed with the system keyboard (at least 10 characters; the stronger option — a multi-word phrase with digits or symbols gives far more resistance to guessing than any button sequence; the strength shown is a deliberately cautious estimate, and accented letters can be entered in different ways, so plain characters are safer) or a **key from console buttons** — the D-pad directions, ✕ ○ △ □ (8 buttons, 3 bits each; at least 8 presses, at most 32; Start confirms, L deletes the last press, R clears, Select cancels). The key is entered twice and is entered again at every start. It is never shown (one dot per press) and never stored.
-The setting lives in Start → *Data encryption* (turn on/off) and *Change key*. Turning it on or off restarts the app, because existing files are converted before TDLib starts; the conversion shows its progress and can be skipped with ○ (it resumes at the next start).
+The setting lives in Start → *Data encryption* (turn on/off) and *Change key*. Turning it on or off restarts the app, because existing files are converted before TDLib starts; the conversion shows its progress and can be skipped with ○ (it resumes at the next start). It counts as finished only when every file was converted: otherwise VitaGram says how many failed, keeps the key and tries again at the next start — while switching off, the key is discarded only after everything is decrypted.
+
+With encryption on, `settings.json` and the caches must be sealed with the vault key: a plain or console-key file put in their place is ignored (settings fall back to the defaults and the user is told; caches are rebuilt), and whenever `vault.json` carries no valid signature (edited, stripped, or written by an older version — these cannot be told apart) the caches are dropped instead of being sealed. Once `settings.json` has been saved under encryption (recorded in the signed vault state), a missing, replaced or damaged settings file means the proxy settings are unknown: VitaGram does not connect, explains why and opens the proxy screen; the network starts when the proxy settings are saved, with or without a proxy.
 
 What is encrypted: the TDLib database (with TDLib's own database encryption), every downloaded photo, video, voice message, sticker, thumbnail and avatar, the UI/media cache indexes (`ui-cache.json`, `ui-startup.json`, `media-cache.json`), the transcoded portrait videos and `settings.json` (proxy credentials included).
 
@@ -255,16 +306,18 @@ What is encrypted: the TDLib database (with TDLib's own database encryption), ev
 | File encryption | ChaCha20-Poly1305 (RFC 8439), 64 KiB chunks, per-file key = HMAC(file key, random 16-byte salt) | the Vita's Cortex-A9 has no AES instructions: software AES would be about twice as slow and uses key-dependent table lookups; ChaCha20 is add/rotate/xor only, constant-time and fast without special hardware |
 | Container integrity | nonce = chunk number + "last chunk" flag, header authenticated | chunks cannot be reordered, cut off, appended or moved between files unnoticed; fixed chunks give O(1) seeking for video |
 | TDLib database | 256-bit HKDF subkey of the master key as `database_encryption_key` | independent of the file key |
+| Signed state | HMAC-SHA256 of the mode, migration direction, KDF parameters and wrapped key in `vault.json`, keyed by a master-key subkey | an edited `vault.json` cannot make the owner's next unlock decrypt everything: an unsigned or wrongly signed state is reset to "on", every file is re-checked and the user is told |
 
-OpenSSL 1.0.2 shipped with VitaSDK has neither ChaCha20-Poly1305 nor scrypt, so both are implemented in `src/vault_crypto.cpp` and verified against the RFC 8439 / 7914 / 5869 vectors and against OpenSSL 3 (`bash tests/run-vault-tests.sh`, also under AddressSanitizer/UBSan).
+ChaCha20-Poly1305 and scrypt are implemented in `src/vault_crypto.cpp` (written when the app still used VitaSDK's OpenSSL 1.0.2, which has neither) and verified against the RFC 8439 / 7914 / 5869 vectors and against OpenSSL 3 (`bash tests/run-vault-tests.sh`, also under AddressSanitizer/UBSan).
 Sealed files are decrypted in memory while they are used: images are decoded from RAM, FFmpeg reads through a decrypting `AVIOContext` (`src/vault_avio.cpp`), TGS stickers are inflated from RAM. Plain files keep using FFmpeg's normal file protocol, so installs without encryption are not affected. New downloads are sealed in the background as soon as TDLib reports them complete.
 
 **Honest limits**
 
-- A button key is short: 8 presses are 24 bits, 12 presses 36 bits. The scrypt cost and the console binding make guessing expensive, but an attacker who has both the card **and** the console's OpenPSID (for example a stolen console running homebrew) can try keys offline. Use 12 or more presses and different buttons; the strength bar turns green at 36 bits. Repeated wrong keys only slow down the in-app prompt (30 s and more after five failures) — that cannot stop an offline attack.
+- A button key is short: the minimum of 12 presses is 36 bits. The scrypt cost and the console binding make guessing expensive, but an attacker who has both the card **and** the console's OpenPSID (for example a stolen console running homebrew) can try keys offline. Use 12 or more presses and different buttons; the strength bar turns green at 36 bits. Repeated wrong keys only slow down the in-app prompt (30 s and more after five failures) — that cannot stop an offline attack.
+- "Off" cannot be signed (there is no key then): someone with card access can switch `vault.json` to off. No existing file is decrypted by that, but new data stops being sealed. An older state signed by the same key could also be put back.
 - **Forgot the key = data lost.** The unlock screen offers to erase everything and start over (you sign in to Telegram again). A vault made on one console does not open on another (the binding).
 - Not hidden: file names, sizes, counts and timestamps; the existence of the vault. Files and the key hierarchy are authenticated per file, but a sealed file is not bound to its path.
-- Plain text necessarily exists briefly: while a file is still being downloaded by TDLib and for a moment afterwards; recordings (voice, video notes) until TDLib has uploaded them; the transcoding scratch file; files you save to the download folder (those are your explicit export). Performance/diagnostic logs are not encrypted. Anyone who controls the running app or the console's RAM sees everything.
+- Plain text necessarily exists briefly: while a file is still being downloaded by TDLib and for a moment afterwards; recordings (voice, video notes) until TDLib has uploaded them; the transcoding scratch file; files you save to the download folder (those are your explicit export). Performance/diagnostic logs are not encrypted (the file-picker log `picker.log`, which names files on the card, is only written by builds configured with `-DVITAGRAM_PICKER_LOG=ON`). Anyone who controls the running app or the console's RAM sees everything.
 - Decryption keys live in RAM only while the app runs (wiped on lock).
 
 ## Cache and private data
@@ -314,6 +367,10 @@ Project code is licensed under [MIT](LICENSE).
 TDLib, VitaSDK, vita2d, FFmpeg, rlottie, fonts and other dependencies have their own licenses.
 When distributing the application, retain notices and comply with dependency license requirements, including source availability and relinking where required.
 
+### Acknowledgements
+
+Many thanks to [Vladislav Atamanenko (v-atamanenko)](https://github.com/v-atamanenko) for [tdlib-vita](https://github.com/v-atamanenko/tdlib-vita), the first TDLib port to the PS Vita. Its POSIX compatibility stubs and porting approach are the basis of VitaGram's Vita-patched TDLib.
+
 ---
 
 <a id="russian"></a>
@@ -323,7 +380,7 @@ When distributing the application, retain notices and comply with dependency lic
 # VitaGram — Telegram для PS Vita
 
 Неофициальный homebrew-клиент Telegram на VitaSDK, vita2d и TDLib.
-Версия исходников: **0.36.37**, версия пакета VPK: **36.37**. Проект находится в разработке.
+Версия исходников: **0.36.79**, версия пакета VPK: **36.79**. Проект находится в разработке.
 
 **0.36 — первый публичный релиз.**
 
@@ -331,13 +388,14 @@ When distributing the application, retain notices and comply with dependency lic
 
 - Авторизация по телефону, коду Telegram и паролю двухэтапной аутентификации.
 - Системная клавиатура Vita, кириллица и цветные emoji.
-- Чаты без архива, папки Telegram, постепенная загрузка и обновление списка.
+- Чаты, папки Telegram и закладка *Архивные* с архивными чатами (скрывается в Start → *Показывать архивные чаты*), постепенная загрузка и обновление списка.
 - Кэш чатов, истории и медиа для повторного открытия.
 - Текстовые сообщения, имена участников, разделители дней, время и статусы отправки.
 - Статус собеседника в личном чате с учётом скрытого времени посещения.
 - Фото, альбомы, полный просмотр поста и переключение между постами.
 - Центрирование полноэкранных фото, автоповорот изображения, pinch-to-zoom до 6×.
 - Статичные и анимированные стикеры; отправка из недавних, избранных и установленных наборов.
+- Поиск и отправка GIF, а также выбор сохранённых GIF из углового меню чата.
 - Обычные emoji-реакции, воспроизведение голосовых, аудио и поддерживаемых анимаций.
 - Темы форумных групп: список топиков, отдельная история, отправка текста и стикеров в выбранную тему.
 - Светлая/тёмная тема, размер шрифта, настройки хранения кэша, язык интерфейса и выход из аккаунта.
@@ -355,7 +413,7 @@ When distributing the application, retain notices and comply with dependency lic
 
 - **![Стрелки](assets/controller-icons/dpad.svg) / тач** — выбор и прокрутка; **![X](assets/controller-icons/cross.svg) / тап** — открыть чат.
 - При вертикальном перетаскивании список чатов движется вслед за пальцем; тап открывает чат под пальцем.
-- **L / R** — переключить папку; закладки также поддерживают тач и горизонтальную прокрутку.
+- **L / R** — переключить папку; закладки также поддерживают тач и горизонтальную прокрутку. Последняя закладка, *Архивные*, показывает архивные чаты; её можно отключить в Start → *Показывать архивные чаты*.
 - **![Треугольник](assets/controller-icons/triangle.svg)** — обновить список.
 - Строка поиска под строкой состояния (выбирается стрелкой «Вверх» с первого чата и **![X](assets/controller-icons/cross.svg)**, касанием или **![Square](assets/controller-icons/square.svg)**) — поиск чатов, пользователей, групп и каналов (TDLib `searchChats`, `searchChatsOnServer`, `searchPublicChats`); **![Square](assets/controller-icons/square.svg)** — изменить запрос, **![X](assets/controller-icons/cross.svg)** — открыть результат, **![O](assets/controller-icons/circle.svg)** — назад к списку.
 - **![Start](assets/controller-icons/start.svg)** — настройки.
@@ -402,6 +460,19 @@ When distributing the application, retain notices and comply with dependency lic
 - **L / R** — поворот влево/вправо на 90°, включая 180°. Ручной поворот имеет приоритет до повторного открытия полноэкранного просмотра. **Start** показывает действия со значками кнопок.
 - Автоповорот использует только 0° и ±90°; его можно отключить в общих настройках → **Гироскоп** (сохраняется в `settings.json`). При положении экраном вверх сохраняется предыдущая ориентация. Шапка и подсказки не поворачиваются.
 
+### Меню GIF
+
+В чате, где разрешена отправка сообщений, откройте **Start → GIF-анимации**.
+Сначала отображаются сохранённые GIF. **Квадрат / касание строки поиска** открывает
+клавиатуру; пустой запрос возвращает к сохранённым GIF. **Крестовина** выбирает GIF,
+**X / касание миниатюры** отправляет его в текущий чат, тему форума или комментарии.
+**L / R / кнопки на экране** переключают страницы и загружают следующие результаты.
+**Треугольник** открывает сохранённые GIF, **O** закрывает меню.
+На странице до 12 статических миниатюр; в памяти хранится до 240 GIF.
+Поиск использует настроенного Telegram бота поиска анимаций через TDLib.
+Оформление использует панели, выделение и иконки из `assets/VitaGram_UI_Assets_v1`
+для обеих тем. Работа поиска и отправки требует проверки на PS Vita.
+
 ### Меню стикеров
 
 - Сначала открывается список наборов: **вверх / вниз** — выбрать набор; **![X](assets/controller-icons/cross.svg) / тап** — открыть его.
@@ -426,16 +497,14 @@ When distributing the application, retain notices and comply with dependency lic
 ## Сборка
 
 Сборка выполняется в Linux или WSL. Нужны VitaSDK с ARM toolchain, CMake, Make, Git, curl и инструменты распаковки архивов.
-Зависимости для Vita: vita2d, OpenSSL, zlib, libpng, libjpeg, libwebp, FreeType и bzip2. Jansson собирается из `external/jansson`.
+Зависимости для Vita: vita2d, zlib, libpng, libjpeg, libwebp, FreeType и bzip2. Jansson собирается из `external/jansson`. OpenSSL 3.5 LTS собирается из исходников скриптом `scripts/build-openssl.sh` (см. «OpenSSL» ниже); пакет OpenSSL 1.0.2 из SDK не используется.
 
 ### Совместимость TDLib
 
-Текущий код ориентируется на современную схему TDLib из подготовленного дерева `external/tdlib-upstream`.
-Нужна **версия с правками порта для Vita**, а не чистый upstream-клон: совместимость POSIX, файловых блокировок, SQLite и сборки дорабатывалась отдельно.
-Единого скрипта для воспроизведения всех этих правок на произвольной версии upstream пока нет.
+TDLib (`external/tdlib-upstream`), Jansson (`external/jansson`) и rlottie (`external/rlottie-vita/source`) — git-подмодули, закреплённые на проверенных коммитах: клонируйте с `git clone --recurse-submodules` или выполните `git submodule update --init` в существующей копии.
+Правки VitaGram к ним хранятся как патчи и накладываются на закреплённые коммиты автоматически: `scripts/tdlib-vita.patch` (порт для Vita — совместимость POSIX, файловые блокировки, SQLite, сокеты, планировщик — и исправления TLS/DNS, описанные ниже) и `scripts/jansson-vita.patch` при конфигурации CMake, `scripts/rlottie-vita.patch` и `scripts/patch-rlottie.cmake` — в `scripts/build-sticker-renderer.sh`. Патчи рассчитаны ровно на закреплённые версии; при переходе подмодуля на другую версию upstream их нужно пересоздать.
 
-Каталог `external/tdlib-vita` также необходим: CMake использует из него Vita-совместимые функции.
-По умолчанию CMake выбирает старый форк; для текущего клиента явно передавайте `TDLIB_SOURCE_DIR`.
+Каталог `external/tdlib-vita` больше не нужен: несколько POSIX-заглушек, которые сборка брала из него, теперь лежат в `src/vita_compat/vita_posix_stubs.cpp`, а `TDLIB_SOURCE_DIR` по умолчанию указывает на `external/tdlib-upstream`.
 Не заменяйте подготовленные зависимости без сохранения локальных изменений.
 
 ### Подготовка
@@ -502,12 +571,15 @@ export PATH="$VITASDK/bin:$PATH"
 bash scripts/fetch-emoji-font.sh
 bash scripts/fetch-fallback-fonts.sh
 bash scripts/fetch-ca-bundle.sh
+bash scripts/build-openssl.sh
+bash scripts/prepare-tdlib.sh
 bash scripts/shrink-fonts.sh
-bash scripts/build-hardware-video-decoder.sh
+bash scripts/build-ffmpeg-vita.sh
 bash scripts/build-sticker-renderer.sh
 ```
 
-Перед сборкой аппаратного декодера клонируйте ветку `vita` репозитория `fish47/FFmpeg-vita` в `external/ffmpeg-vita` и переключитесь на коммит `3736b0c78da9553b2098dbb0ade0a2e0ddd1753f`. FFmpeg собирается локально в `external/ffmpeg-hardware/install`, без замены пакетов SDK.
+`prepare-tdlib.sh` собирает генераторы TDLib на компьютере (нужны CMake, компилятор C++ и `gperf`) и создаёт сгенерированные исходники TL/MIME, которые компилирует сборка для Vita; запускайте его заново при каждом обновлении подмодуля TDLib. `build-openssl.sh` скачивает OpenSSL 3.5.9, сверяет закреплённый SHA-256 релиза, накладывает `scripts/openssl-vita.patch` (источник случайных чисел ядра; на Vita нет `ioctl`, `h_errno` и `sys/un.h`) и устанавливает статические библиотеки в `external/openssl-vita/install` с целью `vita-cross` из `scripts/openssl-vita.conf`. В SDK ничего не записывается. Если библиотек нет, CMake остановится с подсказкой.
+`build-ffmpeg-vita.sh` скачивает FFmpeg 7.1.5 (ветка LTS 7.1 'Péter', поддержка как минимум до сентября 2027 года), сверяет закреплённый SHA-256, накладывает `scripts/ffmpeg-vita-7.1.patch` (аппаратный декодер H.264 для Vita из `fish47/FFmpeg-vita`, перенесённый на 7.1) и устанавливает в `external/ffmpeg-vita71/install`, без замены пакетов SDK. `bash scripts/build-native-ffmpeg.sh` собирает ту же версию для ПК; после `export FFMPEG_NATIVE_BUILD="$PWD/external/ffmpeg-native/build"` выполняются тесты WebM и видеокружков.
 rlottie собирается в `external/rlottie-vita/install` и нужен для TGS-анимаций. Без него сборка возможна с ограниченной поддержкой стикеров.
 Шрифты и уведомления о лицензиях включаются в VPK.
 `shrink-fonts.sh` создаёт уменьшенные копии двух самых больших шрифтов для VPK; исходные файлы не изменяются:
@@ -523,7 +595,6 @@ rlottie собирается в `external/rlottie-vita/install` и нужен д
 cmake -S . -B build-modern \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DTDLIB_SOURCE_DIR="$PWD/external/tdlib-upstream" \
   -DTD_ENABLE_TESTS=OFF
 
 cmake --build build-modern -j$(nproc)
@@ -540,7 +611,7 @@ cmake --build build-modern -j$(nproc)
 - **Undefined reference to BZ2_…** — проверьте наличие Vita-библиотеки bzip2 и актуального основного `CMakeLists.txt`.
 - **photo_view.h: No such file or directory** — при переносе обновления копируйте новые заголовки вместе с `.cpp`.
 - **Ошибка применения rlottie-патча** — сохраните локальные изменения и проверьте вывод скрипта сборки; не сбрасывайте дерево зависимости вслепую.
-- **UPDATE_APP_TO_LOGIN** — старый форк TDLib может быть несовместим с входом Telegram; требуется подготовленная современная TDLib.
+- **UPDATE_APP_TO_LOGIN** — устаревшая TDLib может быть несовместима с входом Telegram; требуется подготовленная современная TDLib.
 
 ## Верхний бар
 
@@ -595,7 +666,7 @@ cmake --build build-modern -j$(nproc)
 Кодирование выполняется после записи с индикатором прогресса. Временные кадры и звук
 за минуту при 30 FPS занимают около 157 МБ; они удаляются после подготовки или отмены.
 Подготовка обрабатывает втрое больше кадров, чем при прежних 10 FPS, и может длиться дольше.
-Для этой функции пересоберите локальный FFmpeg скриптом `scripts/build-hardware-video-decoder.sh`
+Для этой функции пересоберите локальный FFmpeg скриптом `scripts/build-ffmpeg-vita.sh`
 (добавлены AAC encoder и MP4 muxer). H.264 encoder minih264 включён в исходники с лицензией CC0.
 
 Проверки логики записи, маски и запроса TDLib: `bash tests/run-video-tests.sh`.
@@ -623,18 +694,18 @@ cmake --build build-modern -j$(nproc)
 Кнопка ![Circle](assets/controller-icons/circle.svg) возвращает назад без сохранения новых изменений.
 
 Настройки сохраняются в `ux0:data/vitagram/settings.json` и применяются при следующем запуске автоматически.
-Secret скрыт на экране и хранится в файле настроек в зашифрованном виде (см. «Защита секретов»).
-### SOCKS5 и HTTPS-прокси
+Secret скрыт на экране и хранится в файле настроек в обфусцированном виде (см. «Защита секретов»); настоящую защиту даёт шифрование данных PIN-кодом.
+### SOCKS5 и HTTP-прокси
 
-Помимо MTProxy поддерживаются **SOCKS5** и **HTTPS** (HTTP CONNECT) прокси. В настройках прокси строка **Тип** переключает MTProxy / SOCKS5 / HTTPS (**![X](assets/controller-icons/cross.svg)** или ←/→).
-Для SOCKS5 и HTTPS вместо secret показываются необязательные поля **Логин** и **Пароль**; пароль скрыт на экране, но хранится в `settings.json` открытым текстом (`proxy_type`, `proxy_username`, `proxy_password`).
-Ссылки `tg://socks?server=…&port=…&user=…&pass=…` и `https://t.me/socks?…` (в сообщениях и QR) импортируются как SOCKS5. Для HTTPS-прокси ссылок Telegram нет — введите данные вручную.
+Помимо MTProxy поддерживаются **SOCKS5** и **HTTP (CONNECT)** прокси. Соединение с таким прокси не шифруется: логин и пароль видны в сети (данные Telegram при этом остаются зашифрованными MTProto), экран прокси предупреждает об этом. В настройках прокси строка **Тип** переключает MTProxy / SOCKS5 / HTTP (CONNECT) (**![X](assets/controller-icons/cross.svg)** или ←/→).
+Для SOCKS5 и HTTPS вместо secret показываются необязательные поля **Логин** и **Пароль**; пароль скрыт на экране, но хранится в `settings.json` в том же обфусцированном виде, что и secret (`proxy_type`, `proxy_username`, `proxy_password`; см. «Защита секретов»).
+Ссылки `tg://socks?server=…&port=…&user=…&pass=…` и `https://t.me/socks?…` (в сообщениях и QR) импортируются как SOCKS5. Для HTTP-прокси ссылок Telegram нет — введите данные вручную.
 «Проверить подключение» (`pingProxy`) работает для всех типов. Для проверки на Linux: `bash tests/run-proxy-tests.sh`.
 
 ### Защита секретов
 
-`proxy_secret`, `proxy_username` и `proxy_password` в `settings.json` хранятся зашифрованными (AES-256-GCM, префикс `enc1:`), ключ выводится из OpenPSID консоли. Старые открытые значения шифруются при первом запуске. База TDLib тоже шифруется ключом консоли: существующая база перешифровывается один раз после входа, признак — файл `db/.encrypted-v1`.
-Это защищает от копирования файлов на другое устройство (бэкап, пересылка, утёкший архив), но не от кода, запущенного на этой же консоли. Если идентификатор консоли недоступен, значения остаются открытыми. После переноса `db` на другую консоль TDLib не откроется: удалите `ux0:data/vitagram/db` и войдите заново. Проверки: `bash tests/run-secure-tests.sh`.
+`proxy_secret`, `proxy_username` и `proxy_password` в `settings.json` хранятся в обфусцированном виде (AES-256-GCM, префикс `enc1:`), ключ выводится из OpenPSID консоли. OpenPSID не является секретом: любое приложение на консоли или человек, знающий его, может вывести этот ключ, поэтому это не шифрование в строгом смысле. Старые открытые значения шифруются при первом запуске. База TDLib тоже шифруется ключом консоли: существующая база перешифровывается один раз после входа, признак — файл `db/.encrypted-v1`.
+Это защищает только от использования скопированных файлов на другом устройстве (бэкап, пересылка, утёкший архив), но не от кода на этой же консоли и не от того, у кого есть карта памяти и идентификатор консоли. Для реальной защиты включите шифрование данных (Start → *Шифрование данных*): ключ тогда определяется вашим PIN-кодом. Пока шифрование данных выключено, кэши списка чатов и истории сообщений (`db/ui-cache.json`, `db/ui-startup.json`, `db/media-cache.json`) запечатываются тем же ключом консоли; скачанные фото, видео и другие файлы остаются открытыми. При включении шифрования эти кэши перешифровываются ключом PIN-кода. Если идентификатор консоли недоступен, значения остаются открытыми. После переноса `db` на другую консоль TDLib не откроется: удалите `ux0:data/vitagram/db` и войдите заново. Проверки: `bash tests/run-secure-tests.sh`.
 
 Статус «MTProxy включён» означает, что TDLib приняла настройку; доступность сервера определяется при подключении.
 
@@ -647,9 +718,9 @@ Secret скрыт на экране и хранится в файле настр
 
 ## Обновление через GitHub
 
-**Start → Обновление** проверяет последний релиз репозитория `ing156/VitaGram` (`VITAGRAM_UPDATE_REPO`). Если версия новее установленной, **![X](assets/controller-icons/cross.svg)** скачивает и устанавливает её; во время загрузки тот же пункт отменяет её. Строка «Проверять и ставить обновления при запуске» (включена по умолчанию) через ~1 минуту после старта сама проверяет релиз, скачивает, проверяет подпись и устанавливает его, затем перезапускает приложение (через 3 с после установки и только когда открыт список чатов: не во время ввода, записи или в открытом чате). Ручная проверка из настроек тоже перезапускает приложение после установки. Сама установка выполняется при следующем запуске, пока занято минимум памяти (установщик в работающем приложении падал с `0x8001000C` = нехватка памяти); при сбое причина показывается в настройках. Автоустановка пробуется один раз за запуск; при ошибке в настройках появится причина. Настройки и база не затрагиваются.
+**Start → Обновление** проверяет последний релиз репозитория `ing156/VitaGram` (`VITAGRAM_UPDATE_REPO`). Если версия новее установленной, **![X](assets/controller-icons/cross.svg)** скачивает и устанавливает её; во время загрузки тот же пункт отменяет её. Строка «Проверять и ставить обновления при запуске» (включена по умолчанию) через ~1 минуту после старта сама проверяет релиз (кроме случая, когда включён прокси Telegram: проверка обновлений подключается к GitHub напрямую, поэтому с прокси она выполняется только по вашей команде), скачивает, проверяет подпись и устанавливает его, затем перезапускает приложение (через 3 с после установки и только когда открыт список чатов: не во время ввода, записи или в открытом чате). Ручная проверка из настроек тоже перезапускает приложение после установки. Сама установка выполняется при следующем запуске, пока занято минимум памяти (установщик в работающем приложении падал с `0x8001000C` = нехватка памяти); при сбое причина показывается в настройках. Автоустановка пробуется один раз за запуск; при ошибке в настройках появится причина. Настройки и база не затрагиваются.
 
-Безопасность: соединение проверяется по сертификатам из `app0:certs/cacert.pem` (`scripts/fetch-ca-bundle.sh`). Независимо от TLS, пакет принимается только с подписью ECDSA P-256 (`*.vpk.sig`), проверяемой встроенным открытым ключом `src/update_key.h`; подписывается версия + содержимое VPK, поэтому старый подписанный пакет нельзя выдать за новый. Релиз без `.vpk.sig`, черновики и pre-release игнорируются. Если установка не удалась, проверенный VPK остаётся в `ux0:data/vitagram/update/update.vpk` — его можно поставить через VitaShell.
+Безопасность: соединение проверяется по сертификатам из `app0:certs/cacert.pem` (`scripts/fetch-ca-bundle.sh`). Независимо от TLS, пакет принимается только с подписью ECDSA P-256 (`*.vpk.sig`), проверяемой встроенным открытым ключом `src/update_key.h`; подписывается версия + содержимое VPK, поэтому старый подписанный пакет нельзя выдать за новый. Релиз без `.vpk.sig`, черновики и pre-release игнорируются. Подпись проверяется дважды: при загрузке и снова перед установкой при следующем запуске (VPK и `update.sig` хранятся в `ux0:data/vitagram/update`, распакованный каталог `pkg` заново создаётся из проверенного VPK и не принимается на веру). Если установка не удалась, проверенный VPK остаётся в `ux0:data/vitagram/update/update.vpk` — его можно поставить через VitaShell.
 
 Выпуск релиза:
 
@@ -659,10 +730,28 @@ Secret скрыт на экране и хранится в файле настр
 
 Установка использует `ScePromoterUtil` и `sce_sys/package/head.bin` уже установленной копии, поэтому работает, если приложение само было установлено через VPK-установщик. Проверки логики (версии, разбор релиза, HTTP, подпись, распаковка): `bash tests/run-update-tests.sh`. Установка на самой Vita требует проверки на устройстве.
 
+## OpenSSL
+
+VitaGram использует OpenSSL **3.5.9** (ветка 3.5 — LTS, поддержка до 2030-04-08) для TDLib и для обновления; библиотеку собирает `scripts/build-openssl.sh`. Пакет из VitaSDK — OpenSSL 1.0.2i-dev 2016 года, без многолетних исправлений безопасности. Это важно, хотя сам трафик Telegram идёт по MTProto: TDLib открывает и TLS-соединения без проверки сертификатов (DNS-over-HTTPS для имён прокси, резервная конфигурация через Google, Mozilla и Azure), поэтому атакующий в сети может подсунуть TLS-библиотеке специально созданный сертификат; клиент обновлений тоже разбирает сертификат сервера до проверки. В VitaSDK есть и пакет `openssl-1.1.1`, но поддержка 1.1.1 закончилась в 2023 году.
+
+- Порт небольшой: цель `vita-cross` (`scripts/openssl-vita.conf`) и `scripts/openssl-vita.patch` — генератор случайных чисел получает энтропию из `sceKernelGetRandomNumber` (не больше 256 байт за вызов, ошибки не скрываются), плюс обход отсутствующих `ioctl`, `h_errno`, `sys/un.h` и `posix_memalign`. Блокировки OpenSSL заменены на блокировки чтения/записи в пользовательской памяти на одном атомарном слове: OpenSSL 3 создаёт отдельную блокировку на каждый сертификат, ключ и соединение, а на Vita каждая pthread rwlock стоит нескольких семафоров ядра, и один только список из 121 корневого сертификата исчерпывал объекты ядра процесса (симптомы: `cannot load the CA bundle`, затем `TLS init failed … reason(20)`).
+- Отключено, потому что не нужно ни приложению, ни TDLib: утилиты, engines, динамические модули, QUIC, DTLS, SSLv3, сжатие, CMS/TS/CMP, SRP, HTTP-клиент, бинарные эллиптические кривые и legacy-провайдер. Меньше кода, достижимого из сети, в том числе подсистем, к которым относится большинство последних уязвимостей. `no-atexit` не даёт OpenSSL освобождать свои данные при выходе, пока ими ещё пользуются потоки TDLib.
+- Недоступно на Vita: `BIO_socket_nbio()` (нет `ioctl`); обновление использует блокирующие сокеты, TDLib — собственный BIO. Без ассемблера (`no-asm`), как и пакет SDK.
+- Обновление: поменяйте `version` в `scripts/build-openssl.sh`, проверьте подпись релиза (`openssl-<version>.tar.gz.asc`, ключ `B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40` с <https://openssl-library.org/source/>), закрепите новый SHA-256, пересоберите OpenSSL и повторите конфигурацию CMake.
+
+## Защита разбора медиа и сети
+
+- **FFmpeg в поставке.** Приложение линкуется с FFmpeg **7.1.5** (LTS-ветка 7.1, поддержка как минимум до сентября 2027 года) с аппаратным декодером H.264 для Vita, перенесённым из форка FFmpeg-vita (`scripts/ffmpeg-vita-7.1.patch`). Сам форк был ровно FFmpeg 6.0, даже без исправлений 6.0.1. Перенос потребовал одной правки API и исправил одну настоящую несовместимость: в FFmpeg 7 наборы параметров хранятся напрямую (RefStruct), и старый код читал бы SPS через указатель неверного типа. Неиспользуемые приложением аудиодекодеры Vita (AAC/MP3) из форка не перенесены, как и его правка фильтра `h264_mp4toannexb` (в 7.1 она пропускала бы обработку новых параметров потока). Все бюллетени безопасности FFmpeg после 6.0 уже были проверены для включённых компонентов; 7.1.5 вдобавок содержит исправления, выпущенные без CVE.
+- **TGS-стикеры** проверяются до разбора в rlottie (`src/tgs_policy.h`): без встроенных изображений и слоёв-картинок, без выражений, холст до 1024×1024, до 120 кадров/с и 1800 кадров, ограничены вложенность, число узлов и слоёв, не более 256 КиБ в сжатом виде, без повторяющихся ключей. Второй рубеж: в сборке rlottie для VitaGram загрузчик изображений отключён (`scripts/patch-rlottie.cmake`), поэтому встроенный декодер stb_image недостижим. Правила Telegram для стикеров заметно строже.
+- **Очередь обновлений TDLib.** Если полученные обновления копятся сверх 8 МиБ или 4000 событий, значения, которые следующее обновление всё равно заменит (онлайн-статус, «печатает…», число участников онлайн, эффекты нажатия на эмодзи), отбрасываются до разбора. Остальные обновления не отбрасываются никогда — это рассинхронизировало бы клиент. Свыше 16 МиБ или 8000 событий VitaGram перестаёт запускать TDLib (на Vita TDLib работает только внутри `receive()`, поэтому он тогда не читает сокеты и ничего не порождает), пока разбор и интерфейс не опустят очередь ниже 8 МиБ; долгая пауза может стоить переподключения, но не данных. Предел считает байты сообщений; разобранный JSON занимает больше памяти.
+- **DNS-over-HTTPS.** TDLib (при `expect_blocking` от Telegram) узнаёт адреса прокси по имени через `dns.google`. В оригинальном TDLib сертификат при этом не проверяется; TDLib в VitaGram проверяет его по `app0:certs/cacert.pem` (системного хранилища сертификатов на Vita нет). Запасной путь — обычный системный DNS, который не может проверить ни одно приложение: для прокси лучше указывать IP-адрес.
+
 ## Шифрование данных
 
 При первом запуске (и после обновления с версии без этой функции) VitaGram спрашивает, шифровать ли данные. При согласии вы выбираете способ разблокировки: **текстовая фраза**, набираемая системной клавиатурой (от 10 символов; более надёжный вариант — фраза из нескольких слов с цифрами или знаками гораздо устойчивее к перебору, чем любая последовательность кнопок; показываемая оценка намеренно осторожна, а буквы с диакритикой можно ввести по-разному, поэтому обычные символы надёжнее) или **ключ из кнопок консоли**: стрелки D-pad, ✕ ○ △ □ (8 кнопок, по 3 бита; от 8 до 32 нажатий; Start — готово, L — удалить последнее, R — очистить, Select — отмена). Ключ вводится дважды и затем при каждом запуске. Он никогда не показывается (по точке на нажатие) и не хранится.
-Настройка находится в Start → *Шифрование данных* (включить/выключить) и *Сменить ключ*. Включение и выключение перезапускают приложение: старые файлы преобразуются до запуска TDLib; показывается прогресс, его можно пропустить кнопкой ○ (продолжится при следующем запуске).
+Настройка находится в Start → *Шифрование данных* (включить/выключить) и *Сменить ключ*. Включение и выключение перезапускают приложение: старые файлы преобразуются до запуска TDLib; показывается прогресс, его можно пропустить кнопкой ○ (продолжится при следующем запуске). Преобразование считается завершённым, только если обработаны все файлы: иначе VitaGram сообщает, сколько не удалось, сохраняет ключ и повторяет попытку при следующем запуске — при выключении ключ удаляется только после того, как расшифровано всё.
+
+При включённом шифровании `settings.json` и кэши обязаны быть запечатаны ключом хранилища: открытый файл или файл с ключом консоли на их месте игнорируется (настройки сбрасываются к значениям по умолчанию с сообщением, кэши пересоздаются), а если у `vault.json` нет действительной подписи (изменён, подпись удалена или файл от старой версии — различить это нельзя), кэши удаляются, а не запечатываются. Когда `settings.json` уже сохранялся под шифрованием (это записано в подписанном состоянии хранилища), отсутствующий, подменённый или повреждённый файл настроек означает, что настройки прокси неизвестны: VitaGram не подключается, объясняет причину и открывает экран прокси; сеть запускается после сохранения настроек прокси — с прокси или без него.
 
 Что шифруется: база TDLib (штатным шифрованием базы TDLib), все загруженные фото, видео, голосовые, стикеры, миниатюры и аватары, индексы кэша (`ui-cache.json`, `ui-startup.json`, `media-cache.json`), перекодированные вертикальные видео и `settings.json` (в том числе данные прокси).
 
@@ -676,16 +765,18 @@ Secret скрыт на экране и хранится в файле настр
 | Шифрование файлов | ChaCha20-Poly1305 (RFC 8439), блоки по 64 КиБ, ключ файла = HMAC(ключ, случайная соль 16 байт) | у Cortex-A9 нет инструкций AES: программный AES примерно вдвое медленнее и обращается к таблицам по значению ключа; ChaCha20 — только сложение/сдвиг/XOR, выполняется за постоянное время и быстро без спецоборудования |
 | Целостность контейнера | nonce = номер блока + флаг «последний блок», заголовок аутентифицирован | блоки нельзя переставить, обрезать, дописать или перенести в другой файл незаметно; фиксированные блоки дают быструю перемотку видео |
 | База TDLib | подключ HKDF от мастер-ключа как `database_encryption_key` | независим от ключа файлов |
+| Подпись состояния | HMAC-SHA256 режима, направления миграции, параметров KDF и обёрнутого ключа в `vault.json` на подключе мастер-ключа | изменённый `vault.json` не заставит следующую разблокировку владельцем всё расшифровать: неподписанное или неверно подписанное состояние сбрасывается во «включено», все файлы перепроверяются, пользователь получает сообщение |
 
-В OpenSSL 1.0.2 из VitaSDK нет ни ChaCha20-Poly1305, ни scrypt, поэтому они реализованы в `src/vault_crypto.cpp` и проверены по векторам RFC 8439 / 7914 / 5869 и сравнением с OpenSSL 3 (`bash tests/run-vault-tests.sh`, в том числе под AddressSanitizer/UBSan).
+ChaCha20-Poly1305 и scrypt реализованы в `src/vault_crypto.cpp` (написаны, когда приложение ещё использовало OpenSSL 1.0.2 из VitaSDK, где их нет) и проверены по векторам RFC 8439 / 7914 / 5869 и сравнением с OpenSSL 3 (`bash tests/run-vault-tests.sh`, в том числе под AddressSanitizer/UBSan).
 Запечатанные файлы расшифровываются в памяти на время использования: изображения декодируются из RAM, FFmpeg читает через расшифровывающий `AVIOContext` (`src/vault_avio.cpp`), TGS распаковываются из RAM. Обычные файлы по-прежнему читаются штатно, поэтому установки без шифрования не затронуты. Новые загрузки запечатываются в фоне сразу после того, как TDLib сообщает об их завершении.
 
 **Честные ограничения**
 
-- Ключ из кнопок короткий: 8 нажатий — 24 бита, 12 нажатий — 36 бит. Стоимость scrypt и привязка к консоли делают перебор дорогим, но тот, кто получил и карту, **и** OpenPSID консоли (например, украденная консоль с homebrew), может перебирать ключи офлайн. Используйте 12 и более нажатий и разные кнопки; шкала надёжности становится зелёной от 36 бит. Повторные ошибки лишь замедляют ввод в самом приложении (от 30 с после пяти неудач) — офлайн-атаку это не остановит.
+- Ключ из кнопок короткий: минимум в 12 нажатий — 36 бит. Стоимость scrypt и привязка к консоли делают перебор дорогим, но тот, кто получил и карту, **и** OpenPSID консоли (например, украденная консоль с homebrew), может перебирать ключи офлайн. Используйте 12 и более нажатий и разные кнопки; шкала надёжности становится зелёной от 36 бит. Повторные ошибки лишь замедляют ввод в самом приложении (от 30 с после пяти неудач) — офлайн-атаку это не остановит.
+- Состояние «выключено» подписать нельзя (ключа тогда нет): тот, у кого есть доступ к карте, может переключить `vault.json` в «выключено». Существующие файлы от этого не расшифровываются, но новые данные перестают запечатываться. Также можно вернуть более старое состояние, подписанное тем же ключом.
 - **Забыли ключ — данные потеряны.** Экран ввода предлагает стереть всё и начать заново (потребуется заново войти в Telegram). Хранилище, созданное на одной консоли, на другой не откроется (привязка).
 - Не скрываются: имена файлов, размеры, количество и время изменения; сам факт шифрования. Каждый файл аутентифицируется, но не привязан к своему пути.
-- Открытый текст неизбежно существует кратко: пока TDLib докачивает файл и мгновение после; записи (голос, видеокружки) до отправки TDLib; временный файл перекодирования; файлы, которые вы сами сохраняете в папку загрузок (это ваш экспорт). Журналы производительности и диагностики не шифруются. Тот, кто управляет работающим приложением или ОЗУ консоли, видит всё.
+- Открытый текст неизбежно существует кратко: пока TDLib докачивает файл и мгновение после; записи (голос, видеокружки) до отправки TDLib; временный файл перекодирования; файлы, которые вы сами сохраняете в папку загрузок (это ваш экспорт). Журналы производительности и диагностики не шифруются (журнал выбора файлов `picker.log` с именами файлов на карте записывается только в сборках с `-DVITAGRAM_PICKER_LOG=ON`). Тот, кто управляет работающим приложением или ОЗУ консоли, видит всё.
 - Ключи расшифровки находятся в ОЗУ только пока приложение работает (при блокировке затираются).
 
 ## Кэш и приватные данные
@@ -734,6 +825,10 @@ UI, воспроизведение, обработка ответов и фон�
 Код проекта распространяется на условиях [MIT](LICENSE).
 TDLib, VitaSDK, vita2d, FFmpeg, rlottie, шрифты и другие зависимости имеют собственные лицензии.
 При распространении сохраняйте уведомления и соблюдайте требования лицензий зависимостей, включая предоставление исходников и возможность перелинковки там, где это требуется.
+
+### Благодарности
+
+Большое спасибо [Vladislav Atamanenko (v-atamanenko)](https://github.com/v-atamanenko) за [tdlib-vita](https://github.com/v-atamanenko/tdlib-vita) — первый порт TDLib на PS Vita. Его POSIX-заглушки и подход к портированию лежат в основе Vita-версии TDLib в VitaGram.
 
 
 ## Опросы

@@ -1,11 +1,11 @@
 #include "vault_ui.h"
 #include "account_cleanup.h"
 #include "i18n.h"
-#include "keyboard.h"
 #include "media_render.h"
 #include "vault.h"
 #include "vault_sweep.h"
 #include <psp2/ctrl.h>
+#include <psp2/touch.h>
 #include <psp2/kernel/threadmgr.h>
 #include <sys/stat.h>
 #include <ctime>
@@ -269,25 +269,174 @@ End read_pin(const Env& env, Pad& pad, const Entry& entry, vault::Pin& pin) {
     }
 }
 
-// Passphrase entry through the system keyboard (masked). Cancelling the dialog counts as Select.
+// ---- passphrase entry: the app's own on-screen keyboard ---------------------------------------------
+// The system IME learns every word typed into it, even masked, and then suggests the passphrase in
+// ordinary text fields. This keyboard is drawn and handled here, so the text never reaches the IME.
+struct TouchTap {
+    bool was_down = false;
+    bool poll(int& x, int& y) {
+        SceTouchData data{};
+        sceTouchPeek(SCE_TOUCH_PORT_FRONT, &data, 1);
+        const bool down = data.reportNum > 0;
+        const bool tap = down && !was_down;
+        if (down) { x = data.report[0].x / 2; y = data.report[0].y / 2; }   // panel 1920x1088 -> screen 960x544
+        was_down = down;
+        return tap;
+    }
+};
+
+enum class Act { Char, Layer, Space, Delete, Ok };
+struct Key { int x, y, w, h; Act act; std::string label; };
+struct Layer { const char* name; std::vector<std::vector<std::string>> rows; };
+
+std::vector<std::string> utf8_chars(const char* text) {
+    std::vector<std::string> out;
+    for (const char* p = text; *p;) {
+        size_t n = 1;
+        while ((static_cast<unsigned char>(p[n]) & 0xc0) == 0x80) ++n;
+        out.emplace_back(p, n);
+        p += n;
+    }
+    return out;
+}
+
+const std::vector<Layer>& keyboard_layers() {
+    static const std::vector<Layer> layers = [] {
+        auto make = [](const char* name, std::initializer_list<const char*> rows) {
+            Layer layer{name, {}};
+            for (const char* row : rows) layer.rows.push_back(utf8_chars(row));
+            return layer;
+        };
+        return std::vector<Layer>{
+            make("abc", {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"}),
+            make("ABC", {"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"}),
+            make("!#1", {"!@#$%^&*()", "-_=+[]{}\\|", ";:'\",.<>/?", "`~"}),
+            make("\xd0\xb0\xd0\xb1\xd0\xb2", {"1234567890", "\xd0\xb9\xd1\x86\xd1\x83\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb3\xd1\x88\xd1\x89\xd0\xb7\xd1\x85",
+                "\xd1\x84\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd0\xbb\xd0\xb4\xd0\xb6\xd1\x8d",
+                "\xd1\x8f\xd1\x87\xd1\x81\xd0\xbc\xd0\xb8\xd1\x82\xd1\x8c\xd0\xb1\xd1\x8e\xd1\x8a\xd1\x91"}),
+            make("\xd0\x90\xd0\x91\xd0\x92", {"1234567890", "\xd0\x99\xd0\xa6\xd0\xa3\xd0\x9a\xd0\x95\xd0\x9d\xd0\x93\xd0\xa8\xd0\xa9\xd0\x97\xd0\xa5",
+                "\xd0\xa4\xd0\xab\xd0\x92\xd0\x90\xd0\x9f\xd0\xa0\xd0\x9e\xd0\x9b\xd0\x94\xd0\x96\xd0\xad",
+                "\xd0\xaf\xd0\xa7\xd0\xa1\xd0\x9c\xd0\x98\xd0\xa2\xd0\xac\xd0\x91\xd0\xae\xd0\xaa\xd0\x81"}),
+        };
+    }();
+    return layers;
+}
+
+size_t count_chars(const std::string& text) {
+    size_t n = 0;
+    for (unsigned char b : text) if ((b & 0xc0) != 0x80) ++n;
+    return n;
+}
+
 End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
     Colors c = colors(env.dark);
-    Keyboard kb;
-    kb.open(entry.title, true);
-    while (kb.active()) {
-        pad.poll();
-        kb.handle(0);
-        if (!kb.active()) break;
-        begin_frame(env, entry.title, "");
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+    TouchTap touch;
+    const auto& layers = keyboard_layers();
+    size_t layer = 0;
+    int row = 1, col = 0;
+    std::string text;
+    struct Wipe { std::string& s; ~Wipe() { std::fill(s.begin(), s.end(), '\0'); s.clear(); } } wipe_on_exit{text};
+    const int hint_lines = (int)wrap(env.font, entry.hint, 864, 0.6f).size();
+    int top = 72 + hint_lines * 27;
+    if (!entry.message.empty()) top += 16 + (int)wrap(env.font, entry.message, 864, 0.6f).size() * 27;
+    const int dots_y = top + 18;
+    const int keys_top = dots_y + 24;
+    const int key_h = std::max(30, std::min(44, (466 - keys_top) / 5 - 4));
+    for (;;) {
+        // Geometry first: the same rectangles serve drawing, the cursor and touch.
+        std::vector<std::vector<Key>> grid;
+        {
+            const Layer& current = layers[layer];
+            const int kw = 72, gap = 4;
+            int y = keys_top;
+            for (const auto& labels : current.rows) {
+                std::vector<Key> line;
+                const int width = (int)labels.size() * (kw + gap) - gap;
+                int x = 480 - width / 2;
+                for (const auto& label : labels) { line.push_back({x, y, kw, key_h, Act::Char, label}); x += kw + gap; }
+                grid.push_back(std::move(line));
+                y += key_h + gap;
+            }
+            const int widths[4] = {120, 360, 150, 150};
+            const Act acts[4] = {Act::Layer, Act::Space, Act::Delete, Act::Ok};
+            const std::string labels[4] = {layers[(layer + 1) % layers.size()].name, tr("vault.kb.space"), tr("vault.kb.delete"), tr("vault.kb.ok")};
+            int x = 480 - (120 + 360 + 150 + 150 + 3 * gap) / 2;
+            std::vector<Key> line;
+            for (int i = 0; i < 4; ++i) { line.push_back({x, y, widths[i], key_h, acts[i], labels[i]}); x += widths[i] + gap; }
+            grid.push_back(std::move(line));
+        }
+        row = std::max(0, std::min(row, (int)grid.size() - 1));
+        col = std::max(0, std::min(col, (int)grid[row].size() - 1));
+
+        auto press = [&](const Key& key) -> bool {   // true: submit
+            switch (key.act) {
+                case Act::Char:
+                    if (text.size() + key.label.size() <= vault::kMaxText) text += key.label;
+                    break;
+                case Act::Space: if (text.size() < vault::kMaxText) text += ' '; break;
+                case Act::Layer: layer = (layer + 1) % layers.size(); break;
+                case Act::Delete:
+                    while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xc0) == 0x80) text.pop_back();
+                    if (!text.empty()) text.pop_back();
+                    break;
+                case Act::Ok: return !text.empty();
+            }
+            return false;
+        };
+
+        unsigned pressed = pad.poll();
+        int tx = 0, ty = 0;
+        const bool tapped = touch.poll(tx, ty);
+        if (pressed & SCE_CTRL_SELECT) return End::Select;
+        bool submit = (pressed & SCE_CTRL_START) && !text.empty();
+        if (pressed & SCE_CTRL_UP) row = (row + (int)grid.size() - 1) % (int)grid.size();
+        if (pressed & SCE_CTRL_DOWN) row = (row + 1) % (int)grid.size();
+        if (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN)) col = std::min(col, (int)grid[row].size() - 1);
+        if (pressed & SCE_CTRL_LEFT) col = (col + (int)grid[row].size() - 1) % (int)grid[row].size();
+        if (pressed & SCE_CTRL_RIGHT) col = (col + 1) % (int)grid[row].size();
+        if (pressed & SCE_CTRL_CROSS) submit = press(grid[row][col]) || submit;
+        if (pressed & SCE_CTRL_SQUARE) press({0, 0, 0, 0, Act::Space, ""});
+        if (pressed & SCE_CTRL_TRIANGLE) press({0, 0, 0, 0, Act::Layer, ""});
+        if (pressed & SCE_CTRL_LTRIGGER) press({0, 0, 0, 0, Act::Delete, ""});
+        if (pressed & SCE_CTRL_RTRIGGER) { std::fill(text.begin(), text.end(), '\0'); text.clear(); }
+        if (tapped) {
+            for (int r = 0; r < (int)grid.size(); ++r)
+                for (int k = 0; k < (int)grid[r].size(); ++k) {
+                    const Key& key = grid[r][k];
+                    if (tx >= key.x && tx < key.x + key.w && ty >= key.y && ty < key.y + key.h) {
+                        row = r; col = k;
+                        submit = press(key) || submit;
+                    }
+                }
+        }
+        if (submit) { out.assign(text.begin(), text.end()); return End::Submit; }
+
+        begin_frame(env, entry.title, entry.footer);
         int y = draw_lines(env, entry.hint, 48, 72, 864, 0.6f, c.ink);
         if (!entry.message.empty()) draw_lines(env, entry.message, 48, y + 16, 864, 0.6f, entry.message_color);
-        end_frame(true);
+        // The phrase is never shown: one dot per character (the last 32), plus the count.
+        const size_t chars = count_chars(text);
+        const int shown = (int)std::min<size_t>(chars, 32);
+        if (shown == 0) { vita2d_draw_fill_circle(480, dots_y, 8, c.separator); vita2d_draw_fill_circle(480, dots_y, 5, c.panel); }
+        for (int i = 0; i < shown; ++i) vita2d_draw_fill_circle(480 + (i - (shown - 1) / 2.0f) * 22, dots_y, 8, c.accent);
+        const std::string counter = std::to_string(chars);
+        rich_text_draw(env.font, 912 - rich_text_width(env.font, 0.58f, counter.c_str()), dots_y + 6, c.muted, 0.58f, counter.c_str());
+        for (int r = 0; r < (int)grid.size(); ++r)
+            for (int k = 0; k < (int)grid[r].size(); ++k) {
+                const Key& key = grid[r][k];
+                const bool selected = r == row && k == col;
+                vita2d_draw_rectangle(key.x, key.y, key.w, key.h, selected ? c.accent : c.separator);
+                vita2d_draw_rectangle(key.x + 2, key.y + 2, key.w - 4, key.h - 4, selected ? c.accent : c.panel);
+                const unsigned color = selected ? RGBA8(255, 255, 255, 255) : (key.act == Act::Char ? c.ink : c.accent);
+                const float scale = key.act == Act::Char ? 0.75f : 0.62f;
+                const int w = rich_text_width(env.font, scale, key.label.c_str());
+                rich_text_draw(env.font, key.x + (key.w - w) / 2, key.y + key.h / 2 + 8, color, scale, key.label.c_str());
+            }
+        const std::string help = tr("vault.kb.help");
+        rich_text_draw(env.font, 480 - rich_text_width(env.font, 0.58f, help.c_str()) / 2, 484, c.muted, 0.58f, help.c_str());
+        end_frame();
     }
-    const bool submitted = kb.submitted();
-    if (submitted) out.assign(kb.text().begin(), kb.text().end());
-    kb.clear();
-    kb.close();
-    return submitted ? End::Submit : End::Select;
 }
 
 End read_secret(const Env& env, Pad& pad, const Entry& entry, vault::Method method, vault::Pin& pin) {
@@ -321,6 +470,18 @@ void erase_everything(const Env& env) {
     std::remove("ux0:data/vitagram/settings.json.tmp");
     for (const auto& path : vault_sweep::list_user_files()) std::remove(path.c_str());
     vault::reset();
+}
+
+// A message the user must acknowledge with {cross}.
+void notice_screen(const Env& env, Pad& pad, const std::string& body) {
+    Colors c = colors(env.dark);
+    for (;;) {
+        if (pad.poll() & SCE_CTRL_CROSS) return;
+        begin_frame(env, tr("vault.title"), tr("vault.notice.footer"));
+        draw_lines(env, body, 48, 80, 864, 0.62f, c.ink, 28);
+        end_frame();
+        sceKernelDelayThread(1000);
+    }
 }
 
 // After a cancelled passphrase dialog: type again, or go to the "forgot" path.
@@ -361,7 +522,10 @@ void unlock_screen(const Env& env, Pad& pad) {
         Env context = env;
         vault::Result r = vault::unlock(pin, derive_progress, &context);
         for (auto& symbol : pin) symbol = 0;
-        if (r == vault::Result::Ok) return;
+        if (r == vault::Result::Ok) {
+            if (vault::state_was_reset()) notice_screen(env, pad, tr("vault.state_reset"));
+            return;
+        }
         message = r == vault::Result::WrongPin && vault::lockout_seconds()
                       ? tr("vault.locked_out", {std::to_string(vault::lockout_seconds())}) : result_text(r);
         color = c.danger;
@@ -517,15 +681,25 @@ void run_gate(const Env& env) {
     }
 }
 
+void show_notice(const Env& env, const std::string& text) {
+    Pad pad;
+    notice_screen(env, pad, text);
+}
+
 void run_migration(const Env& env) {
     if (!vault::unlocked() || !vault::migration_pending()) return;
     Pad pad;
     Migration m{&env, &pad, !vault::disabling()};
     draw_migration(m);
     auto outcome = vault_sweep::convert_all(m.to_sealed, migration_proceed, &m, migration_report, &m);
-    if (outcome.failed) std::fprintf(stderr, "Vault: %zu files could not be converted\n", outcome.failed);
-    // A skipped run resumes at the next start; files that cannot be converted are not retried forever.
-    if (outcome.completed) vault::set_migration_pending(false);
+    // Done only when every file was listed and converted. Otherwise the flag stays and the next start
+    // tries again; while switching off, the key is kept (finish_disable waits for the flag), so a
+    // file that could not be decrypted now is never left without its key.
+    if (outcome.clean()) { vault::set_migration_pending(false); return; }
+    if (!outcome.completed) return; // skipped with {circle}: resumes at the next start
+    const size_t problems = outcome.failed + outcome.unlisted;
+    std::fprintf(stderr, "Vault: %zu files not converted, %zu unreadable entries\n", outcome.failed, outcome.unlisted);
+    notice_screen(env, pad, tr("vault.migrate.failed", {std::to_string(problems)}));
 }
 
 Outcome enable_flow(const Env& env) {
@@ -590,7 +764,7 @@ bool scan_files(const Env& env, Pad& pad, Scan& scan) {
     const time_t now = std::time(nullptr);
     for (size_t i = 0; i < files.size(); ++i) {
         if (!progress.step(i, files.size())) return false;
-        if (vault::is_sealed(files[i])) { scan.sealed.push_back(files[i]); continue; }
+        if (vault::is_vault_sealed(files[i])) { scan.sealed.push_back(files[i]); continue; }
         struct stat info{};
         // A file changed in the last two minutes may still be downloading: leave it to the background sealer.
         if (stat(files[i].c_str(), &info) == 0 && (info.st_mtime > now - 120)) ++scan.recent;

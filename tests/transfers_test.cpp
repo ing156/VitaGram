@@ -311,16 +311,18 @@ int main() {
             ChatItem chat; chat.id = id; chat.group = true; chat.supergroup_id = id - 40;
             groups.known_chats_.push_back(chat);
         }
-        auto sent = [&](const char* method) {
+        auto sent = [&](const char* method, const char* kind = nullptr) {
             json_t* found = nullptr;
             for (const auto& request : groups.outgoing_) {
                 auto* root = parse(request.text.c_str());
-                if (!found && MediaUploads::string(root, "@type") == method) found = root; else json_decref(root);
+                if (!found && MediaUploads::string(root, "@type") == method &&
+                    (!kind || MediaUploads::string(json_object_get(root, "@extra"), "kind") == kind)) found = root;
+                else json_decref(root);
             }
             return found;
         };
         auto answer_forum_check = [&](bool forum) {
-            auto* request = sent("getSupergroup"); assert(request);
+            auto* request = sent("getSupergroup", "forum_check"); assert(request);
             auto* reply = json_pack("{s:s,s:I,s:b}", "@type", "supergroup", "id",
                 (json_int_t)MediaUploads::number(request, "supergroup_id"), "is_forum", forum);
             json_object_set(reply, "@extra", json_object_get(request, "@extra"));
@@ -723,6 +725,55 @@ int main() {
     auto note=tg.parseMessage(circle); json_decref(circle);
     assert(note.animation_file_id==120 && note.video_width==240 && !note.video_alternative);
     std::puts("Video quality: lowest resolution, size tie-break, codecs, cache, limits, file request and circle fallback passed");
+
+    // GIF cards have an embedded preview before any animation/thumbnail download.
+    {
+        TelegramClient gifs;
+        auto* message = parse(R"({"@type":"message","id":67,"chat_id":42,"content":{"@type":"messageAnimation","animation":{"width":320,"height":180,"animation":{"id":130,"size":1000},"minithumbnail":{"data":"/9j/"},"thumbnail":{"format":{"@type":"thumbnailFormatMpeg4"},"file":{"id":131}}}}})");
+        auto item = gifs.parseMessage(message);
+        assert(item.animation && !item.video && item.media_fallback == "inline-jpeg:/9j/");
+        assert(item.media_path.empty() && item.animation_path.empty());
+        assert(item.media_video_preview && item.media_file_id == 131);
+        gifs.messages_ = {item}; gifs.ensureMessageMedia(0);
+        assert(gifs.outgoing_.empty()); // Embedded JPEG requires no network request.
+        gifs.ready_ = true; gifs.worker_started_ = true;
+        gifs.history_items_ = {item}; gifs.ensureMessageMedia(0); gifs.ensureMessageMedia(0);
+        assert(gifs.outgoing_.size() == 1); // Visible card downloads just the thumbnail, once.
+        auto* preview_request = parse(gifs.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(preview_request, "@type") == "downloadFile");
+        assert(MediaUploads::number(preview_request, "file_id") == 131);
+        json_decref(preview_request); gifs.outgoing_.clear();
+        gifs.process(parse(R"({"@type":"updateFile","file":{"id":131,"local":{"is_downloading_completed":true,"path":"card-thumb.mp4"}}})"));
+        assert(gifs.messages_[0].media_path == "video-thumb:card-thumb.mp4");
+        assert(gifs.history_items_[0].media_path == "video-thumb:card-thumb.mp4");
+        assert(gifs.messages_[0].animation_path.empty());
+        gifs.ensureMessageMedia(0); assert(gifs.outgoing_.empty());
+        gifs.ready_ = false; gifs.worker_started_ = false; gifs.history_items_.clear();
+        auto* content = json_object_get(message, "content");
+        auto* animation = json_object_get(content, "animation");
+        json_object_set_new(json_object_get(json_object_get(animation, "thumbnail"), "file"), "local", parse(R"({"is_downloading_completed":true,"path":"ready.mp4"})"));
+        assert(gifs.parseMessage(message).media_path == "video-thumb:ready.mp4");
+        // A GIF without an embedded JPEG still downloads its separate thumbnail.
+        json_object_del(animation, "minithumbnail");
+        item = gifs.parseMessage(message);
+        assert(item.media_fallback.empty() && item.media_video_preview && item.media_file_id == 131);
+        json_object_set_new(animation, "minithumbnail", parse(R"({"data":"/9j/"})"));
+        json_object_set_new(animation, "thumbnail", parse(R"({"format":{"@type":"thumbnailFormatJpeg"},"file":{"id":132,"local":{"is_downloading_completed":true,"path":"clear.jpg"}}})"));
+        item = gifs.parseMessage(message);
+        assert(item.media_path == "clear.jpg" && item.media_fallback == "inline-jpeg:/9j/");
+        json_object_set_new(animation, "minithumbnail", parse(R"({"data":"bad"})"));
+        assert(gifs.parseMessage(message).media_fallback.empty());
+        json_object_del(animation, "minithumbnail");
+        assert(gifs.parseMessage(message).media_fallback.empty());
+        json_object_set_new(animation, "minithumbnail", parse(R"({"data":"/9j/"})"));
+        gifs.current_chat_id_ = 42;
+        auto* update = json_pack("{s:s,s:O}", "@type", "updateNewMessage", "message", message);
+        gifs.ui_cache_.remember(update); json_decref(update); json_decref(message);
+        gifs.messages_.clear();
+        gifs.requestCachedDetails(); gifs.prepareCachedDetails(); gifs.applyCachedDetails();
+        assert(gifs.messages_.size() == 1 && gifs.messages_[0].media_fallback == "inline-jpeg:/9j/");
+    }
+    std::puts("GIF cards: embedded preview, visible MP4 thumbnail requests, file updates, static thumbnail and cached history passed");
 
     auto* rich=parse(R"({"content":{"@type":"messageRichMessage","message":{"blocks":[{"@type":"pageBlockTitle","title":{"@type":"richTextBold","text":{"@type":"richTextPlain","text":"Album"}}},{"@type":"pageBlockCollage","blocks":[{"@type":"pageBlockPhoto","photo":{"sizes":[{"width":320,"height":240,"photo":{"id":201,"size":1000}}]}},{"@type":"pageBlockPhoto","photo":{"sizes":[{"width":640,"height":480,"photo":{"id":202,"size":2000}}]}}]},{"@type":"pageBlockVideo","video":{"width":320,"height":180,"duration":4,"video":{"id":203,"size":3000}}},{"@type":"pageBlockList","items":[{"label":"• ","blocks":[{"@type":"pageBlockParagraph","text":{"@type":"richTextUrl","url":"https://example.org/hidden","text":{"@type":"richTextPlain","text":"Description"}}}]}]}]}}})");
     auto rich_item=tg.parseMessage(rich); json_decref(rich);
@@ -1177,12 +1228,63 @@ int main() {
         late.process(parse(R"({"@type":"updateChatFolders","chat_folders":[]})"));
         late.applyRestoredCache(parse(R"({"chats":{"1":{"id":1,"title":"Old","positions":[{"list":{"@type":"chatListMain"},"order":900}]}},"users":{"7":{"id":7,"first_name":"Old user"}},"folders":{"chat_folders":[{"id":5,"title":"Old folder"}]}})"));
         assert(late.chats_.size() == 1 && late.chats_[0].title == "Live");
-        assert(late.user_names_[7] == "Live user" && late.folders_.empty());
+        // Live data wins over the restored cache: the cached folder (id 5) does not come back. Only the
+        // built-in "All chats" and "Archive" tabs, which the client always adds, may be listed.
+        assert(late.user_names_[7] == "Live user");
+        for (const auto& folder : late.folders_) assert(folder.id == 0 || folder.id == kArchiveFolderId);
         late.clearAccountMemory();
         late.applyRestoredCache(parse(R"({"chats":{"1":{"id":1,"title":"Old"}},"users":{}})"));
         assert(late.known_chats_.empty());
     }
     std::puts("Async cache: offline startup, single worker, UI adoption, live data priority and logout rejection passed");
+
+    // GIF requests through the real client handler, not just the catalog parser.
+    {
+        TelegramClient client;
+        client.worker_started_ = true; client.ready_ = true; client.current_chat_id_ = 42;
+        ChatItem chat; chat.id = 42; chat.user_id = 7; client.known_chats_ = {chat};
+        auto response = [&](const char* text) {
+            assert(!client.outgoing_.empty());
+            auto* request = parse(client.outgoing_.back().text.c_str());
+            auto* root = parse(text);
+            json_object_set(root, "@extra", json_object_get(request, "@extra"));
+            json_decref(request); client.outgoing_.clear(); client.process(root);
+        };
+        client.searchGifs();
+        assert(client.gifs_.pending && client.gifs_.deadline);
+        response(R"({"@type":"animations","animations":[{"animation":{"id":51},"minithumbnail":{"data":"/9j/"},"thumbnail":{"format":{"@type":"thumbnailFormatMpeg4"},"file":{"id":52}}}]})");
+        assert(!client.gifs_.pending && client.gifs_.items.size() == 1);
+        assert(client.gifs_.items[0].fallback == "inline-jpeg:/9j/");
+        assert(client.gifs_.items[0].preview == 52 && client.gifs_.items[0].video_preview);
+        client.ensureGif(0);
+        assert(!client.outgoing_.empty());
+        auto* preview_request = parse(client.outgoing_.back().text.c_str());
+        assert(!std::strcmp(json_string_value(json_object_get(preview_request, "@type")), "downloadFile"));
+        assert(json_integer_value(json_object_get(preview_request, "file_id")) == 52);
+        json_decref(preview_request); client.outgoing_.clear();
+        client.process(parse(R"({"@type":"updateFile","file":{"id":52,"local":{"path":"thumb.mp4","is_downloading_completed":true}}})"));
+        assert(client.gifs_.items[0].path == "video-thumb:thumb.mp4");
+        client.searchGifs("cats");
+        response(R"({"@type":"optionValueString","value":"gif"})");
+        assert(client.gifs_.pending);
+        response(R"({"@type":"chat","id":100,"type":{"@type":"chatTypePrivate","user_id":100}})");
+        response(R"({"@type":"inlineQueryResults","inline_query_id":"9007199254740993","results":[{"@type":"inlineQueryResultAnimation","id":"cat","animation":{"animation":{"id":61}}}],"next_offset":""})");
+        assert(!client.gifs_.pending && client.gifs_.items.size() == 1);
+        assert(client.sendGif(0));
+        auto* send = parse(client.outgoing_.back().text.c_str());
+        assert(!std::strcmp(json_string_value(json_object_get(send, "query_id")), "9007199254740993"));
+        json_decref(send); client.outgoing_.clear();
+        client.searchGifs(); client.gifs_.deadline = 1;
+        const auto generation = client.gifs_.generation;
+        auto* late = parse(R"({"@type":"animations","animations":[]})");
+        json_object_set_new(late, "@extra", client.gifs_.extra("gif_saved"));
+        client.worker_started_ = false; client.outgoing_.clear(); client.pump();
+        assert(!client.gifs_.pending && client.gifs_.generation == generation + 1);
+        const auto timeout = client.gif_status_;
+        client.process(late);
+        assert(client.gif_status_ == timeout);
+    }
+    std::puts("GIF client: saved results, bot resolution, string query IDs, sending and timeout recovery passed");
 
     // Real disk cleanup, asynchronous lifecycle and crash recovery, using only
     // the test runner's isolated temporary working directory.
@@ -1195,6 +1297,8 @@ int main() {
     write("ux0:data/vitagram/voice-message-123.ogg");
     write("ux0:data/vitagram/media-upload.log");
     write("ux0:data/vitagram/animation-error.log");
+    write("ux0:data/vitagram/gif.log");
+    write("ux0:data/vitagram/gif.previous.log");
     write(VITAGRAM_DB_DIR "/ui-cache.json.tmp");
     write(VITAGRAM_FILES_DIR "/photo.jpg");
     write("outside-account.txt");
@@ -1225,6 +1329,8 @@ int main() {
     assert(stat("ux0:data/vitagram/voice-message-123.ogg", &info));
     assert(stat("ux0:data/vitagram/media-upload.log", &info));
     assert(stat("ux0:data/vitagram/animation-error.log", &info));
+    assert(stat("ux0:data/vitagram/gif.log", &info));
+    assert(stat("ux0:data/vitagram/gif.previous.log", &info));
     assert(!stat("ux0:data/vitagram/settings.json", &info));
     assert(!stat("outside-account.txt", &info)); // Never follow symlinks.
     assert(!account_cleanup::pending());

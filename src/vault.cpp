@@ -25,12 +25,18 @@ struct Config {
     Method method = Method::Buttons;
     uint32_t log_n = kScryptLog, r = kScryptR, p = kScryptP;
     uint8_t salt[32] = {}, nonce[12] = {}, wrapped[48] = {};
+    std::string mac; // HMAC of the security state (state_mac), hex; empty in files from older versions
+    // settings.json has been saved under this vault: from now on a missing or unreadable one is
+    // suspicious (signed with the state, so it cannot be cleared from outside unnoticed).
+    bool settings_saved = false;
+    bool has_settings_field = false; // the field was present in vault.json (state format v2)
 };
 
 std::string g_path = "ux0:data/vitagram/vault.json";
 Config g_config;
 std::atomic<bool> g_unlocked{false}, g_sealing{false};
-uint8_t g_master[32], g_file_key[32];
+uint8_t g_master[32], g_file_key[32], g_state_key[32];
+bool g_state_reset = false, g_state_unauthenticated = false;
 std::string g_db_key;
 int g_fails = 0;
 std::chrono::steady_clock::time_point g_lock_until;
@@ -38,6 +44,26 @@ std::chrono::steady_clock::time_point g_lock_until;
 std::string aad_for(const Config& c) {
     return "VitaGram vault v1|" + std::to_string(c.log_n) + "|" + std::to_string(c.r) + "|" + std::to_string(c.p) + "|" +
            (c.bind ? "bind" : "free") + (c.method == Method::Text ? "|text" : "");
+}
+
+// The security state in vault.json (mode, migration direction, KDF, wrapped key) is authenticated
+// with a key only the master key yields: someone with card access cannot switch an encrypted
+// install to "disabling" and let the owner's next unlock decrypt everything.
+void derive_state_key(const uint8_t master[32], uint8_t out[32]) {
+    hkdf(master, 32, "", "VitaGram vault state key v1", out, 32);
+}
+
+// v2 adds the settings flag. v1 (0.36.62-0.36.63) is still accepted for files without that field.
+std::string state_mac(const Config& c, const uint8_t key[32], int version = 2) {
+    std::string state = "VitaGram vault state v" + std::to_string(version) + "|" + std::string(c.disabling ? "disabling" : "on") + "|" +
+                        (c.migrating ? "migrating" : "settled") + "|" + aad_for(c) + "|" + to_hex(c.salt, 32) + "|" +
+                        to_hex(c.nonce, 12) + "|" + to_hex(c.wrapped, 48);
+    if (version >= 2) state += std::string("|settings:") + (c.settings_saved ? "saved" : "none");
+    uint8_t mac[32];
+    hmac_sha256(key, 32, state.data(), state.size(), mac);
+    std::string hex = to_hex(mac, 32);
+    wipe(mac, 32);
+    return hex;
 }
 
 bool write_config_json(json_t* root) {
@@ -48,8 +74,12 @@ bool write_config_json(json_t* root) {
     return ok;
 }
 
-bool save_config() {
+// `state_key`: the key to sign with; defaults to the unlocked vault's. Without one (locked vault)
+// the file is written unsigned and the next unlock treats it as unauthenticated.
+bool save_config(const uint8_t* state_key = nullptr) {
     if (g_config.state == State::Off) return write_config_json(json_pack("{s:i,s:s}", "v", 1, "mode", "off"));
+    if (!state_key && g_unlocked) state_key = g_state_key;
+    g_config.mac = state_key ? state_mac(g_config, state_key) : std::string();
     json_t* root = json_object();
     json_object_set_new(root, "v", json_integer(1));
     json_object_set_new(root, "mode", json_string(g_config.disabling ? "disabling" : "on"));
@@ -60,6 +90,8 @@ bool save_config() {
     json_object_set_new(root, "salt", json_string(to_hex(g_config.salt, 32).c_str()));
     json_object_set_new(root, "nonce", json_string(to_hex(g_config.nonce, 12).c_str()));
     json_object_set_new(root, "wrapped", json_string(to_hex(g_config.wrapped, 48).c_str()));
+    json_object_set_new(root, "settings", json_boolean(g_config.settings_saved));
+    if (!g_config.mac.empty()) json_object_set_new(root, "state", json_string(g_config.mac.c_str()));
     return write_config_json(root);
 }
 
@@ -96,6 +128,7 @@ Result derive_kek(const Pin& pin, const Config& c, uint8_t kek[32], Progress pro
 void install_master(const uint8_t master[32]) {
     std::memcpy(g_master, master, 32);
     hkdf(g_master, 32, "", "VitaGram file key v1", g_file_key, 32);
+    derive_state_key(g_master, g_state_key);
     uint8_t db[32];
     hkdf(g_master, 32, "", "VitaGram tdlib key v1", db, 32);
     g_db_key = to_hex(db, 32);
@@ -154,13 +187,34 @@ void chunk_nonce(uint8_t nonce[12], uint64_t index, bool last) {
     nonce[8] = last ? 1 : 0;
 }
 
-void file_subkey(const uint8_t header[kHeader], uint8_t out[32]) {
-    std::string label = "VGfile1";
-    label.append((const char*)header + 8, 16);
-    hmac_sha256(g_file_key, 32, label.data(), label.size(), out);
+// Key byte (header[7]): 0 = the vault's file key, 1 = the console key used for caches while the
+// vault is off. The console key only keeps a copied card from being read elsewhere (see M1 in
+// secure_store.h); it is not the vault's protection.
+constexpr uint8_t kKeyVault = 0, kKeyConsole = 1;
+
+bool console_file_key(uint8_t out[32]) {
+    uint8_t binding[32];
+    if (!secure_store::console_binding(binding)) return false;
+    hkdf(binding, 32, "", "VitaGram console cache key v1", out, 32);
+    wipe(binding, 32);
+    return true;
 }
 
-bool header_ok(const uint8_t* h) { return !std::memcmp(h, kMagic, 4) && h[4] == 1 && h[5] == 1 && h[6] == 16; }
+bool file_subkey(const uint8_t header[kHeader], uint8_t out[32]) {
+    uint8_t base[32];
+    if (header[7] == kKeyConsole) { if (!console_file_key(base)) return false; }
+    else if (!g_unlocked) return false;
+    else std::memcpy(base, g_file_key, 32);
+    std::string label = "VGfile1";
+    label.append((const char*)header + 8, 16);
+    hmac_sha256(base, 32, label.data(), label.size(), out);
+    wipe(base, 32);
+    return true;
+}
+
+bool header_ok(const uint8_t* h) {
+    return !std::memcmp(h, kMagic, 4) && h[4] == 1 && h[5] == 1 && h[6] == 16 && (h[7] == kKeyVault || h[7] == kKeyConsole);
+}
 }  // namespace
 
 void set_config_path(const std::string& path) { g_path = path; }
@@ -194,9 +248,15 @@ void load() {
         const char* salt = json_string_value(json_object_get(root, "salt"));
         const char* nonce = json_string_value(json_object_get(root, "nonce"));
         const char* wrapped = json_string_value(json_object_get(root, "wrapped"));
+        const char* mac = json_string_value(json_object_get(root, "state"));
+        g_config.mac = mac ? mac : "";
+        json_t* settings_flag = json_object_get(root, "settings");
+        g_config.has_settings_field = settings_flag != nullptr;
+        g_config.settings_saved = json_is_true(settings_flag);
         // Parameters are bounded so a damaged file cannot demand gigabytes.
         g_config.valid = salt && nonce && wrapped && g_config.log_n >= 10 && g_config.log_n <= 18 &&
                          g_config.r >= 1 && g_config.r <= 16 && g_config.p >= 1 && g_config.p <= 4 &&
+                         (128ull * g_config.r << g_config.log_n) <= vault_crypto::kScryptMaxMemory &&
                          from_hex(salt, g_config.salt, 32) && from_hex(nonce, g_config.nonce, 12) &&
                          from_hex(wrapped, g_config.wrapped, 48);
     } else g_config.state = State::Locked; // unknown mode: refuse to guess
@@ -210,7 +270,8 @@ bool sealing() { return g_sealing; }
 bool disabling() { return enabled() && g_config.disabling; }
 bool migration_pending() { return enabled() && g_config.migrating; }
 void set_migration_pending(bool pending) {
-    if (!enabled() || g_config.migrating == pending) return;
+    // Only an unlocked vault can sign the new state; a locked one keeps what it has.
+    if (!enabled() || !g_unlocked || g_config.migrating == pending) return;
     g_config.migrating = pending;
     save_config();
 }
@@ -289,10 +350,15 @@ Result enable(const Pin& pin, Method method, Progress progress, void* context) {
     if (r != Result::Ok) { wipe(master, 32); return r; }
     Config previous = g_config;
     g_config = next;
-    if (!save_config()) { g_config = previous; wipe(master, 32); return Result::Error; }
+    uint8_t state_key[32];
+    derive_state_key(master, state_key);
+    const bool saved = save_config(state_key);
+    wipe(state_key, 32);
+    if (!saved) { g_config = previous; wipe(master, 32); return Result::Error; }
     install_master(master);
     wipe(master, 32);
     g_fails = 0;
+    g_state_reset = g_state_unauthenticated = false;
     return Result::Ok;
 }
 
@@ -303,9 +369,36 @@ Result unlock(const Pin& pin, Progress progress, void* context) {
     uint8_t master[32];
     Result r = open_wrapped(pin, master, progress, context);
     if (r != Result::Ok) return r;
+    // The key is right; now check that the state it is about to act on was written by the vault.
+    uint8_t state_key[32];
+    derive_state_key(master, state_key);
+    auto matches = [&](const std::string& expected) {
+        return g_config.mac.size() == expected.size() &&
+               equal_ct((const uint8_t*)g_config.mac.data(), (const uint8_t*)expected.data(), expected.size());
+    };
+    const bool authentic = matches(state_mac(g_config, state_key)) ||
+                           (!g_config.has_settings_field && matches(state_mac(g_config, state_key, 1)));
+    wipe(state_key, 32);
+    // Unauthenticated state (edited, or from a version before signing - the two cannot be told apart)
+    // may only move towards more protection: stay on and re-check that everything is sealed. Only a
+    // legitimate disable is lost. Nothing it vouched for is trusted: see state_unauthenticated().
+    g_state_unauthenticated = !authentic;
+    g_state_reset = !authentic && (g_config.disabling || !g_config.mac.empty());
+    if (!authentic) { g_config.disabling = false; g_config.migrating = true; g_config.settings_saved = false; }
     install_master(master);
     wipe(master, 32);
+    if (!authentic) save_config();
     return Result::Ok;
+}
+
+bool state_was_reset() { return g_state_reset; }
+bool state_unauthenticated() { return g_unlocked && g_state_unauthenticated; }
+bool settings_expected() { return g_unlocked && !g_state_unauthenticated && g_config.settings_saved; }
+
+void note_settings_saved() {
+    if (!g_unlocked || !g_sealing || g_config.settings_saved) return;
+    g_config.settings_saved = true;
+    if (!save_config()) g_config.settings_saved = false;
 }
 
 Result verify_pin(const Pin& pin, Progress progress, void* context) {
@@ -338,9 +431,14 @@ Result begin_disable(const Pin& pin, Progress progress, void* context) {
     if (g_config.disabling && g_unlocked) return Result::Ok;
     Result r = open_wrapped(pin, master, progress, context);
     if (r != Result::Ok) return r;
+    Config previous = g_config;
     g_config.disabling = true;
     g_config.migrating = true;
-    if (!save_config()) { g_config.disabling = false; wipe(master, 32); return Result::Error; }
+    uint8_t state_key[32];
+    derive_state_key(master, state_key);
+    const bool saved = save_config(state_key);
+    wipe(state_key, 32);
+    if (!saved) { g_config = previous; wipe(master, 32); return Result::Error; }
     if (!g_unlocked) install_master(master);
     g_sealing = false; // from now on files are written plain
     wipe(master, 32);
@@ -348,7 +446,8 @@ Result begin_disable(const Pin& pin, Progress progress, void* context) {
 }
 
 bool finish_disable() {
-    if (!g_config.disabling) return false;
+    // The key is discarded only once every file is plain again: a pending migration means some are not.
+    if (!g_config.disabling || g_config.migrating) return false;
     Config previous = g_config;
     g_config = Config();
     g_config.state = State::Off;
@@ -376,7 +475,7 @@ bool reset() {
 
 void lock() {
     g_unlocked = false; g_sealing = false;
-    wipe(g_master, 32); wipe(g_file_key, 32);
+    wipe(g_master, 32); wipe(g_file_key, 32); wipe(g_state_key, 32);
     if (!g_db_key.empty()) { wipe(&g_db_key[0], g_db_key.size()); g_db_key.clear(); }
     if (g_config.state == State::Unlocked) g_config.state = State::Locked;
 }
@@ -419,6 +518,15 @@ bool is_sealed(const std::string& path) {
     return sealed;
 }
 
+bool is_vault_sealed(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint8_t head[kHeader] = {};
+    bool sealed = std::fread(head, 1, kHeader, f) == kHeader && !std::memcmp(head, kMagic, 4) && head[7] == kKeyVault;
+    std::fclose(f);
+    return sealed;
+}
+
 int64_t plain_size(const std::string& path) {
     struct stat info{};
     if (stat(path.c_str(), &info) || !S_ISREG(info.st_mode)) return -1;
@@ -427,7 +535,10 @@ int64_t plain_size(const std::string& path) {
 }
 
 // ---- Reader --------------------------------------------------------------------------------
-bool Reader::open(const std::string& path) {
+bool settings_must_be_sealed() { return enabled() && !disabling(); }
+bool caches_must_be_sealed() { return enabled() && !disabling() && !migration_pending(); }
+
+bool Reader::open(const std::string& path, Require require) {
     close();
     fd_ = ::open(path.c_str(), O_RDONLY);
     if (fd_ < 0) return false;
@@ -439,14 +550,15 @@ bool Reader::open(const std::string& path) {
     uint8_t head[kHeader];
     int64_t got = (int64_t)std::min<int64_t>(file_size_, (int64_t)kHeader);
     if (got > 0 && !read_at(0, head, (size_t)got)) { close(); return false; }
+    // Strict readers refuse plain files and console-key containers: no downgrade of protected state.
+    const bool vault_container = got == (int64_t)kHeader && !std::memcmp(head, kMagic, 4) && head[7] == kKeyVault;
+    if (require == Require::Vault && !vault_container) { close(); return false; }
     if (got >= 4 && !std::memcmp(head, kMagic, 4)) {
         int64_t plain = got == (int64_t)kHeader && header_ok(head) ? plain_size_from_sealed(file_size_) : -1;
-        uint8_t master_check[32];
-        if (plain < 0 || !file_key(master_check)) { close(); return false; }
-        wipe(master_check, 32);
+        if (plain < 0) { close(); return false; }
         std::memcpy(header_, head, kHeader);
-        file_subkey(header_, key_);
-        sealed_ = true; size_ = plain;
+        if (!file_subkey(header_, key_)) { close(); return false; }
+        sealed_ = true; console_ = head[7] == kKeyConsole; size_ = plain;
         chunk_.assign(kChunk, 0);
         raw_.assign((kChunk + 16) * kWindow, 0);
     } else {
@@ -464,7 +576,7 @@ void Reader::close() {
     wipe(key_, sizeof(key_));
     if (!chunk_.empty()) wipe(chunk_.data(), chunk_.size());
     if (!raw_.empty()) wipe(raw_.data(), raw_.size());
-    chunk_.clear(); raw_.clear(); sealed_ = false; size_ = pos_ = 0; chunk_index_ = -1; raw_first_ = -1; raw_chunks_ = 0; file_at_ = -1;
+    chunk_.clear(); raw_.clear(); sealed_ = console_ = false; size_ = pos_ = 0; chunk_index_ = -1; raw_first_ = -1; raw_chunks_ = 0; file_at_ = -1;
 }
 
 bool Reader::read_at(int64_t offset, void* buffer, size_t length) {
@@ -549,10 +661,11 @@ int64_t Reader::read(void* buffer, size_t length) {
     return (int64_t)done;
 }
 
-bool read_file(const std::string& path, size_t max_bytes, std::string& out, bool (*proceed)(void*), void* context) {
+bool read_file(const std::string& path, size_t max_bytes, std::string& out, bool (*proceed)(void*), void* context,
+               Require require) {
     out.clear();
     Reader reader;
-    if (!reader.open(path) || reader.size() < 0 || (uint64_t)reader.size() > max_bytes) return false;
+    if (!reader.open(path, require) || reader.size() < 0 || (uint64_t)reader.size() > max_bytes) return false;
     out.resize((size_t)reader.size());
     size_t done = 0;
     while (done < out.size()) {
@@ -565,19 +678,18 @@ bool read_file(const std::string& path, size_t max_bytes, std::string& out, bool
 }
 
 // ---- Writer --------------------------------------------------------------------------------
-bool Writer::open(const std::string& path, bool seal) {
+bool Writer::open(const std::string& path, bool seal, bool console_key) {
     abort();
-    uint8_t master_check[32];
-    if (seal && !file_key(master_check)) return false;
+    if (seal && !console_key && !g_unlocked) return false;
+    if (seal && console_key && !secure_store::available()) return false;
     file_ = std::fopen(path.c_str(), "wb");
     if (!file_) return false;
     sealed_ = seal; failed_ = false; chunk_counter_ = 0;
     buffer_.clear();
     if (sealed_) {
         std::memcpy(header_, kMagic, 4);
-        header_[4] = 1; header_[5] = 1; header_[6] = 16; header_[7] = 0;
-        if (!random_bytes(header_ + 8, 16)) { abort(); return false; }
-        file_subkey(header_, key_);
+        header_[4] = 1; header_[5] = 1; header_[6] = 16; header_[7] = console_key ? kKeyConsole : kKeyVault;
+        if (!random_bytes(header_ + 8, 16) || !file_subkey(header_, key_)) { abort(); return false; }
         buffer_.reserve(kChunk + 16);
         if (std::fwrite(header_, 1, kHeader, file_) != kHeader) failed_ = true;
     }
@@ -634,6 +746,12 @@ void Writer::abort() {
     wipe(key_, sizeof(key_));
 }
 
+bool Writer::open_cache(const std::string& path) {
+    if (enabled()) return open(path);
+    // No vault: still keep message history off the card in plain text where the console id allows.
+    return open(path, secure_store::available(), true);
+}
+
 bool write_file_atomic(const std::string& path, const std::string& data) {
     std::string temp = path + ".tmp";
     Writer writer;
@@ -647,7 +765,9 @@ namespace {
 Convert convert(const std::string& path, bool to_sealed, bool (*proceed)(void*), void* context) {
     Reader reader;
     if (!reader.open(path)) return Convert::Failed;
-    if (reader.sealed() == to_sealed) return Convert::Unchanged;
+    // Console-key caches count as plain for the vault: sealing re-encrypts them under the vault key.
+    const bool vault_sealed = reader.sealed() && !reader.console_sealed();
+    if (to_sealed ? vault_sealed : !reader.sealed()) return Convert::Unchanged;
     std::string temp = path + ".vgs";
     Writer writer;
     if (!writer.open(temp, to_sealed)) return Convert::Failed;

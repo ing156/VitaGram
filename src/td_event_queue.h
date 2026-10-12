@@ -6,6 +6,32 @@
 #include <jansson.h>
 #include <cstring>
 
+// Queue budget (wire bytes and events, raw + parsed). Above it, updates that only carry a current
+// value the next update replaces (online status, "typing...", online member counts, emoji click
+// effects) are dropped before parsing. Nothing else is: losing other updates would desynchronise
+// the client, and receive() must keep running because it also drives TDLib's sockets on the Vita.
+constexpr size_t kTdQueueHighWaterBytes = 8u << 20, kTdQueueHighWaterEvents = 4000;
+
+// Hard limit for everything else. In the single-threaded Vita port TDLib only runs inside
+// receive(): while it is not called, TDLib reads no sockets and produces no updates, so pausing it
+// is real back-pressure (the server waits; a long pause may cost a reconnect, never data). The
+// pause starts above the hard limit and ends once parsing and the UI have brought the queues back
+// under the high-water mark. Wire bytes are counted; parsed JSON takes more memory than that.
+constexpr size_t kTdQueueHardBytes = 16u << 20, kTdQueueHardEvents = 8000;
+inline bool td_queue_paused(bool paused, size_t bytes, size_t events) {
+    if (paused) return bytes > kTdQueueHighWaterBytes || events > kTdQueueHighWaterEvents;
+    return bytes > kTdQueueHardBytes || events > kTdQueueHardEvents;
+}
+
+// `raw` is TDLib's JSON, which always starts with its "@type". The closing quote is part of the
+// match, so "updateChatAction" does not also catch the persistent "updateChatActionBar".
+inline bool td_event_is_ephemeral(const char* raw) {
+    for (const char* prefix : {"{\"@type\":\"updateUserStatus\"", "{\"@type\":\"updateChatAction\"",
+                               "{\"@type\":\"updateChatOnlineMemberCount\"", "{\"@type\":\"updateAnimatedEmojiMessageClicked\""})
+        if (!std::strncmp(raw, prefix, std::strlen(prefix))) return true;
+    return false;
+}
+
 // Original JSON payload bytes, not the size of its parsed DOM allocations.
 inline bool td_event_changes_chat_list(json_t* root) {
     const char* type = json_string_value(json_object_get(root, "@type"));
@@ -31,12 +57,12 @@ inline bool urgent_td_event(json_t* root) {
     auto* extra = json_object_get(root, "@extra");
     const char* kind = json_string_value(json_object_get(extra, "kind"));
     return (kind && (!std::strcmp(kind, "media_upload") || !std::strcmp(kind, "proxy_check") ||
-                    !std::strcmp(kind, "proxy_config"))) ||
+                    !std::strcmp(kind, "proxy_config") || !std::strncmp(kind, "gif_", 4))) ||
         (json_is_string(extra) && !std::strcmp(json_string_value(extra), "send_message"));
 }
 
 // Prepared once on Parser, before taking the shared queue mutex.
-enum class TdResponseKind { None, History, Reaction, Forum, Post, Sticker };
+enum class TdResponseKind { None, History, Reaction, Forum, Post, Sticker, Gif };
 struct TdEventMetadata {
     int64_t chat=0, generation=0;
     int32_t file=0;
@@ -54,7 +80,11 @@ inline TdEventMetadata describe_td_event(json_t* root) {
     const char* type=json_string_value(json_object_get(root,"@type"));
     auto* extra=json_object_get(root,"@extra");
     const char* kind=json_string_value(json_object_get(extra,"kind"));
-    if (kind && !std::strcmp(kind,"history")) {
+    if (kind && !std::strncmp(kind, "gif_", 4)) {
+        m.response = TdResponseKind::Gif;
+        m.chat = json_integer_value(json_object_get(extra, "chat"));
+        m.generation = json_integer_value(json_object_get(extra, "generation"));
+    } else if (kind && !std::strcmp(kind,"history")) {
         m.response=TdResponseKind::History;
         m.first_history=type && !std::strcmp(type,"messages") && json_is_true(json_object_get(extra,"first"));
         m.requested=json_integer_value(json_object_get(extra,"requested_at"));
@@ -212,5 +242,5 @@ inline bool td_reply_is_foreground(const char* text) {
     const char* kind=std::strstr(extra,"\"kind\":\"");
     if (!kind) return false;
     kind+=8;
-    return !std::strncmp(kind,"history\"",8) || !std::strncmp(kind,"reaction_",9) || !std::strncmp(kind,"forum_",6);
+    return !std::strncmp(kind,"history\"",8) || !std::strncmp(kind,"reaction_",9) || !std::strncmp(kind,"forum_",6) || !std::strncmp(kind,"gif_",4);
 }

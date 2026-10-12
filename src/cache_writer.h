@@ -41,9 +41,10 @@ struct Output {
 };
 inline Result write(json_t* value, const char* temp, size_t limit, Proceed proceed = nullptr, void* context = nullptr) {
     if (proceed && !proceed(context)) return Result::Interrupted;
-    // Sealed whenever the vault is on; the snapshot never reaches the card in plain text then.
+    // Sealed with the vault key when the vault is on, otherwise with the console key: message history
+    // never reaches the card in plain text unless the console id is unreadable.
     vault::Writer writer;
-    if (!writer.open(temp)) return Result::Error;
+    if (!writer.open_cache(temp)) return Result::Error;
     // Our buffer supplies the batching; avoid an extra libc buffer/copy.
     writer.set_unbuffered();
     Output out{&writer, limit, 0, 0, proceed, context, Result::Ok, {}};

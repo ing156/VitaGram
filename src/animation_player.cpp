@@ -1,3 +1,4 @@
+#include "diag_log.h"
 #include "performance.h"
 #include "i18n.h"
 #include "animation_player.h"
@@ -21,6 +22,7 @@
 #include <zlib.h>
 #ifdef VITAGRAM_RLOTTIE
 #include <rlottie_capi.h>
+#include "tgs_policy.h"
 #endif
 extern "C" {
 #include <libavformat/avformat.h>
@@ -61,7 +63,7 @@ std::string decoder_error(const char* stage, int code) {
 void log_decoder_error(const std::string& message, AVCodecContext* codec, AVPacket* packet,
                        AVFrame* frame, unsigned packets, unsigned frames) {
     std::fprintf(stderr, "Animation: %s\n", message.c_str());
-    FILE* log = std::fopen("ux0:data/vitagram/animation-error.log", "w");
+    FILE* log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/animation-error.log", "w");
     if (!log) return;
     std::fprintf(log, "VitaGram %s\nError: %s\nPackets: %u Frames: %u\nFFmpeg: %s\nConfiguration: %s\n",
         VITAGRAM_VERSION, message.c_str(), packets, frames, av_version_info(), avcodec_configuration());
@@ -136,7 +138,7 @@ int AnimationPlayer::directBuffer(AVCodecContext* codec, AVFrame* frame, int) {
                     surface.allocated = allocation;
                     performance::cdram_video += allocation;
                 } else {
-                    FILE* log = std::fopen("ux0:data/vitagram/video-hardware.log", "a");
+                    FILE* log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-hardware.log", "a");
                     if (log) {
                         std::fprintf(log, "direct_alloc_failed uid=0x%08x base=0x%08x map=0x%08x bytes=%u\n",
                             (unsigned)surface.uid, (unsigned)base_result, (unsigned)map_result, allocation);
@@ -162,7 +164,7 @@ int AnimationPlayer::directBuffer(AVCodecContext* codec, AVFrame* frame, int) {
     }
     unsigned busy = 0;
     for (const auto& surface : player->yuv_surfaces_) if (surface.busy.load()) ++busy;
-    FILE* log = std::fopen("ux0:data/vitagram/video-hardware.log", "a");
+    FILE* log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-hardware.log", "a");
     if (log) {
         std::fprintf(log, "direct_pool_exhausted busy=%u capacity=%u\n", busy,
             static_cast<unsigned>(player->yuv_surfaces_.size()));
@@ -189,12 +191,14 @@ void AnimationPlayer::releaseYuvTexture() {
     yuv_pitch_ = yuv_height_ = 0;
 }
 
-void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare) {
+void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare, bool cache_only) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_setSource");
     pthread_mutex_lock(&mutex_);
-    if (path == source_ && video_ == video && round_ == round && prepare_ == prepare) { pthread_mutex_unlock(&mutex_); return; }
+    if (path == source_ && video_ == video && round_ == round && prepare_ == prepare && cache_only_ == cache_only) { pthread_mutex_unlock(&mutex_); return; }
     source_ = path;
-    video_ = video; round_ = round; prepare_ = prepare;
+    video_ = video; round_ = round; prepare_ = prepare; cache_only_ = cache_only;
+    preparation_required_ = false;
+    preparation_checked_ = !prepare || !cache_only;
     paused_ = video; finished_ = false; position_us_ = 0; start_us_ = 0;
     ++generation_;
     ready_ = false;
@@ -202,7 +206,7 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
     pending_direct_ = false;
     yuv_logged_ = false;
     uploaded_frames_ = 0;
-    status_ = path.empty() ? "" : prepare ? tr("anim.preparing_video",{"0"}) : video ? tr("anim.play") : tr("anim.preparing_gif");
+    status_ = path.empty() ? "" : prepare && !cache_only ? tr("anim.preparing_video",{"0"}) : video ? tr("anim.play") : tr("anim.preparing_gif");
     pthread_mutex_unlock(&mutex_);
     audio_.setSource(video && !prepare ? path : "", video && !prepare);
     if (yuv_valid_) { vita2d_wait_rendering_done(); releaseYuvTexture(); }
@@ -398,11 +402,11 @@ void AnimationPlayer::run() {
         pthread_mutex_lock(&mutex_);
         unsigned generation = generation_;
         std::string path = source_;
-        bool video = video_, round = round_, prepare = prepare_;
+        bool video = video_, round = round_, prepare = prepare_, cache_only = cache_only_;
         pthread_mutex_unlock(&mutex_);
         if (generation != handled) {
             handled = generation;
-            if (!path.empty()) decode(path, generation, video, round, prepare);
+            if (!path.empty()) decode(path, generation, video, round, prepare, cache_only);
         } else sceKernelDelayThread(10000);
     }
 }
@@ -410,12 +414,13 @@ void AnimationPlayer::run() {
 void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
 #ifdef VITAGRAM_RLOTTIE
     std::string packed;
-    if (!vault::read_file(path, 2*1024*1024, packed)) { setStatus(generation, tr("anim.tgs_open")); return; }
+    if (!vault::read_file(path, tgs_policy::kMaxPacked, packed)) { setStatus(generation, tr("anim.tgs_open")); return; }
     std::string data;
     {
         // TGS is gzip; inflate from memory so a sealed file never has to exist in plain text.
         z_stream stream{};
-        bool ok = inflateInit2(&stream, 16 + MAX_WBITS) == Z_OK;
+        const bool initialised = inflateInit2(&stream, 16 + MAX_WBITS) == Z_OK;
+        bool ok = initialised;
         int status = Z_OK;
         char block[8192];
         stream.next_in = reinterpret_cast<Bytef*>(&packed[0]);
@@ -426,13 +431,20 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
             status = inflate(&stream, Z_NO_FLUSH);
             if (status != Z_OK && status != Z_STREAM_END) { ok = false; break; }
             data.append(block, sizeof(block) - stream.avail_out);
-            if (data.size() > 2*1024*1024) break;
+            if (data.size() > tgs_policy::kMaxJson) break;
         }
-        if (ok) inflateEnd(&stream);
+        if (initialised) inflateEnd(&stream); // also after a decode error: no zlib state is leaked
         if (stopping_ || generation != generation_) return;
-        if (!ok || status != Z_STREAM_END || data.empty() || data.size() > 2*1024*1024) {
+        if (!ok || status != Z_STREAM_END || data.empty() || data.size() > tgs_policy::kMaxJson) {
             setStatus(generation, tr("anim.tgs_invalid")); return;
         }
+    }
+    // rlottie parses the whole model (and would decode embedded images) before anything below
+    // can check it: refuse what stickers never contain first.
+    std::string refusal;
+    if (!tgs_policy::acceptable(data, &refusal)) {
+        std::fprintf(stderr, "TGS refused before parsing: %s\n", refusal.c_str());
+        setStatus(generation, tr("anim.tgs_unsupported")); return;
     }
     Lottie_Animation* animation = lottie_animation_from_data(data.c_str(), path.c_str(), "");
     if (!animation) { setStatus(generation, tr("anim.tgs_parse")); return; }
@@ -485,7 +497,7 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
 #endif
 }
 
-void AnimationPlayer::decode(const std::string& source_path, unsigned generation, bool video, bool round, bool prepare) {
+void AnimationPlayer::decode(const std::string& source_path, unsigned generation, bool video, bool round, bool prepare, bool cache_only) {
     std::optional<cpu_scheduler::Media> reservation;
     static std::once_flag logger_once;
     std::call_once(logger_once, [] { av_log_set_callback(capture_ffmpeg_error); });
@@ -505,11 +517,17 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         if (!prepare_portrait_video(source_path,path,
                 [&] { return interrupted(&job)!=0; },
                 [&](int percent) { setStatus(generation,tr("anim.preparing_video",{std::to_string(percent)})); },
-                error)) {
-            if (!interrupted(&job)) early_error(error);
+                error, cache_only)) {
+            pthread_mutex_lock(&mutex_);
+            if (generation == generation_ && cache_only) { preparation_required_ = true; preparation_checked_ = true; }
+            pthread_mutex_unlock(&mutex_);
+            if (!interrupted(&job)) early_error(cache_only ? tr("video.unsupported_hint") : error);
             return;
         }
         if (interrupted(&job)) return;
+        pthread_mutex_lock(&mutex_);
+        if (generation == generation_) preparation_checked_ = true;
+        pthread_mutex_unlock(&mutex_);
         audio_.setSource(path,true);
         audio_.setPlaying(!paused_);
         setStatus(generation,tr("anim.play"));
@@ -573,7 +591,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         if (!interrupted(&job) && video && start_us_.load() > 0 && !prepare) {
             pthread_mutex_lock(&mutex_);
             const bool current = generation == generation_;
-            if (FILE* fl = std::fopen("ux0:data/vitagram/video-seek.log", "a")) {
+            if (FILE* fl = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-seek.log", "a")) {
                 std::fprintf(fl, " FALLBACK to start: %s (packets=%u frames=%u seek_base=%lld)\n", message.c_str(),
                     packets_read, frames_decoded, (long long)start_us_.load());
                 std::fclose(fl);
@@ -627,7 +645,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         // Some retail Vitas report INVALID_VALUE while the codec engine is
         // already available. The decoder's own initialization is authoritative.
         std::fprintf(stderr, "Animation: AVCDEC module load 0x%08x\n", (unsigned)module_rc);
-        hardware_log = std::fopen("ux0:data/vitagram/video-hardware.log", "w");
+        hardware_log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-hardware.log", "w");
         if (hardware_log) {
             std::fprintf(hardware_log, "VitaGram %s\nbackend=h264_vita\nmodule_load=0x%08x\nprofile=%d level=%d size=%dx%d\nfile_size=%ld head_crc=%08lx tail_crc=%08lx\n",
                 VITAGRAM_VERSION, (unsigned)module_rc, parameters->profile, parameters->level,
@@ -635,7 +653,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             if (parameters->height > 1088)
                 std::fprintf(hardware_log, "portrait_hardware_probe=1 coded_height=%d\n", parameters->height);
             std::fclose(hardware_log);
-            hardware_log = std::fopen("ux0:data/vitagram/video-hardware.log", "a");
+            hardware_log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-hardware.log", "a");
         }
     }
     const AVCodec* decoder = parameters->codec_id == AV_CODEC_ID_H264
@@ -779,7 +797,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 int64_t clock = wait_video(video_due);
                 now = sceKernelGetSystemTimeWide();
                 if (seek_base > 0 && (frames_decoded <= 3 || frames_decoded % 20 == 0) && frames_decoded <= 140) {
-                    if (FILE* fl = std::fopen("ux0:data/vitagram/video-seek.log", "a")) {
+                    if (FILE* fl = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-seek.log", "a")) {
                         std::fprintf(fl, "  frame=%u due=%lld clock=%lld packets=%u\n", frames_decoded, (long long)video_due, (long long)clock, packets_read);
                         std::fclose(fl);
                     }
@@ -940,7 +958,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         const int64_t floor_ts = av_rescale_q(first_ts, AV_TIME_BASE_Q, stream->time_base);
         AVPacket* probe = av_packet_alloc();
         bool landed = false;
-        FILE* seek_log = std::fopen("ux0:data/vitagram/video-seek.log", "a");
+        FILE* seek_log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-seek.log", "a");
         if (seek_log) std::fprintf(seek_log, "seek target_us=%lld h264=%d\n", (long long)seek_base, h264 ? 1 : 0);
         for (int attempt = 0; probe && attempt < 16 && !interrupted(&job); ++attempt) {
             if (av_seek_frame(format, stream_index, target, AVSEEK_FLAG_BACKWARD) < 0) break;

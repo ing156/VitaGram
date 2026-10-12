@@ -49,6 +49,9 @@ void Keyboard::open(const std::string& title, bool secret, const std::string& in
     // Secrets (2FA password, vault passphrase) are masked by the system dialog.
     param_.type = SCE_IME_TYPE_DEFAULT;
     param_.textBoxMode = secret ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
+    // No predictive text or suggestions for secrets, so the system keyboard has nothing to learn from
+    // a passphrase; automatic capitalization would also change what the user typed.
+    param_.option = secret ? (SCE_IME_OPTION_NO_ASSISTANCE | SCE_IME_OPTION_NO_AUTO_CAPITALIZATION) : 0;
     param_.title = title_; param_.maxTextLength = MaxTextLength;
     param_.initialText = initial_; param_.inputTextBuffer = input_;
     active_ = sceImeDialogInit(&param_) >= 0;

@@ -1,6 +1,10 @@
 #include "image_decoder.h"
+#include "inline_thumbnail.h"
 #include "performance.h"
 #include "vault.h"
+#if defined(__vita__) || defined(VITAGRAM_VIDEO_THUMBNAILS)
+#include "video_thumbnail.h"
+#endif
 #ifdef __vita__
 #include "cpu_scheduler.h"
 #endif
@@ -57,17 +61,31 @@ bool jpeg_pixels(const uint8_t* data, size_t size, DecodedImage& out, const std:
 DecodedImage decode_image(const std::string& path, const std::function<bool()>& proceed) {
     DecodedImage out;
     if (!proceed()) return out;
-    vault::Reader f; // plain files and sealed ones alike
-    if (!f.open(path)) return out;
-    const int64_t size=f.size();
-    if (size<=0 || size>int64_t(limit)) return out;
-    std::vector<uint8_t> bytes(size_t(size), 0);
-    for (size_t n=0; n<bytes.size();) {
-        size_t count=std::min(size_t(64*1024),bytes.size()-n);
-        if (!proceed() || f.read(bytes.data()+n,count)!=int64_t(count)) return out;
-        n+=count;
+    std::vector<uint8_t> bytes;
+    const bool video = path.compare(0, 12, "video-thumb:") == 0;
+    if (path.compare(0, 12, inline_thumbnail::prefix) == 0) {
+        if (!inline_thumbnail::decode(path, bytes)) return image_failure("invalid_mini");
+    } else {
+        vault::Reader f; // plain files and sealed ones alike
+        if (!f.open(video ? path.substr(12) : path)) return image_failure("file_open");
+        const int64_t size=f.size();
+        if (size<=0 || size>int64_t(limit)) return image_failure("file_size");
+        bytes.resize(size_t(size));
+        for (size_t n=0; n<bytes.size();) {
+            size_t count=std::min(size_t(64*1024),bytes.size()-n);
+            if (!proceed()) return out;
+            if (f.read(bytes.data()+n,count)!=int64_t(count)) return image_failure("file_read");
+            n+=count;
+        }
+        f.close();
     }
-    f.close();
+    if (video) {
+#if defined(__vita__) || defined(VITAGRAM_VIDEO_THUMBNAILS)
+        return video_thumbnail::decode(bytes, proceed);
+#else
+        return {};
+#endif
+    }
     bool ok=false;
     if (bytes.size()>=8 && !png_sig_cmp(bytes.data(),0,8)) {
         png_image png{}; png.version=PNG_IMAGE_VERSION;
@@ -89,7 +107,8 @@ DecodedImage decode_image(const std::string& path, const std::function<bool()>& 
             ok=WebPDecodeRGBAInto(bytes.data(),bytes.size(),out.rgba.data(),out.rgba.size(),w*4)!=nullptr;
         }
     }
-    if (!ok || !proceed()) return {};
+    if (!proceed()) return {};
+    if (!ok) return image_failure("image_decode");
     // Bound both the completed CPU result and the next UI upload to 4 MiB.
     if (out.width > 1024 || out.height > 1024) {
         const unsigned longest = std::max(out.width,out.height);
@@ -163,7 +182,7 @@ void ImageDecoder::run() {
             return !stopped_ && generation==generation_ && std::find(visible_.begin(),visible_.end(),path)!=visible_.end();
         };
         DecodedImage image;
-        { performance::Scope metric(performance::Metric::ImageDecode); try { image=decode_(path,proceed); } catch (const std::bad_alloc&) { image={}; } }
+        { performance::Scope metric(performance::Metric::ImageDecode); try { image=decode_(path,proceed); } catch (const std::bad_alloc&) { image=image_failure("no_memory"); } }
         lock.lock(); active_.clear();
         if (!stopped_ && generation==generation_ && std::find(visible_.begin(),visible_.end(),path)!=visible_.end()) { ready_path_=path; ready_=std::move(image); }
     }

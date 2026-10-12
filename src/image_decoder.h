@@ -10,7 +10,9 @@
 struct DecodedImage {
     unsigned width = 0, height = 0;
     std::vector<uint8_t> rgba;
+    const char* error = nullptr; // Static diagnostic code, never a filename.
 };
+inline DecodedImage image_failure(const char* error) { DecodedImage out; out.error = error; return out; }
 DecodedImage decode_image(const std::string& path, const std::function<bool()>& proceed);
 
 // CPU pixels only. All GPU allocation, upload and destruction remain on UI.

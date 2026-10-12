@@ -303,6 +303,10 @@ bool scrypt(const uint8_t* password, size_t password_len, const uint8_t* salt, s
             uint32_t N, uint32_t r, uint32_t p, uint8_t* out, size_t out_len,
             void (*step)(void*), void* context) {
     if (N < 2 || (N & (N - 1)) || !r || !p || r > 32 || p > 16 || N > (1u << 22)) return false;
+    // The V array is 128*r*N bytes. Computed in 64 bits (size_t is 32-bit on the Vita) and capped at
+    // kScryptMaxMemory, so no parameters can overflow the allocation size or ask for more than the
+    // console can give.
+    if ((uint64_t)128 * r * N > kScryptMaxMemory || (uint64_t)128 * r * p > kScryptMaxMemory) return false;
     const size_t block_bytes = 128 * (size_t)r;
     std::vector<uint8_t> B(block_bytes * p);
     if (!PKCS5_PBKDF2_HMAC((const char*)password, (int)password_len, salt, (int)salt_len, 1, EVP_sha256(),
@@ -325,7 +329,7 @@ bool scrypt(const uint8_t* password, size_t password_len, const uint8_t* salt, s
 
 bool random_bytes(uint8_t* out, size_t len) {
 #ifdef __vita__
-    // OpenSSL 1.0.2 has no entropy source on the Vita; use the kernel's generator.
+    // The kernel generator directly; the bundled OpenSSL is seeded from it as well.
     while (len) {
         size_t n = len < 256 ? len : 256;
         if (sceKernelGetRandomNumber(out, (SceSize)n) < 0) return false;

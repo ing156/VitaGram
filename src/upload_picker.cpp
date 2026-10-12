@@ -126,7 +126,13 @@ void UploadPicker::addShortcuts() {
 }
 
 // Small diagnostic trail (ux0:data/vitagram/picker.log) for "the folder shows empty" reports.
+// It names folders and files from the whole card in plain text, even with data encryption on, so it
+// exists only in builds configured with -DVITAGRAM_PICKER_LOG=ON.
 void UploadPicker::log(const std::string& text) const {
+#if !VITAGRAM_PICKER_LOG
+    (void)text;
+    return;
+#endif
     const char* file = "ux0:data/vitagram/picker.log";
     SceIoStat st{};
     if (sceIoGetstat(file, &st) >= 0 && st.st_size > 64 * 1024) sceIoRemove(file);

@@ -56,20 +56,14 @@ It requires C/C++ compilers, pthreads, a host libjansson.so.4, and the Jansson h
 from a configured build-modern tree. Vita camera/GPU/audio calls are replaced with
 stubs. The recorder's encoder is stubbed only in its lifecycle test.
 
-To also run the **real** minih264 + AAC + MP4 encoder/decoder test, build host FFmpeg
-in a separate directory (do not replace the Vita libraries):
+To also run the **real** minih264 + AAC + MP4 encoder/decoder test (and the WebM sticker
+test), build the app's FFmpeg release for the host (the Vita libraries are not touched):
 
 ```bash
-mkdir -p /tmp/vitagram-video-ffmpeg-test
-cd /tmp/vitagram-video-ffmpeg-test
-/path/to/vitagram/external/ffmpeg-animation/ffmpeg-7.1.5/configure \
-  --disable-all --disable-autodetect --disable-doc --disable-programs --disable-x86asm \
-  --enable-avcodec --enable-avformat --enable-avutil --enable-encoder=aac \
-  --enable-decoder=h264,aac --enable-muxer=mp4 --enable-demuxer=mov \
-  --enable-parser=h264,aac --enable-protocol=file
-make -j4
-cd /path/to/vitagram
-FFMPEG_NATIVE_BUILD=/tmp/vitagram-video-ffmpeg-test bash tests/run-video-tests.sh
+bash scripts/build-native-ffmpeg.sh
+export FFMPEG_NATIVE_BUILD="$PWD/external/ffmpeg-native/build"
+bash tests/run-video-tests.sh
+bash tests/run-webm-tests.sh
 ```
 
 The test decodes every video and audio packet and checks square dimensions,
@@ -120,6 +114,14 @@ closed-state updates and persistence of updated polls in the UI cache.
 Video quality checks in `run-transfer-tests.sh` verify minimum compatible resolution,
 size tie-breaking, unsupported codecs, oversized original fallback, cached variants,
 unknown sizes, unavailable variants, the actual download file ID and unchanged video notes.
+
+`run-video-tests.sh` also checks converted-video cache keys, short reads and read
+failures. `run-vault-tests.sh` verifies that the key stays the same after moving,
+encrypting, decrypting and re-encrypting an actual source file, and rejects
+unauthenticated samples from a damaged encrypted source.
+With `FFMPEG_NATIVE_BUILD` set, `run-video-tests.sh` also creates and converts
+an eight-second H.264/AAC video, reopens it in cache-only mode, and checks that
+no conversion runs again, including after moving and encrypting its files.
 
 
 `bash tests/run-font-tests.sh` loads the packaged fonts with host FreeType and

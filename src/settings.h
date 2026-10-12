@@ -1,19 +1,23 @@
 #pragma once
+#include "diag_log.h"
 #include "proxy_config.h"
 #include "secure_store.h"
 #include "vault.h"
 #include <jansson.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
 #include <string>
 
 struct AppSettings {
-    int retention = 2, capacity = 2, theme = 0, font = 5, request_batch_size = 32; // Оптимизация: увеличил с 16 до 32 для более быстрой загрузки
+    int retention = 2, capacity = 2, theme = 0, font = 5, request_batch_size = 64;
     int opacity = 75;       // percent of the surface PNGs (rows, message cards) over the wallpaper, 5% steps
     int avatar_shape = 0;   // 0 rounded square, 1 circle
     bool show_threads = false;
     bool gyroscope_enabled = true;
+    bool show_archive = true;  // Archive tab in the chat list folders
+    unsigned log_mask = 0;     // diag_log::Kind bits; every diagnostic log is off by default
     bool check_updates = true; // look for a newer GitHub release shortly after startup
     bool proxy_enabled = false;
     std::string proxy_server, proxy_secret;
@@ -29,6 +33,11 @@ struct AppSettings {
     int cache_storage = 0;
     std::string download_dir = "ux0:downloads/vitagram";
     std::string language; // "" = follow the console language, otherwise a code from app0:lang/*.lang
+    // load() found a settings.json not sealed by the vault although the vault is on: it was replaced
+    // outside VitaGram (or never re-saved after switching encryption on) and has been ignored.
+    bool rejected = false;
+    // load() read a settings.json (sealed with the vault key when the vault is on).
+    bool loaded = false;
     static int days(int i) { const int values[] = {1, 7, 30, 90, 0}; return values[i]; }
     static int megabytes(int i) { const int values[] = {128, 256, 512, 1024, 2048, 0}; return values[i]; }
     static int requestBatchSize(int i) { const int values[] = {4, 8, 16, 32, 64}; return values[std::max(0, std::min(4, i))]; } // Оптимизация: сдвинул значения вправо (прежн. индекс 1→теперь значение 32)
@@ -58,18 +67,27 @@ struct AppSettings {
     float fontScale() const { return 0.7f + font * 0.1f; }
     void load() {
         // Sealed when the vault is on; the vault must be unlocked first, or this reads defaults.
+        // Always starts from the defaults, so nothing read earlier survives a refused file.
+        static constexpr const char* path = "ux0:data/vitagram/settings.json";
+        *this = AppSettings();
+        const bool strict = vault::settings_must_be_sealed();
         std::string text;
-        if (!vault::read_file("ux0:data/vitagram/settings.json", 1 << 20, text)) return;
+        if (!vault::read_file(path, 1 << 20, text, nullptr, nullptr, strict ? vault::Require::Vault : vault::Require::Any)) {
+            struct stat info{};
+            rejected = strict && stat(path, &info) == 0 && !vault::is_vault_sealed(path);
+            return;
+        }
         json_error_t error{};
         json_t* root = json_loadb(text.data(), text.size(), 0, &error);
         if (!json_is_object(root)) { if (root) json_decref(root); return; }
+        loaded = true;
         auto value = [&](const char* key, int fallback, int maximum) {
             json_t* v = json_object_get(root, key);
             return json_is_integer(v) ? std::max(0, std::min(maximum, (int)json_integer_value(v))) : fallback;
         };
         retention = value("retention", 2, 4); capacity = value("capacity", 2, 5);
         theme = value("theme", 0, 1); font = value("font_size", 5, 6);
-        request_batch_size = value("request_batch_size", 16, 64);
+        request_batch_size = value("request_batch_size", 64, 64);
         opacity = std::max(kMinOpacity, std::min(kMaxOpacity, (value("opacity", 75, 100) + kOpacityStep / 2) / kOpacityStep * kOpacityStep));
         avatar_shape = value("avatar_shape", 0, 1);
         cache_storage = value("cache_storage", 0, 1);
@@ -77,6 +95,10 @@ struct AppSettings {
         if (json_t* v = json_object_get(root, "check_updates")) check_updates = json_is_true(v);
         if (json_t* v = json_object_get(root, "gyroscope_enabled"))
             if (json_is_boolean(v)) gyroscope_enabled = json_is_true(v);
+        if (json_t* v = json_object_get(root, "show_archive"))
+            if (json_is_boolean(v)) show_archive = json_is_true(v);
+        if (json_t* v = json_object_get(root, "log_mask"))
+            if (json_is_integer(v)) log_mask = (unsigned)json_integer_value(v) & diag_log::kAll;
         proxy_enabled = json_is_true(json_object_get(root, "proxy_enabled"));
         proxy_port = value("proxy_port", 443, 65535);
         proxy_type = value("proxy_type", 0, 2);
@@ -108,8 +130,10 @@ struct AppSettings {
         json_t* root = json_pack("{s:i,s:i,s:i,s:i,s:i,s:b}", "retention", retention, "capacity", capacity,
             "theme", theme, "font_size", font, "request_batch_size", request_batch_size, "show_threads", show_threads);
         json_object_set_new(root, "gyroscope_enabled", json_boolean(gyroscope_enabled));
+        json_object_set_new(root, "show_archive", json_boolean(show_archive));
         json_object_set_new(root, "opacity", json_integer(opacity));
         json_object_set_new(root, "avatar_shape", json_integer(avatar_shape));
+        json_object_set_new(root, "log_mask", json_integer(log_mask));
         json_object_set_new(root, "check_updates", json_boolean(check_updates));
         json_object_set_new(root, "proxy_enabled", json_boolean(proxy_enabled));
         json_object_set_new(root, "proxy_server", json_string(proxy_server.c_str()));
@@ -127,6 +151,16 @@ struct AppSettings {
         if (!dumped) return false;
         bool ok = vault::write_file_atomic("ux0:data/vitagram/settings.json", dumped);
         std::free(dumped);
+        if (ok) vault::note_settings_saved(); // sealed now: from here on a missing file is noticed
         return ok;
     }
 };
+
+// After load() with the vault on: the proxy policy cannot be confirmed - settings.json was refused,
+// or it should exist (saved under this vault) but could not be read, or the vault state itself is
+// unsigned. The network must then wait for the user to save the proxy settings (F14).
+inline bool proxy_policy_unknown(const AppSettings& settings) {
+    return vault::settings_must_be_sealed() && !settings.loaded &&
+           (settings.rejected || vault::settings_expected() || vault::state_unauthenticated());
+}
+

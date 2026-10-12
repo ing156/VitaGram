@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <string>
 
-// Primitives for the data vault. The VitaSDK OpenSSL is 1.0.2, which has neither ChaCha20-Poly1305
-// nor scrypt, so both are implemented here from RFC 8439 / RFC 7914 (checked against the RFC
-// vectors and the host OpenSSL in tests/vault_crypto_test.cpp).
+// Primitives for the data vault, implemented here from RFC 8439 / RFC 7914 when the app used the
+// VitaSDK's OpenSSL 1.0.2, which has neither (checked against the RFC vectors and the host
+// OpenSSL in tests/vault_crypto_test.cpp). The bundled OpenSSL 3.5 has both; the tested code stays.
 //
 // Why ChaCha20-Poly1305: the Vita's Cortex-A9 has no AES instructions, so AES would run as
 // table lookups (slow, and with key-dependent memory access). ChaCha20 is add/rotate/xor only:
@@ -30,8 +30,12 @@ void hmac_sha256(const void* key, size_t key_len, const void* data, size_t len, 
 void hkdf(const uint8_t* ikm, size_t ikm_len, const std::string& salt, const std::string& info,
           uint8_t* out, size_t out_len);
 
-// scrypt (RFC 7914). Needs 128 * r * N bytes (+ 128 * r * p). False on bad parameters or when
-// memory cannot be allocated. `step`, when set, is called about every 1/64 of the work.
+// Upper bound for scrypt's working memory (128 * r * N bytes); larger parameters are refused.
+constexpr uint64_t kScryptMaxMemory = 64ull << 20;
+
+// scrypt (RFC 7914). Needs 128 * r * N bytes (+ 128 * r * p). False on bad parameters, more than
+// kScryptMaxMemory, or when memory cannot be allocated. `step`, when set, is called about every
+// 1/64 of the work.
 bool scrypt(const uint8_t* password, size_t password_len, const uint8_t* salt, size_t salt_len,
             uint32_t N, uint32_t r, uint32_t p, uint8_t* out, size_t out_len,
             void (*step)(void*) = nullptr, void* context = nullptr);

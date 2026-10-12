@@ -16,19 +16,30 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "36.52")
-set(VITAGRAM_VERSION "0.36.52")
+set(VITA_VERSION  "36.79")
+set(VITAGRAM_VERSION "0.36.79")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
+option(VITAGRAM_PICKER_LOG "Write browsed folders and file names to ux0:data/vitagram/picker.log (plain text)" OFF)
 
-set(ANIMATION_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-hardware/install" CACHE PATH "Vita FFmpeg prefix with h264_vita")
+# FFmpeg for all media: FFmpeg 7.1 LTS + scripts/ffmpeg-vita-7.1.patch (the Vita hardware H.264
+# decoder), built by scripts/build-ffmpeg-vita.sh. VITAGRAM_FFMPEG_ROOT overrides the prefix.
+set(VITAGRAM_FFMPEG_ROOT "" CACHE PATH "Override the FFmpeg install prefix")
+unset(VITAGRAM_FFMPEG CACHE) # older build directories cached the removed legacy/7.1 switch
+set(FFMPEG_BUILD_SCRIPT "scripts/build-ffmpeg-vita.sh")
+set(ANIMATION_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg-vita71/install")
+if(VITAGRAM_FFMPEG_ROOT)
+  set(ANIMATION_FFMPEG_ROOT "${VITAGRAM_FFMPEG_ROOT}")
+endif()
+unset(ANIMATION_FFMPEG_ROOT CACHE) # an older build directory cached the legacy prefix here
+message(STATUS "FFmpeg: ${ANIMATION_FFMPEG_ROOT}")
 foreach(ANIMATION_LIB avformat avcodec swscale swresample avutil)
   if(NOT EXISTS "${ANIMATION_FFMPEG_ROOT}/lib/lib${ANIMATION_LIB}.a")
-    message(FATAL_ERROR "Missing hardware decoder. Run bash scripts/build-hardware-video-decoder.sh first.")
+    message(FATAL_ERROR "Missing FFmpeg with the Vita hardware decoder. Run bash ${FFMPEG_BUILD_SCRIPT} first.")
   endif()
 endforeach()
 if(NOT EXISTS "${ANIMATION_FFMPEG_ROOT}/share/COPYING.LGPLv2.1")
-  message(FATAL_ERROR "Missing FFmpeg license; run scripts/build-hardware-video-decoder.sh")
+  message(FATAL_ERROR "Missing FFmpeg license; run bash ${FFMPEG_BUILD_SCRIPT}")
 endif()
 
 find_path(WEBP_INCLUDE_DIR webp/decode.h)
@@ -65,6 +76,27 @@ foreach(CJK_FONT KR SC TC)
   endif()
 endforeach()
 
+# Pinned dependencies are git submodules (.gitmodules); VitaGram's changes to them live in
+# scripts/*-vita.patch and are applied here once, so a fresh clone builds the same code.
+find_package(Git REQUIRED)
+function(vitagram_apply_patch dir patch)
+  if(NOT EXISTS "${dir}/.git")
+    message(FATAL_ERROR "${dir} is missing. Run: git submodule update --init")
+  endif()
+  execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${dir}" apply --reverse --check "${patch}"
+                  RESULT_VARIABLE already_applied OUTPUT_QUIET ERROR_QUIET)
+  if(already_applied EQUAL 0)
+    return()
+  endif()
+  execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${dir}" apply "${patch}"
+                  RESULT_VARIABLE applied ERROR_VARIABLE apply_error)
+  if(NOT applied EQUAL 0)
+    message(FATAL_ERROR "Cannot apply ${patch} to ${dir}:\n${apply_error}")
+  endif()
+  message(STATUS "Applied ${patch}")
+endfunction()
+vitagram_apply_patch("${CMAKE_SOURCE_DIR}/external/jansson" "${CMAKE_SOURCE_DIR}/scripts/jansson-vita.patch")
+
 set(JANSSON_BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared jansson" FORCE)
 set(JANSSON_EXAMPLES OFF CACHE BOOL "Build jansson examples" FORCE)
 set(JANSSON_BUILD_DOCS OFF CACHE BOOL "Build jansson documentation" FORCE)
@@ -73,15 +105,35 @@ set(JANSSON_INSTALL OFF CACHE BOOL "Install jansson" FORCE)
 set(USE_URANDOM OFF CACHE BOOL "Use /dev/urandom in jansson" FORCE)
 add_subdirectory(external/jansson EXCLUDE_FROM_ALL)
 
-set(TDLIB_SOURCE_DIR "${CMAKE_SOURCE_DIR}/external/tdlib-vita" CACHE PATH "Path to tdlib-vita")
+# OpenSSL 3.5 LTS built by scripts/build-openssl.sh replaces the SDK's OpenSSL 1.0.2 (2016) for
+# TDLib and the app. Its headers go first so nothing compiles against the SDK copy.
+set(VITAGRAM_OPENSSL_ROOT "${CMAKE_SOURCE_DIR}/external/openssl-vita/install" CACHE PATH "Vita OpenSSL 3.5 prefix")
+if(NOT EXISTS "${VITAGRAM_OPENSSL_ROOT}/lib/libcrypto.a" OR NOT EXISTS "${VITAGRAM_OPENSSL_ROOT}/include/openssl/opensslv.h")
+  message(FATAL_ERROR "OpenSSL 3.5 for the Vita not found in ${VITAGRAM_OPENSSL_ROOT}. Run: bash scripts/build-openssl.sh")
+endif()
+set(OPENSSL_ROOT_DIR "${VITAGRAM_OPENSSL_ROOT}")
+set(OPENSSL_USE_STATIC_LIBS TRUE)
+set(OPENSSL_INCLUDE_DIR "${VITAGRAM_OPENSSL_ROOT}/include" CACHE PATH "OpenSSL headers" FORCE)
+set(OPENSSL_CRYPTO_LIBRARY "${VITAGRAM_OPENSSL_ROOT}/lib/libcrypto.a" CACHE FILEPATH "OpenSSL libcrypto" FORCE)
+set(OPENSSL_SSL_LIBRARY "${VITAGRAM_OPENSSL_ROOT}/lib/libssl.a" CACHE FILEPATH "OpenSSL libssl" FORCE)
+include_directories(BEFORE "${VITAGRAM_OPENSSL_ROOT}/include")
+
+set(TDLIB_SOURCE_DIR "${CMAKE_SOURCE_DIR}/external/tdlib-upstream" CACHE PATH "Path to the Vita-patched TDLib")
 if(NOT EXISTS "${TDLIB_SOURCE_DIR}/CMakeLists.txt")
-  message(FATAL_ERROR "tdlib-vita not found. Clone https://github.com/v-atamanenko/tdlib-vita into external/tdlib-vita")
+  message(FATAL_ERROR "TDLib not found in ${TDLIB_SOURCE_DIR}. Run: git submodule update --init")
 endif()
 
-# PSVita TDLib fork. It exports Td::TdJsonStatic in the upstream-style CMake build.
+# Vita-patched TDLib. It exports Td::TdJsonStatic in the upstream-style CMake build.
 set(__vita__ TRUE CACHE BOOL "Build TDLib for PS Vita" FORCE)
 set(TD_ENABLE_TESTS OFF CACHE BOOL "Build TDLib tests" FORCE)
 include_directories(BEFORE "${CMAKE_SOURCE_DIR}/src/vita_compat")
+if(TDLIB_SOURCE_DIR STREQUAL "${CMAKE_SOURCE_DIR}/external/tdlib-upstream")
+  vitagram_apply_patch("${TDLIB_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/scripts/tdlib-vita.patch")
+endif()
+if(NOT EXISTS "${TDLIB_SOURCE_DIR}/td/generate/auto/td/telegram/td_api.h" OR
+   NOT EXISTS "${TDLIB_SOURCE_DIR}/tdutils/generate/auto/mime_type_to_extension.cpp")
+  message(FATAL_ERROR "TDLib's generated sources are missing. Run once on the host: bash scripts/prepare-tdlib.sh")
+endif()
 add_subdirectory("${TDLIB_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tdlib" EXCLUDE_FROM_ALL)
 
 add_library(vitagram_h264 STATIC src/minih264.c)
@@ -189,7 +241,7 @@ add_executable(${PROJECT_NAME}
   src/update_core.cpp
   src/https_client.cpp
   src/updater.cpp
-  ${CMAKE_SOURCE_DIR}/external/tdlib-vita/vitaports/td_missing_func_placeholder.cpp
+  src/vita_compat/vita_posix_stubs.cpp
 )
 # Decryption runs while video plays: keep the ChaCha20/Poly1305 loops fully optimized.
 set_source_files_properties(src/vault_crypto.cpp PROPERTIES COMPILE_OPTIONS "-O3")
@@ -213,6 +265,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
   VITAGRAM_VERSION="${VITAGRAM_VERSION}"
   VITAGRAM_PERFORMANCE=$<BOOL:${VITAGRAM_PERFORMANCE}>
   VITAGRAM_TGS_DIAGNOSTIC=$<BOOL:${VITAGRAM_TGS_DIAGNOSTIC}>
+  VITAGRAM_PICKER_LOG=$<BOOL:${VITAGRAM_PICKER_LOG}>
   VITAGRAM_HARDWARE_VIDEO=1
 )
 

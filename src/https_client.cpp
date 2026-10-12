@@ -64,7 +64,7 @@ bool connect_tls(Connection& c, const Url& url, const std::string& ca_file, std:
 #endif
     if (!c.ctx) { error = ssl_error_text("TLS init failed"); return false; }
     SSL_CTX_set_options(c.ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
-    if (SSL_CTX_load_verify_locations(c.ctx, ca_file.c_str(), nullptr) != 1) { error = "cannot load the CA bundle " + ca_file; return false; }
+    if (!load_ca_bundle(SSL_CTX_get_cert_store(c.ctx), ca_file, error)) return false;
     SSL_CTX_set_verify(c.ctx, SSL_VERIFY_PEER, nullptr);
     c.ssl = SSL_new(c.ctx);
     if (!c.ssl) { error = ssl_error_text("TLS init failed"); return false; }

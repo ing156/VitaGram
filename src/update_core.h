@@ -3,10 +3,13 @@
 // HTTP/1.1 response framing, release signature check and VPK (zip) extraction.
 // Everything here builds and is tested on the host (tests/run-update-tests.sh).
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
+
+typedef struct x509_store_st X509_STORE;
 
 namespace update {
 
@@ -72,6 +75,15 @@ private:
 
 // Extracts a zip (stored/deflate, no zip64) below `dest`. Entries with absolute paths, "..",
 // backslashes or drive letters are refused. `progress` gets (done, total) uncompressed bytes.
+// Adds every certificate of a PEM bundle to `store`, parsing each certificate on its own: one
+// unreadable entry does not discard the rest, and the end of the file is found by the text itself
+// rather than by OpenSSL's error queue. Returns the number added; on 0, `error` says why (counts,
+// the first OpenSSL error, errno).
+int load_ca_bundle(X509_STORE* store, const std::string& path, std::string& error);
+
+// Same, from an already open package (e.g. the one whose signature was just checked).
+bool extract_zip(FILE* zip, const std::string& dest,
+                 const std::function<bool(uint64_t, uint64_t)>& progress, std::string& error);
 bool extract_zip(const std::string& zip_path, const std::string& dest,
                  const std::function<bool(uint64_t, uint64_t)>& progress, std::string& error);
 bool safe_entry_name(const std::string& name);

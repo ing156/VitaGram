@@ -1,4 +1,5 @@
 #include "image_decoder.h"
+#include "image_retry.h"
 #include <png.h>
 #include <cstdio>
 #include <jpeglib.h>
@@ -16,6 +17,18 @@ template<class F> void wait_for(F predicate) {
     assert(predicate());
 }
 int main() {
+    ImageRetry retries;
+    assert(retries.ready("temporary.jpg", 0));
+    assert(retries.fail("temporary.jpg", 100) == 1);
+    assert(!retries.ready("temporary.jpg", 1000099) && retries.ready("temporary.jpg", 1000100));
+    assert(retries.fail("temporary.jpg", 1000100) == 2);
+    assert(!retries.ready("temporary.jpg", 4000099) && retries.ready("temporary.jpg", 4000100));
+    assert(retries.fail("temporary.jpg", 4000100) == 3);
+    assert(retries.fail("temporary.jpg", 14000100) == 4);
+    assert(!retries.ready("temporary.jpg", 44000099) && retries.ready("temporary.jpg", 44000100));
+    assert(retries.fail("temporary.jpg", 44000100) == 4);
+    retries.forget("temporary.jpg"); assert(retries.ready("temporary.jpg", 0));
+    retries.fail("another.jpg", 0); retries.clear(); assert(retries.ready("another.jpg", 0));
     const uint8_t pixels[]={255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255};
     png_image png{}; png.version=PNG_IMAGE_VERSION; png.width=2; png.height=2; png.format=PNG_FORMAT_RGBA;
     assert(png_image_write_to_file(&png,"image.png",0,pixels,0,nullptr));
@@ -26,6 +39,22 @@ int main() {
     uint8_t row0[]={255,0,0,0,255,0},row1[]={0,0,255,255,255,255};
     JSAMPROW row=row0; jpeg_write_scanlines(&jpeg,&row,1);row=row1;jpeg_write_scanlines(&jpeg,&row,1);
     jpeg_finish_compress(&jpeg); jpeg_destroy_compress(&jpeg); fclose(file);
+    std::ifstream jpeg_input("image.jpg", std::ios::binary);
+    const std::string raw((std::istreambuf_iterator<char>(jpeg_input)), std::istreambuf_iterator<char>());
+    const char* alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string mini_encoded;
+    for (size_t i = 0; i < raw.size(); i += 3) {
+        unsigned bits = (unsigned char)raw[i] << 16;
+        if (i + 1 < raw.size()) bits |= (unsigned char)raw[i + 1] << 8;
+        if (i + 2 < raw.size()) bits |= (unsigned char)raw[i + 2];
+        mini_encoded += alphabet[(bits >> 18) & 63]; mini_encoded += alphabet[(bits >> 12) & 63];
+        mini_encoded += i + 1 < raw.size() ? alphabet[(bits >> 6) & 63] : '=';
+        mini_encoded += i + 2 < raw.size() ? alphabet[bits & 63] : '=';
+    }
+    auto mini = decode_image("inline-jpeg:" + mini_encoded, [] { return true; });
+    assert(mini.width == 2 && mini.height == 2 && mini.rgba.size() == 16);
+    assert(decode_image("inline-jpeg:broken", [] { return true; }).rgba.empty());
+
     uint8_t* encoded=nullptr;size_t bytes=WebPEncodeLosslessRGBA(pixels,2,2,8,&encoded);assert(bytes);
     {std::ofstream out("image.webp",std::ios::binary);out.write(reinterpret_cast<char*>(encoded),bytes);}WebPFree(encoded);
     for (auto path:{"image.png","image.jpg","image.webp"}) {
@@ -46,6 +75,12 @@ int main() {
     {std::ofstream out("broken.jpg",std::ios::binary);out.put(char(0xff));out.put(char(0xd8));out << "corrupt";}
     assert(decode_image("broken.jpg",[]{return true;}).rgba.empty());
     assert(decode_image("missing",[]{return true;}).rgba.empty());
+    assert(std::string(decode_image("missing",[]{return true;}).error) == "file_open");
+    retries.fail("later.jpg", 0);
+    { std::ofstream repaired("later.jpg", std::ios::binary); repaired.write(raw.data(), raw.size()); }
+    assert(!retries.ready("later.jpg", 999999) && retries.ready("later.jpg", 1000000));
+    assert(decode_image("later.jpg", [] { return true; }).width == 2);
+    retries.forget("later.jpg");
     {std::ofstream out("huge",std::ios::binary);out.seekp(16*1024*1024);out.put('x');}
     assert(decode_image("huge",[]{return true;}).rgba.empty());
     std::vector<uint8_t> wide(2048*2*4,255);

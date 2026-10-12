@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include <vita2d.h>
 
 // Screens of the data vault: first-run question, key entry with console buttons, unlock at start,
@@ -15,6 +16,8 @@ struct Env {
 void run_gate(const Env& env);
 // Seals (or unseals, while switching off) files left over from before, if the vault says so.
 void run_migration(const Env& env);
+// A full-screen message acknowledged with {cross} (same look as the vault screens).
+void show_notice(const Env& env, const std::string& text);
 
 enum class Outcome { Done, Cancelled, Failed };
 Outcome enable_flow(const Env& env);   // new key twice -> vault on

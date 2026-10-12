@@ -4,6 +4,7 @@
 #include "media_uploads.h"
 #include "td_event_queue.h"
 #include "poll.h"
+#include "gif_catalog.h"
 #include <map>
 #include <set>
 #include "media_cache.h"
@@ -28,10 +29,12 @@ struct ChatItem {
     int64_t basic_group_id = 0;
     bool cached_metadata = false;
     bool can_send = true;   // chat-wide default permission can_send_basic_messages
-    std::unordered_map<int32_t, int64_t> list_orders; // 0 = main, >0 = folder
+    std::unordered_map<int32_t, int64_t> list_orders; // 0 = main, >0 = folder, kArchiveFolderId = archive
     int64_t id = 0;
     int64_t order = 0;
     int64_t last_message_id = 0;
+    int unread_count = 0;
+    bool marked_unread = false;
     std::string title;
     int32_t avatar_file_id = 0;
     std::string avatar_path;
@@ -48,6 +51,8 @@ struct PhotoItem {
 enum class DeliveryState { Pending, Sent, Read, Failed };
 struct ForumTopicItem { int32_t id = 0; std::string title; int unread = 0; bool closed = false; };
 struct SendStickerItem { int32_t file = 0, preview = 0; int width = 0, height = 0; std::string emoji, path; };
+// Folder tab id of the Archive (TDLib chatListArchive); TDLib folder ids are positive.
+constexpr int32_t kArchiveFolderId = -2;
 struct ChatFolderItem {
     int32_t id = 0;
     std::string title;
@@ -79,6 +84,8 @@ struct MessageItem {
     int64_t pinned_message_id = 0;
     int32_t media_file_id = 0;
     std::string media_path;
+    std::string media_fallback; // Embedded GIF JPEG: immediate preview without a download.
+    bool media_video_preview = false; // Separate MP4/GIF thumbnail, decoded by the image worker.
     bool document = false;
     std::string document_name;
     int64_t document_size = 0, document_downloaded = 0;
@@ -103,6 +110,7 @@ struct MessageItem {
     int64_t animation_size = 0, animation_downloaded = 0;
     std::string animation_path, animation_error;
     std::vector<PhotoItem> photos;
+    bool spoiler = false;   // TDLib has_spoiler: previews stay blurred until the user confirms (session only)
     std::vector<std::string> links;
     // Reply reference (TDLib reply_to). reply_sender/reply_text are filled from history, a cached lookup or the
     // reply content itself; empty text with reply_missing == false means "still loading".
@@ -214,6 +222,7 @@ public:
     const std::vector<ChatFolderItem>& folders() const { return folders_; }
     int32_t selectedFolder() const { return selected_folder_; }
     void selectFolder(int32_t id);
+    void setShowArchive(bool show);
     std::string updateNotice() const;
     // Progress of the latest speech-to-text request (requested, processing, done, error); empty once stale.
     std::string transcriptionStatus() const;
@@ -259,6 +268,14 @@ public:
     const std::vector<SendStickerItem>& stickers() const { return stickers_; }
     const std::vector<ChatFolderItem>& stickerPacks() const { return sticker_packs_; }
     const std::string& stickerStatus() const { return sticker_status_; }
+    void searchGifs(const std::string& query = "");
+    void loadMoreGifs();
+    void closeGifs();
+    void ensureGif(size_t index);
+    bool sendGif(size_t index);
+    const GifCatalog& gifs() const { return gifs_; }
+    const std::string& gifStatus() const { return gif_status_; }
+    bool gifsCurrent() const { return gifs_.chat == current_chat_id_ && gifs_.topic == current_topic_ && gifs_.thread == current_thread_; }
     bool answerPoll(int64_t message, const std::vector<int>& options);
     std::string pollStatus(int64_t message) const;
     bool pollPending(int64_t message) const;
@@ -348,6 +365,11 @@ private:
     unsigned topics_generation_ = 0;
     bool matchesTopic(void* message) const;
     std::vector<SendStickerItem> stickers_;
+    GifCatalog gifs_;
+    std::string gif_status_;
+    std::string gif_request_kind_;
+    int64_t gif_bot_ = 0;
+    void requestGifResults(const std::string& offset);
     std::vector<ChatFolderItem> sticker_packs_;
     std::vector<int64_t> sticker_set_ids_;
     bool sticker_packs_fresh_ = false;
@@ -394,6 +416,7 @@ private:
     bool history_cached_ = false;
     std::vector<ChatFolderItem> folders_;
     int32_t selected_folder_ = 0;
+    bool show_archive_ = true;
     unsigned list_generation_ = 0;
     unsigned refresh_generation_ = 0;
     int64_t chats_request_deadline_ = 0, refresh_deadline_ = 0;
@@ -403,6 +426,7 @@ private:
     size_t selected_chat_count_ = 0;
     void sendListRequest(const char* method, const char* kind, int64_t chat_id = 0);
     void parseFolders(void* update);
+    void syncArchiveFolder();
     int32_t active_animation_file_ = 0;
     int32_t active_voice_file_ = 0;
     unsigned voice_download_generation_ = 0;
@@ -482,13 +506,15 @@ private:
     std::atomic<bool> stopping_{false};
     std::atomic<bool> worker_started_{false};
     std::atomic<bool> parser_started_{false};
-    std::atomic<int> request_batch_size_{16};
+    std::atomic<int> request_batch_size_{64};
     struct Request { std::string text; int priority; int64_t queued; bool first_history=false, backlog_exempt=false; int32_t file_id=0; bool forum_check=false; int64_t selected=0; };
     std::deque<Request> outgoing_;
     struct Incoming { std::string text; int64_t received = 0; bool priority = false; };
     size_t incoming_priority_ = 0; // Leading priority entries of incoming_; protected by queue_mutex_.
     std::deque<Incoming> incoming_;
     size_t incoming_bytes_ = 0, parsed_wire_bytes_ = 0; // Protected by queue_mutex_.
+    uint64_t shed_events_ = 0; int64_t shed_reported_ = 0; // Ephemeral updates dropped over budget; queue_mutex_.
+    bool receive_paused_ = false; // Over the hard queue limit: TDLib is not run (td_queue_paused); queue_mutex_.
     void sampleQueues(); // queue_mutex_ held; diagnostics never wait.
     std::atomic<int64_t> interaction_until_{0};
     // Set while the open chat waits for its first history page (Worker/Parser).

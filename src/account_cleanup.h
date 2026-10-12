@@ -53,8 +53,9 @@ inline bool purge() {
             name == "animation-error.log" ||
             // Diagnostic logs hold local paths and playback details; none of them survives a logout.
             name == "picker.log" || name == "portrait-video.log" || name == "audio-video.log" ||
-            name == "video-hardware.log" || name == "vault-playback.log" ||
+            name == "video-hardware.log" || name == "video-seek.log" || name == "vault-playback.log" ||
             name == "performance.log" || name == "performance.previous.log" ||
+            name == "gif.log" || name == "gif.previous.log" ||
             name == "tgs-render-frame.ppm")
             if (!removeTree("ux0:data/vitagram/" + name)) ok = false;
         errno = 0;

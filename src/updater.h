@@ -34,7 +34,8 @@ public:
     // the downloaded package is only staged; the next process start installs it before anything heavy
     // is loaded. Call applyPending() first thing in main().
     enum class Pending { None, Applied, Failed };
-    static Pending applyPending(const std::string& work_dir, std::string& detail);
+    // Installs only a package newer than `current_version` (no rollback through a staged older release).
+    static Pending applyPending(const std::string& work_dir, const std::string& current_version, std::string& detail);
     void reportStartupFailure(const std::string& detail); // result of a failed applyPending()
     Snapshot snapshot() const;
     const std::string& currentVersion() const { return current_; }

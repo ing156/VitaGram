@@ -191,26 +191,91 @@ void Updater::runInstall() {
         fail(Error::Install, detail + " (" + vpk_path + ")");
         return;
     }
-    // Stage only: applyPending() installs at the next start. The marker is written last.
+    // Stage only: applyPending() installs at the next start and verifies the signature again, because
+    // the card is writable by other software in between. The marker is written last.
+    FILE* sig_file = std::fopen((work_dir_ + "/update.sig").c_str(), "wb");
+    bool sig_ok = sig_file && std::fwrite(signature.data(), 1, signature.size(), sig_file) == signature.size();
+    if (sig_file && std::fclose(sig_file) != 0) sig_ok = false;
+    if (!sig_ok) { fail(Error::Storage, "cannot write the signature"); return; }
     FILE* marker = std::fopen((work_dir_ + "/pending").c_str(), "wb");
-    if (!marker || std::fclose(marker) != 0) { fail(Error::Storage, "cannot write the install marker"); return; }
+    bool marker_ok = marker && std::fwrite(version.data(), 1, version.size(), marker) == version.size();
+    if (marker && std::fclose(marker) != 0) marker_ok = false;
+    if (!marker_ok) { fail(Error::Storage, "cannot write the install marker"); return; }
     set(State::Installed); // the verified VPK stays until applyPending() succeeds, for a manual install
 }
 
-Updater::Pending Updater::applyPending(const std::string& work_dir, std::string& detail) {
+namespace {
+bool read_small(const std::string& path, size_t limit, std::string& out) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char buffer[256];
+    size_t n;
+    out.clear();
+    while ((n = std::fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        out.append(buffer, n);
+        if (out.size() > limit) { std::fclose(f); return false; }
+    }
+    std::fclose(f);
+    return true;
+}
+
+// Re-checks the stored package against the release signature; the version in the marker is part of
+// the signed message, so a tampered marker or package fails here.
+// Checks the open package against the release signature and leaves it rewound: the caller unpacks
+// exactly the file that was checked (replacing the name in between has no effect).
+bool verify_staged(FILE* vpk, const std::string& work_dir, const std::string& version, std::string& detail) {
+    std::string signature;
+    if (version.empty() || !read_small(work_dir + "/update.sig", kMaxSignature, signature) || signature.empty()) {
+        detail = "the staged signature is missing"; return false;
+    }
+    update::SignatureVerifier verifier;
+    if (!verifier.begin(version)) { detail = "cannot load the signing key"; return false; }
+    std::vector<unsigned char> buffer(64 * 1024);
+    size_t n;
+    while ((n = std::fread(buffer.data(), 1, buffer.size(), vpk)) > 0) verifier.update(buffer.data(), n);
+    if (std::ferror(vpk) || !verifier.finish(reinterpret_cast<const unsigned char*>(signature.data()), signature.size())) {
+        detail = "the staged package does not match its signature"; return false;
+    }
+    std::rewind(vpk);
+    return true;
+}
+}
+
+Updater::Pending Updater::applyPending(const std::string& work_dir, const std::string& current_version, std::string& detail) {
     const std::string marker = work_dir + "/pending", package_dir = work_dir + "/pkg", result = work_dir + "/result.txt";
-    FILE* found = std::fopen(marker.c_str(), "rb");
-    if (!found) return Pending::None;
-    std::fclose(found);
+    std::string version;
+    if (!read_small(marker, 64, version)) {
+        FILE* found = std::fopen(marker.c_str(), "rb");
+        if (!found) return Pending::None;
+        std::fclose(found); // present but unreadable or oversized: treated as tampered below
+        version.clear();
+    }
     std::remove(marker.c_str()); // one attempt only: a failure must not loop on every start
     std::remove(result.c_str());
-    bool ok = promote(package_dir, detail);
+    // The package directory staged earlier is never trusted: it is rebuilt from the re-verified VPK.
+    FILE* vpk = std::fopen((work_dir + "/update.vpk").c_str(), "rb");
+    bool ok = vpk != nullptr;
+    if (!ok) detail = "the staged package is missing";
+    if (ok) ok = verify_staged(vpk, work_dir, version, detail);
+    // A validly signed but older release must not be installed over a newer one.
+    if (ok && update::compare_versions(current_version, version) >= 0) {
+        detail = "the staged package (" + version + ") is not newer than " + current_version;
+        ok = false;
+    }
+    update::remove_tree(package_dir);
+    std::string error;
+    if (ok && !update::extract_zip(vpk, package_dir, nullptr, error)) { detail = error; ok = false; }
+    if (vpk) std::fclose(vpk);
+    if (ok) ok = stageHead(package_dir, detail);
+    if (ok) ok = promote(package_dir, detail);
     update::remove_tree(package_dir);
     if (!ok) {
+        std::remove((work_dir + "/update.sig").c_str());
         if (FILE* f = std::fopen(result.c_str(), "wb")) { std::fwrite(detail.data(), 1, detail.size(), f); std::fclose(f); }
         return Pending::Failed;
     }
     std::remove((work_dir + "/update.vpk").c_str());
+    std::remove((work_dir + "/update.sig").c_str());
     return Pending::Applied;
 }
 

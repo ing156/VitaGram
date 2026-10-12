@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds FFmpeg 7.1 with the Vita hardware H.264 decoder into external/ffmpeg-vita71/install - the
-# FFmpeg the app links by default (CMake option VITAGRAM_FFMPEG=7.1). Nothing is written to the SDK.
+# FFmpeg the app links. Nothing is written to the SDK.
 set -euo pipefail
 : "${VITASDK:?Set VITASDK to your existing VitaSDK directory}"
 export PATH="$VITASDK/bin:$PATH"
@@ -15,7 +15,7 @@ build_dir="$root/build-$ffmpeg_version"
 rm -rf -- "$build_dir" "$root/install"
 mkdir -p "$build_dir"
 cd "$build_dir"
-# Same component set as the legacy FFmpeg-vita build; no network, filters, GPL or nonfree code.
+# Only the components the app uses; no network, filters, GPL or nonfree code.
 "$source_dir/configure" \
   --prefix="$root/install" \
   --enable-cross-compile --cross-prefix="$VITASDK/bin/arm-vita-eabi-" \

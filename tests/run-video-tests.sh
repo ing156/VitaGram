@@ -10,6 +10,9 @@ trap 'rm -rf -- "$build_dir"' EXIT
 "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread -I "$root/src" \
   "$root/tests/video_note_capture_buffer_test.cpp" -o "$build_dir/buffer_test"
 "$build_dir/buffer_test"
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -I "$root/src" \
+  "$root/tests/portrait_video_cache_test.cpp" -o "$build_dir/portrait_cache_test"
+"$build_dir/portrait_cache_test"
 "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -pthread -I "$root/tests/stubs" -I "$root/src" -I "$root/tests" -DVITAGRAM_LANG_DIR='"'"$root/assets/lang"'"' \
   "$root/src/video_note_recorder.cpp" "$root/src/i18n.cpp" "$root/tests/video_note_recorder_test.cpp" \
   -Wl,--wrap=fwrite -Wl,--wrap=fclose -Wl,--wrap=setvbuf -o "$build_dir/recorder_test"
@@ -27,4 +30,17 @@ if [[ -n "${FFMPEG_NATIVE_BUILD:-}" ]]; then
     "$FFMPEG_NATIVE_BUILD/libavformat/libavformat.a" "$FFMPEG_NATIVE_BUILD/libavcodec/libavcodec.a" \
     "${extra_libs[@]}" "$FFMPEG_NATIVE_BUILD/libavutil/libavutil.a" -lm -pthread -o "$build_dir/encoder_test"
   "$build_dir/encoder_test" "$build_dir"
+  "${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -DH264E_MAX_THREADS=0 -DH264E_SVC_API=0 \
+    -DVITAGRAM_VERSION='"test"' -DVITAGRAM_LANG_DIR='"'"$root/assets/lang"'"' \
+    -I "$root/src" -I "$root/tests" -I "$root/build-modern/external/jansson/include" \
+    -I "$root/external/minih264" -I "$FFMPEG_NATIVE_BUILD" -I "$FFMPEG_NATIVE_BUILD/src" \
+    "$root/src/portrait_video.cpp" "$root/src/video_note_encoder.cpp" "$root/src/i18n.cpp" \
+    "$root/src/vault.cpp" "$root/src/vault_crypto.cpp" "$root/src/secure_store.cpp" \
+    "$root/src/vault_avio.cpp" "$root/src/vault_readahead.cpp" \
+    "$root/tests/portrait_video_reopen_test.cpp" "$build_dir/h264.o" \
+    "$FFMPEG_NATIVE_BUILD/libavformat/libavformat.a" "$FFMPEG_NATIVE_BUILD/libavcodec/libavcodec.a" \
+    "$FFMPEG_NATIVE_BUILD/libswscale/libswscale.a" "${extra_libs[@]}" \
+    "$FFMPEG_NATIVE_BUILD/libavutil/libavutil.a" -l:libjansson.so.4 -lcrypto -lm -pthread \
+    -o "$build_dir/portrait_reopen_test"
+  "$build_dir/portrait_reopen_test" "$build_dir"
 fi

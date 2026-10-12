@@ -8,12 +8,14 @@
 // of console buttons.
 //
 // Key hierarchy
-//   PIN (8..32 presses of D-pad/cross/circle/triangle/square, 3 bits each)
+//   PIN (12..32 presses of D-pad/cross/circle/triangle/square, 3 bits each), or a passphrase
 //     -> scrypt(N=2^14, r=8, p=2, random 32-byte salt)         memory-hard, ~16 MiB, ~1-2 s on Vita
 //     -> HKDF-SHA256 with the console binding (OpenPSID hash)   a copied card alone is useless
 //     -> KEK; the random 256-bit master key (MK) is stored AEAD-wrapped under it (vault.json).
 //   Changing the PIN re-wraps MK only; no data is re-encrypted. MK -> HKDF -> separate file and
-//   TDLib database keys.
+//   TDLib database keys, and a state key that signs vault.json's mode and migration direction, so
+//   an edited file cannot turn the owner's next unlock into a decryption. "off" cannot be signed
+//   (there is no key then); a file switched to "off" from outside only stops new data being sealed.
 //
 // File container ("VGV1", one per file): 24-byte header (magic, version, cipher, chunk size,
 // 16-byte random salt) then 64 KiB chunks of ChaCha20-Poly1305. The per-file key is
@@ -29,7 +31,7 @@ namespace vault {
 // for Method::Text the UTF-8 bytes of the passphrase.
 using Pin = std::vector<uint8_t>;
 constexpr int kSymbols = 8;
-constexpr size_t kMinPin = 8, kMaxPin = 32;
+constexpr size_t kMinPin = 12, kMaxPin = 32;
 
 // How the key is entered: console buttons (quick) or a typed passphrase (stronger).
 enum class Method { Buttons, Text };
@@ -64,7 +66,18 @@ void set_migration_pending(bool pending);
 
 Method method(); // of the current vault; Buttons when there is none
 Result enable(const Pin& pin, Method method = Method::Buttons, Progress progress = nullptr, void* context = nullptr);
+// Also checks the signed security state in vault.json (mode, migration direction); see state_was_reset.
 Result unlock(const Pin& pin, Progress progress = nullptr, void* context = nullptr);
+// After unlock(): the state was edited outside VitaGram (or was an unsigned "disabling" from an old
+// version) and was reset to "encryption on, re-check every file". Tell the user.
+bool state_was_reset();
+// After unlock(): the state carried no valid signature (edited, stripped, or written by a version
+// before signing - indistinguishable). Caches and the "settings were saved" flag are not trusted then.
+bool state_unauthenticated();
+// settings.json has been saved under this (authenticated) vault, so it must exist and be readable.
+bool settings_expected();
+// Called after settings.json was written sealed; records that in the signed state.
+void note_settings_saved();
 // Checks a key without changing any state (used before asking for a new one).
 Result verify_pin(const Pin& pin, Progress progress = nullptr, void* context = nullptr);
 Result change_pin(const Pin& old_pin, const Pin& new_pin, Method new_method = Method::Buttons, Progress progress = nullptr, void* context = nullptr);
@@ -95,22 +108,34 @@ bool file_key(uint8_t out[32]);
 // Size of a sealed file holding `plain` bytes, and the inverse (-1 for impossible sizes).
 int64_t sealed_size(int64_t plain);
 int64_t plain_size_from_sealed(int64_t sealed);
-// True when the file starts with the vault magic.
+// True when the file starts with the vault magic (sealed with either key).
 bool is_sealed(const std::string& path);
+// True only for files sealed with the vault's own key (not console-key caches).
+bool is_vault_sealed(const std::string& path);
 // Plaintext size of a file whether sealed or not (-1 when missing).
 int64_t plain_size(const std::string& path);
 
-// Reads plain files and sealed ones alike. Sealed files need an unlocked vault.
+// What a reader accepts. `Vault`: only files sealed with the vault's own key - for application state
+// (settings, caches) that must not be replaced by plain or console-key files while the vault is on.
+enum class Require { Any, Vault };
+// With the vault on (and not being switched off), settings.json must be sealed with the vault key.
+bool settings_must_be_sealed();
+// Same for the caches, which the migration converts: only once no migration is pending.
+bool caches_must_be_sealed();
+
+// Reads plain files and sealed ones alike (Require::Any). Sealed files need an unlocked vault.
 class Reader {
 public:
     Reader() = default;
     ~Reader() { close(); }
     Reader(const Reader&) = delete;
     Reader& operator=(const Reader&) = delete;
-    bool open(const std::string& path);
+    bool open(const std::string& path, Require require = Require::Any);
     void close();
     bool is_open() const { return fd_ >= 0; }
     bool sealed() const { return sealed_; }
+    // Sealed with the console key (a cache written while the vault was off).
+    bool console_sealed() const { return console_; }
     int64_t size() const { return size_; }
     int64_t tell() const { return pos_; }
     // Diagnostics: ciphertext bytes read and microseconds spent reading + decrypting them.
@@ -125,7 +150,7 @@ private:
     bool load_chunk(int64_t index);
     bool read_at(int64_t offset, void* buffer, size_t length);
     int fd_ = -1;
-    bool sealed_ = false;
+    bool sealed_ = false, console_ = false;
     int64_t size_ = 0, pos_ = 0, file_size_ = 0, chunk_index_ = -1, chunk_length_ = 0, file_at_ = -1;
     int64_t raw_first_ = -1, raw_chunks_ = 0;
     int64_t stat_bytes_ = 0, stat_micros_ = 0, stat_io_micros_ = 0;
@@ -137,7 +162,7 @@ private:
 
 // Reads a whole file (at most `max_bytes`) through Reader. False when missing, too large or corrupt.
 bool read_file(const std::string& path, size_t max_bytes, std::string& out,
-               bool (*proceed)(void*) = nullptr, void* context = nullptr);
+               bool (*proceed)(void*) = nullptr, void* context = nullptr, Require require = Require::Any);
 
 // Writes plain or sealed data. close() must succeed for the data to count.
 class Writer {
@@ -146,10 +171,13 @@ public:
     ~Writer() { abort(); }
     Writer(const Writer&) = delete;
     Writer& operator=(const Writer&) = delete;
-    // seal defaults to sealing(): new files are sealed whenever the vault is on.
-    bool open(const std::string& path, bool seal);
+    // seal defaults to sealing(): new files are sealed whenever the vault is on. console_key seals
+    // with the console-bound key instead (caches while the vault is off).
+    bool open(const std::string& path, bool seal, bool console_key = false);
     // A locked vault refuses to write at all rather than fall back to plain text.
     bool open(const std::string& path) { return (!enabled() || unlocked()) && open(path, sealing()); }
+    // Caches: the vault key when the vault is on, otherwise the console key (plain without a console id).
+    bool open_cache(const std::string& path);
     bool write(const void* data, size_t length);
     bool close();
     void abort();

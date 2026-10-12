@@ -3,22 +3,35 @@ build/
 build-*/
 build-modern/
 install/
-external/tdlib-vita/
-external/ffmpeg-animation/install/
-external/ffmpeg-vita/
+external/ffmpeg-vita71/
+external/ffmpeg-native/
+external/ffmpeg-src/
+external/openssl-vita/
 external/rlottie-vita/install/
 external/font-tools-venv/
 /assets/NotoColorEmoji_b-64.ttf
 /assets/NotoSansJP-JIS.otf
 CMakeFiles/
+/CMakeCache.txt
+/Makefile
+/cmake_install.cmake
+/compile_commands.json
+/tdlib/
 recovery/
 
 # test metrics
 docs/
 !docs/controls-analysis.md
+# tests/ also collects local media, logs and crash dumps: only test sources and fixtures are tracked.
 tests/*
-!tests/video_note_capture_buffer_test.cpp
-!tests/text_font_test.cpp
+!tests/*.cpp
+!tests/*.h
+!tests/*.sh
+!tests/README.md
+!tests/AnimatedSticker.tgs
+!tests/fixtures/
+!tests/stubs/
+!tests/photo-stubs/
 !tests/font-stubs/
 tests/font-stubs/*
 !tests/font-stubs/vita2d.h
@@ -32,6 +45,9 @@ tests/font-stubs/*
 *.so
 *.dll
 *.dylib
+*.o
+*.obj
+*.psp2dmp
 
 # secrets and local config
 /src/config.local.h
@@ -48,3 +64,11 @@ tests/font-stubs/*
 .DS_Store
 /assets/cacert.pem
 /release/
+
+# download metadata and incomplete dependency downloads
+*:Zone.Identifier
+/assets/*.download.*
+
+# Python bytecode caches
+__pycache__/
+*.pyc

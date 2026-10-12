@@ -209,5 +209,18 @@ int main(int argc, char** argv) {
     assert(std::string(buffer).find("frame_us n=1") != std::string::npos);
     assert(!flush((path+"/missing").c_str(), previous.c_str(), "test", 3000));
     assert(!collector().take(4000).get(Metric::Frame).count);
+    // Over budget only replaceable values are shed (F07); persistent state is never classified so.
+    assert(td_event_is_ephemeral(R"({"@type":"updateUserStatus","user_id":1,"status":{}})"));
+    assert(td_event_is_ephemeral(R"({"@type":"updateChatAction","chat_id":1})"));
+    assert(td_event_is_ephemeral(R"({"@type":"updateChatOnlineMemberCount","chat_id":1,"online_member_count":3})"));
+    assert(!td_event_is_ephemeral(R"({"@type":"updateChatActionBar","chat_id":1})"));
+    assert(!td_event_is_ephemeral(R"({"@type":"updateNewMessage","message":{}})"));
+    assert(!td_event_is_ephemeral(R"({"@type":"updateFile","file":{}})"));
+    assert(!td_event_is_ephemeral(R"({"@type":"updateUserStatusX"})") && !td_event_is_ephemeral(""));
+    // Hard limit with hysteresis: pause above it, resume only under the high-water mark (F07).
+    assert(!td_queue_paused(false, kTdQueueHardBytes, kTdQueueHardEvents));
+    assert(td_queue_paused(false, kTdQueueHardBytes + 1, 0) && td_queue_paused(false, 0, kTdQueueHardEvents + 1));
+    assert(td_queue_paused(true, kTdQueueHighWaterBytes + 1, 0) && td_queue_paused(true, 0, kTdQueueHighWaterEvents + 1));
+    assert(!td_queue_paused(true, kTdQueueHighWaterBytes, kTdQueueHighWaterEvents));
     std::puts("Performance tests passed");
 }

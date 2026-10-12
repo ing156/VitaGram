@@ -112,7 +112,10 @@ int main() {
     assert(h && json_array_size(json_object_get(h, "messages")) == 2 && !json_object_get(h, "pad"));
     json_t* m0 = json_array_get(json_object_get(h, "messages"), 0);
     assert(json_integer_value(json_object_get(m0, "id")) == 11 && json_integer_value(json_object_get(m0, "chat_id")) == -100);
-    assert(!json_object_get(m0, "can_be_edited") && !json_object_get(m0, "reply_to") && !json_object_get(m0, "forward_info"));
+    // Unread members go; reply_to and forward_info stay - parseMessage reads them for reply quotes,
+    // "forwarded" headers and comment threads.
+    assert(!json_object_get(m0, "can_be_edited") && !json_object_get(m0, "can_be_forwarded"));
+    assert(json_object_get(m0, "reply_to") && json_is_object(json_object_get(m0, "forward_info")));
     json_t* c0 = json_object_get(m0, "content");
     assert(!json_object_get(c0, "link_preview") && !json_object_get(json_object_get(c0, "photo"), "minithumbnail"));
     assert(json_array_size(json_object_get(json_object_get(c0, "photo"), "sizes")) == 1 && json_object_get(c0, "caption"));

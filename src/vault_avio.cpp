@@ -1,3 +1,4 @@
+#include "diag_log.h"
 #include "vault_avio.h"
 #include "cpu_scheduler.h"
 #include <cstdio>
@@ -60,7 +61,7 @@ void VaultAvio::release() {
         // One line per playback: card + decryption cost, so slow playback can be told apart from
         // a slow card (card wait) or slow decryption (decrypt). With read-ahead these run on the
         // helper thread, so the numbers are not time the decoder waited.
-        if (FILE* log = std::fopen("ux0:data/vitagram/vault-playback.log", "a")) {
+        if (FILE* log = diag_log::open(diag_log::Kind::Vault, "ux0:data/vitagram/vault-playback.log", "a")) {
             double seconds = stats.micros / 1e6;
             std::fprintf(log, "read=%lld KiB in %.2f s (%.1f MiB/s), card wait %.2f s, decrypt %.2f s%s\n",
                          (long long)(stats.bytes / 1024), seconds, seconds > 0 ? stats.bytes / 1048576.0 / seconds : 0.0,

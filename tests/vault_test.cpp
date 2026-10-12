@@ -1,4 +1,5 @@
 #include "vault.h"
+#include "portrait_video_cache.h"
 #include <jansson.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -56,6 +57,25 @@ int main() {
     assert(enable(Pin{0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1}) == Result::TooShort);
     assert(!pin_acceptable(Pin{0, 1, 2, 3, 4, 5, 6, 9}));
     assert(enable(pin) == Result::Ok && unlocked() && sealing() && enabled());
+    // The converted-video cache survives relocation and encryption migration.
+    {
+        const std::string path=dir+"/portrait-source", moved=dir+"/portrait-moved";
+        spit(path,random_data(150000,91));
+        auto key_for=[](const std::string& p) {
+            Reader reader; uint64_t key=0;
+            assert(reader.open(p) && portrait_video_cache::key(reader,key));
+            return key;
+        };
+        const auto plain_key=key_for(path);
+        assert(seal_file(path)==Convert::Done && key_for(path)==plain_key);
+        assert(std::rename(path.c_str(),moved.c_str())==0 && key_for(moved)==plain_key);
+        assert(unseal_file(moved)==Convert::Done && key_for(moved)==plain_key);
+        assert(seal_file(moved)==Convert::Done && key_for(moved)==plain_key);
+        auto damaged=slurp(moved); damaged.back()^=1; spit(moved,damaged);
+        Reader reader; uint64_t key=0;
+        assert(reader.open(moved) && !portrait_video_cache::key(reader,key));
+        std::remove(moved.c_str());
+    }
     // Turning the vault on re-seals console-key caches under the vault key.
     assert(seal_file(dir + "/cache.json") == Convert::Done && is_vault_sealed(dir + "/cache.json"));
     assert(seal_file(dir + "/cache.json") == Convert::Unchanged);
