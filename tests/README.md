@@ -173,3 +173,36 @@ It does not validate Vita GPU output.
 0° and ±90°, debounce, flat/touch behavior, manual L/R rotation including 180°,
 disabled sampling, sampling failure, and reopening the viewer. Vita motion and GPU
 calls are stubbed; physical orientation and themed button rendering require a device.
+
+`bash tests/run-audio-recording-dialog-tests.sh` checks preview/record/encode/review
+states, explicit send, cancellation, microphone-level bounds, repeat playback and
+ownership of the prepared voice-message file. Shortcut settings save/load are
+covered by the vault-sweep tests.
+
+`bash tests/run-spoiler-tests.sh` checks reveal reset on chat/topic/discussion exit,
+app resume, selected reset events and cache invalidation signals. The vault-sweep
+tests also check spoiler preference save/load, defaults and invalid value types.
+
+Transfer tests also check video spoiler metadata, separate thumbnail download before consent, full alternative-video download after consent and cancellation when consent resets. Animated spoiler dust requires visual verification on Vita.
+
+
+`bash tests/run-font-tests.sh` also runs the actual language-font loader with
+real Korean/Chinese FreeType faces and host texture/scheduler stubs. A blocked
+worker exercises stale completion, latest-selection handling, cancellation to
+the default font, cached face/atlas reuse, missing/corrupt assets and shutdown
+with an outstanding read. The previous active face and revision must remain
+unchanged until commit. Host libwebp.so.7 and WebP headers are required as well.
+Check rapid language switching and immediate All chats/Archive translation on Vita.
+
+
+Language regressions: `run-i18n-tests.sh` checks retained nested/combined text,
+raw-string preservation, recipe reset, a worker rendering during a catalog
+commit, and every network state in every shipped language without another
+hardware poll. `run-transfer-tests.sh` applies all locales to an existing
+TelegramClient, checking authorization/status, folders, sticker sections,
+custom reaction IDs, polls, documents, media captions, service messages and
+reply previews without another TDLib event or outgoing request. Proxy/QR and
+video tests also check retained scanner failures and recorder status across
+language changes. Rapid switching and glyph appearance still need Vita testing.
+
+Transfer tests cover cached deletion permission reads beyond the refresh interval, preserving rights during refresh, deletion without a second properties request, permission denial and waiting for all loaded album members.

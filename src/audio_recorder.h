@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <atomic>
 #include <cstdint>
 #include <pthread.h>
@@ -19,15 +20,15 @@ public:
     int conversionPercent() const { return conversion_percent_.load(); }
     int level() const { return level_.load(); }
     int peak() const { return peak_.load(); }
-    std::string status() const;
-    void setStatus(const std::string& status);
+    i18n::Text status() const;
+    void setStatus(const i18n::Text& status);
 
 private:
     static void* entry(void* self);
     static void* encodeEntry(void* self);
     void run();
     void runEncode();
-    bool encodeOggOpus(std::string& error);
+    bool encodeOggOpus(i18n::Text& error);
 
     pthread_t thread_{};
     pthread_t encode_thread_{};
@@ -41,7 +42,7 @@ private:
     std::string path_;
     std::string pcm_path_;
     std::string completed_path_;
-    std::string status_;
+    i18n::Text status_;
     std::atomic<uint32_t> data_bytes_{0};
     std::atomic<bool> capture_failed_{false};
     std::atomic<bool> cancel_encode_{false};

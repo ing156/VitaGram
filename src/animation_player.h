@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -15,20 +16,23 @@ class AnimationPlayer {
 public:
     ~AnimationPlayer();
     void setSource(const std::string& path, bool video = false, bool round = false,
-                   bool prepare = false, bool cache_only = false); // UI, outside drawing
+                   bool prepare = false, bool cache_only = false,
+                   download_stream::Shared stream = nullptr); // UI, outside drawing
     bool preparationChecked() const { return preparation_checked_.load(); }
     bool preparationRequired() const { return preparation_required_.load(); }
     void toggle(); // Video play/pause/replay; GIFs keep looping automatically.
     int seconds() const { return position_us_.load() / 1000000; }
     int64_t positionUs() const { return position_us_.load(); }
     bool playing() const { return video_ && !paused_ && !finished_; }
+    bool readyForPlayback() const { return playback_ready_.load(); }
+    bool failedToOpen() const { return finished_ && !playback_ready_; }
     // Video only, file already local, not a prepared portrait copy.
-    bool canSeek() const { return video_ && started_ && !source_.empty() && !prepare_; }
+    bool canSeek() const { return video_ && playback_ready_ && started_ && !source_.empty() && !prepare_ && (!stream_ || stream_->snapshot().complete); }
     // Restarts the decoder at `us` (like a replay that starts later); play/pause state is kept.
     void seekTo(int64_t us);
     void upload();                         // UI, outside drawing
     vita2d_texture* texture() { return yuv_valid_ ? &yuv_texture_ : texture_; }
-    std::string status();
+    i18n::Text status();
     void shutdown();
 private:
     pthread_t thread_{};
@@ -37,12 +41,15 @@ private:
     std::atomic<bool> preparation_required_{false}, preparation_checked_{true};
     VoicePlayer audio_;
     std::atomic<bool> paused_{false}, finished_{false};
+    std::atomic<bool> playback_ready_{false};
     std::atomic<int64_t> position_us_{0};
     std::atomic<int64_t> start_us_{0};   // decode start of the current generation
     std::atomic<bool> stopping_{false};
     std::atomic<unsigned> generation_{0};
     pthread_mutex_t mutex_ = PTHREAD_MUTEX_INITIALIZER;
-    std::string source_, status_;
+    std::string source_;
+    i18n::Text status_;
+    download_stream::Shared stream_;
     std::vector<unsigned char> pixels_;
     int width_ = 0, height_ = 0;
     bool ready_ = false;
@@ -72,9 +79,10 @@ private:
     static void* entry(void* self);
     static int interrupted(void* job);
     void run();
-    void decode(const std::string& path, unsigned generation, bool video, bool round, bool prepare, bool cache_only);
+    void decode(const std::string& path, unsigned generation, bool video, bool round, bool prepare, bool cache_only,
+                download_stream::Shared stream);
     void decodeTgs(const std::string& path, unsigned generation);
-    void setStatus(unsigned generation, const std::string& text);
+    void setStatus(unsigned generation, const i18n::Text& text);
     void releaseYuvTexture();
     static int directBuffer(AVCodecContext* codec, AVFrame* frame, int flags);
     static void releaseDirectBuffer(void* opaque, uint8_t* data);

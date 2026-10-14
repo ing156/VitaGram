@@ -19,12 +19,12 @@ void DownloadFolderPicker::reload() {
     if (path.empty()) {
         for (const char* root : {"ux0:", "uma0:", "imc0:", "ur0:", "grw0:"})
             if (exists(root)) folders.emplace_back(root);
-        if (folders.empty()) error = tr("picker.no_drives");
+        if (folders.empty()) error = i18n::text("picker.no_drives");
         return;
     }
     std::string directory = path.back() == ':' ? path + "/" : path;
     SceUID dir = sceIoDopen(directory.c_str());
-    if (dir < 0) { error = tr("picker.open_failed"); return; }
+    if (dir < 0) { error = i18n::text("picker.open_failed"); return; }
     SceIoDirent entry{};
     while (sceIoDread(dir, &entry) > 0) {
         std::string name(entry.d_name);
@@ -50,13 +50,13 @@ void DownloadFolderPicker::up() {
 bool DownloadFolderPicker::create(const std::string& name) {
     if (path.empty() || name.empty() || name == "." || name == ".." || name.size() > 180 ||
         name.find_first_of("/\\:*?\"<>|") != std::string::npos) {
-        error = tr("picker.invalid_name");
+        error = i18n::text("picker.invalid_name");
         return false;
     }
-    for (unsigned char c : name) if (c < 32) { error = tr("picker.invalid_name"); return false; }
+    for (unsigned char c : name) if (c < 32) { error = i18n::text("picker.invalid_name"); return false; }
     std::string target = path + (path.back() == ':' ? "" : "/") + name;
     if (sceIoMkdir(target.c_str(), 0777) < 0) {
-        error = tr("picker.create_failed");
+        error = i18n::text("picker.create_failed");
         return false;
     }
     path = target;

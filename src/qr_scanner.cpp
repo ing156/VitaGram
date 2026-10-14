@@ -18,11 +18,11 @@ constexpr int Device = SCE_CAMERA_DEVICE_BACK;
 QrScanner::QrScanner() { pthread_mutex_init(&mutex_, nullptr); }
 QrScanner::~QrScanner() { stop(); pthread_mutex_destroy(&mutex_); }
 
-bool QrScanner::fail(const std::string& operation, int code) {
+bool QrScanner::fail(const i18n::Text& operation, int code) {
     char message[160];
-    std::snprintf(message, sizeof(message), "%s: 0x%08X", operation.c_str(), (unsigned)code);
+    std::snprintf(message, sizeof(message), ": 0x%08X", (unsigned)code);
     stop();
-    pthread_mutex_lock(&mutex_); status_ = message; pthread_mutex_unlock(&mutex_);
+    pthread_mutex_lock(&mutex_); status_ = operation + message; pthread_mutex_unlock(&mutex_);
     return false;
 }
 
@@ -30,17 +30,17 @@ bool QrScanner::start() {
     stop();
     stopping_ = false;
     link_.clear(); preview_ready_ = false;
-    status_ = tr("qr.hint");
+    status_ = i18n::text("qr.hint");
     decoder_ = quirc_new();
     if (!decoder_ || quirc_resize(decoder_, Width, Height) < 0)
-        return fail(tr("qr.err.memory"), -1);
+        return fail(i18n::text("qr.err.memory"), -1);
     // Camera DMA needs physically contiguous, uncached memory, aligned to 1 MiB.
     memory_ = sceKernelAllocMemBlock("VitaGramCamera", SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW,
                                      1024 * 1024, nullptr);
-    if (memory_ < 0) return fail(tr("cam.memory"), memory_);
+    if (memory_ < 0) return fail(i18n::text("cam.memory"), memory_);
     void* buffer = nullptr;
     int rc = sceKernelGetMemBlockBase(memory_, &buffer);
-    if (rc < 0) return fail(tr("cam.buffer"), rc);
+    if (rc < 0) return fail(i18n::text("cam.buffer"), rc);
     camera_buffer_ = static_cast<unsigned char*>(buffer);
     SceCameraInfo info{};
     info.size = sizeof(info);
@@ -55,14 +55,14 @@ bool QrScanner::start() {
     info.pUBase = camera_buffer_ + info.sizeIBase;
     info.pVBase = camera_buffer_ + info.sizeIBase + info.sizeUBase;
     rc = sceCameraOpen(Device, &info);
-    if (rc < 0) return fail(tr("qr.err.open_rear"), rc);
+    if (rc < 0) return fail(i18n::text("qr.err.open_rear"), rc);
     camera_open_ = true;
     rc = sceCameraStart(Device);
-    if (rc < 0) return fail(tr("cam.start_failed"), rc);
+    if (rc < 0) return fail(i18n::text("cam.start_failed"), rc);
     camera_started_ = true;
     vita2d_wait_rendering_done();
     texture_ = vita2d_create_empty_texture(PreviewWidth, PreviewHeight);
-    if (!texture_) return fail(tr("qr.err.preview_memory"), -1);
+    if (!texture_) return fail(i18n::text("qr.err.preview_memory"), -1);
     std::memset(vita2d_texture_get_datap(texture_), 0, vita2d_texture_get_stride(texture_) * PreviewHeight);
     preview_pixels_.resize(PreviewWidth * PreviewHeight);
     pthread_attr_t attr;
@@ -70,7 +70,7 @@ bool QrScanner::start() {
     pthread_attr_setstacksize(&attr, 512 * 1024);
     rc = pthread_create(&thread_, &attr, entry, this);
     pthread_attr_destroy(&attr);
-    if (rc) return fail(tr("qr.err.start"), rc);
+    if (rc) return fail(i18n::text("qr.err.start"), rc);
     thread_started_ = started_ = true;
     return true;
 }
@@ -118,11 +118,11 @@ void QrScanner::run() {
                 if (error == QUIRC_ERROR_DATA_ECC) { quirc_flip(&code); error = quirc_decode(&code, &data); }
                 if (error != QUIRC_SUCCESS) continue;
                 std::string payload(reinterpret_cast<char*>(data.payload), data.payload_len);
-                ProxyLink proxy; std::string message;
+                ProxyLink proxy; i18n::Text message;
                 auto parsed = parse_proxy_link(payload, proxy, message);
                 pthread_mutex_lock(&mutex_);
                 if (parsed == ProxyLinkResult::Valid) link_ = payload;
-                else status_ = parsed == ProxyLinkResult::Invalid ? message : tr("qr.no_link");
+                else status_ = parsed == ProxyLinkResult::Invalid ? message : i18n::text("qr.no_link");
                 pthread_mutex_unlock(&mutex_);
                 if (parsed == ProxyLinkResult::Valid) return;
             }
@@ -130,7 +130,7 @@ void QrScanner::run() {
                    rc != (int)SCE_CAMERA_ERROR_TIMEOUT) {
             char message[120];
             std::snprintf(message, sizeof(message), "0x%08X", (unsigned)rc);
-            std::string text = tr("qr.err.camera_read", {message});
+            i18n::Text text = i18n::text("qr.err.camera_read", {message});
             pthread_mutex_lock(&mutex_); status_ = text; pthread_mutex_unlock(&mutex_);
         }
         // Decode at most five VGA frames per second, leaving UI/TDLib responsive.
@@ -155,7 +155,8 @@ std::string QrScanner::takeLink() {
     pthread_mutex_lock(&mutex_); std::string result; result.swap(link_); pthread_mutex_unlock(&mutex_);
     return result;
 }
-std::string QrScanner::status() {
-    pthread_mutex_lock(&mutex_); std::string result = status_; pthread_mutex_unlock(&mutex_);
+i18n::Text QrScanner::status() {
+    pthread_mutex_lock(&mutex_); i18n::Text result = status_;
+    result.refresh(); pthread_mutex_unlock(&mutex_);
     return result;
 }

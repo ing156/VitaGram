@@ -46,6 +46,26 @@
       "date": "#D6EBFC",
       "progress": "#C1D4E8",
       "green": "#12BB72"
+    },
+    "vhbb": {
+      "background": "#12246B",
+      "header_top": "#427ECA",
+      "header_bottom": "#183373",
+      "surface": "#343C79",
+      "surface_secondary": "#173759",
+      "hover": "#1A4776",
+      "menu": "#25282D",
+      "selected": "#117BDD",
+      "accent": "#149AFF",
+      "focus": "#36BAFF",
+      "text": "#F2F7FF",
+      "muted": "#C2CFED",
+      "divider": "#294768",
+      "border": "#829DCE",
+      "shadow": "#000B1C",
+      "date": "#0E3C72",
+      "progress": "#24496E",
+      "green": "#23DB80"
     }
   },
   "nine_slice": {
@@ -656,6 +676,310 @@
       "theme": "light",
       "name": "scroll_thumb",
       "transparent": true
+    },
+    "themes/vhbb/9slice/panel.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 10,
+      "theme": "vhbb",
+      "name": "panel",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/row.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "row",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/row_focused.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "row_focused",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/tab_normal.png": {
+      "size": [
+        48,
+        40
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "tab_normal",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/tab_active.png": {
+      "size": [
+        48,
+        40
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "tab_active",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/menu.png": {
+      "size": [
+        64,
+        64
+      ],
+      "insets": [
+        20,
+        20,
+        20,
+        20
+      ],
+      "radius": 12,
+      "theme": "vhbb",
+      "name": "menu",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/menu_item_focus.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 7,
+      "theme": "vhbb",
+      "name": "menu_item_focus",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/date_chip.png": {
+      "size": [
+        44,
+        28
+      ],
+      "insets": [
+        14,
+        10,
+        14,
+        10
+      ],
+      "radius": 12,
+      "theme": "vhbb",
+      "name": "date_chip",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/file_tile.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "file_tile",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/tooltip.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "tooltip",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/toast.png": {
+      "size": [
+        56,
+        56
+      ],
+      "insets": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "radius": 10,
+      "theme": "vhbb",
+      "name": "toast",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/media_frame.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 9,
+      "theme": "vhbb",
+      "name": "media_frame",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/focus_ring.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "focus_ring",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/badge.png": {
+      "size": [
+        40,
+        28
+      ],
+      "insets": [
+        12,
+        10,
+        12,
+        10
+      ],
+      "radius": 11,
+      "theme": "vhbb",
+      "name": "badge",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/dialog.png": {
+      "size": [
+        64,
+        64
+      ],
+      "insets": [
+        20,
+        20,
+        20,
+        20
+      ],
+      "radius": 12,
+      "theme": "vhbb",
+      "name": "dialog",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/input.png": {
+      "size": [
+        48,
+        48
+      ],
+      "insets": [
+        12,
+        12,
+        12,
+        12
+      ],
+      "radius": 8,
+      "theme": "vhbb",
+      "name": "input",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/progress_track.png": {
+      "size": [
+        28,
+        14
+      ],
+      "insets": [
+        8,
+        5,
+        8,
+        5
+      ],
+      "radius": 5,
+      "theme": "vhbb",
+      "name": "progress_track",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/progress_fill.png": {
+      "size": [
+        28,
+        14
+      ],
+      "insets": [
+        8,
+        5,
+        8,
+        5
+      ],
+      "radius": 5,
+      "theme": "vhbb",
+      "name": "progress_fill",
+      "transparent": true
+    },
+    "themes/vhbb/9slice/scroll_thumb.png": {
+      "size": [
+        16,
+        28
+      ],
+      "insets": [
+        5,
+        8,
+        5,
+        8
+      ],
+      "radius": 5,
+      "theme": "vhbb",
+      "name": "scroll_thumb",
+      "transparent": true
     }
   },
   "textures": {
@@ -758,13 +1082,43 @@
       ],
       "theme": "light",
       "role": "optional overlay for row focus"
+    },
+    "themes/vhbb/fixed/background_960x544.png": {
+      "role": "VHBB-style wallpaper, no branding",
+      "size": [
+        960,
+        544
+      ],
+      "theme": "vhbb"
+    },
+    "themes/vhbb/fixed/background_alt_960x544.png": {
+      "role": "VHBB-style wallpaper, no branding",
+      "size": [
+        960,
+        544
+      ],
+      "theme": "vhbb"
+    },
+    "themes/vhbb/fixed/header_960x40.png": {
+      "size": [
+        960,
+        40
+      ],
+      "theme": "vhbb"
+    },
+    "themes/vhbb/fixed/active_indicator_128x4.png": {
+      "size": [
+        128,
+        4
+      ],
+      "theme": "vhbb"
     }
   },
   "sprite_atlases": {
     "themes/dark/ui_icons_atlas.png": {
       "size": [
         512,
-        320
+        384
       ],
       "cell": [
         64,
@@ -1008,6 +1362,30 @@
         "battery_charging": {
           "x": 464,
           "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "trash": {
+          "x": 16,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "leave": {
+          "x": 80,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "reply": {
+          "x": 144,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "clear-history": {
+          "x": 208,
+          "y": 336,
           "w": 32,
           "h": 32
         }
@@ -1018,7 +1396,7 @@
     "themes/light/ui_icons_atlas.png": {
       "size": [
         512,
-        320
+        384
       ],
       "cell": [
         64,
@@ -1262,6 +1640,30 @@
         "battery_charging": {
           "x": 464,
           "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "trash": {
+          "x": 16,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "leave": {
+          "x": 80,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "reply": {
+          "x": 144,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "clear-history": {
+          "x": 208,
+          "y": 336,
           "w": 32,
           "h": 32
         }
@@ -1404,6 +1806,352 @@
       },
       "theme": "light",
       "note": "48x48 RGBA glyphs; button mapping is presentation only, not input handling"
+    },
+    "themes/vhbb/ui_icons_atlas.png": {
+      "size": [
+        512,
+        384
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "sprites": {
+        "play": {
+          "x": 16,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "pause": {
+          "x": 80,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "back": {
+          "x": 144,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "next": {
+          "x": 208,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "refresh": {
+          "x": 272,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "attach": {
+          "x": 336,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "file": {
+          "x": 400,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "image": {
+          "x": 464,
+          "y": 16,
+          "w": 32,
+          "h": 32
+        },
+        "video": {
+          "x": 16,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "download": {
+          "x": 80,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "send": {
+          "x": 144,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "search": {
+          "x": 208,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "folder": {
+          "x": 272,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "chat": {
+          "x": 336,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "mic": {
+          "x": 400,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "heart": {
+          "x": 464,
+          "y": 80,
+          "w": 32,
+          "h": 32
+        },
+        "forward": {
+          "x": 16,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "fullscreen": {
+          "x": 80,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "collapse": {
+          "x": 144,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "more": {
+          "x": 208,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "sticker": {
+          "x": 272,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "warning": {
+          "x": 336,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "info": {
+          "x": 400,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "list": {
+          "x": 464,
+          "y": 144,
+          "w": 32,
+          "h": 32
+        },
+        "edit": {
+          "x": 16,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "check": {
+          "x": 80,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "menu": {
+          "x": 144,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "close": {
+          "x": 208,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "volume": {
+          "x": 272,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "calendar": {
+          "x": 336,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "wifi": {
+          "x": 400,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "settings": {
+          "x": 464,
+          "y": 208,
+          "w": 32,
+          "h": 32
+        },
+        "arrow-up": {
+          "x": 16,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "arrow-down": {
+          "x": 80,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_0": {
+          "x": 144,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_25": {
+          "x": 208,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_50": {
+          "x": 272,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_75": {
+          "x": 336,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_100": {
+          "x": 400,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "battery_charging": {
+          "x": 464,
+          "y": 272,
+          "w": 32,
+          "h": 32
+        },
+        "trash": {
+          "x": 16,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "leave": {
+          "x": 80,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "reply": {
+          "x": 144,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        },
+        "clear-history": {
+          "x": 208,
+          "y": 336,
+          "w": 32,
+          "h": 32
+        }
+      },
+      "theme": "vhbb",
+      "note": "40 32x32 glyphs; original 34 sprites retain their coordinates; battery status fills remaining six unused atlas cells."
+    },
+    "themes/vhbb/ps_buttons_atlas.png": {
+      "size": [
+        512,
+        128
+      ],
+      "cell": [
+        64,
+        64
+      ],
+      "sprites": {
+        "cross": {
+          "x": 8,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "circle": {
+          "x": 72,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "square": {
+          "x": 136,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "triangle": {
+          "x": 200,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "dpad": {
+          "x": 264,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "L": {
+          "x": 328,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "R": {
+          "x": 392,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "START": {
+          "x": 456,
+          "y": 8,
+          "w": 48,
+          "h": 48
+        },
+        "SELECT": {
+          "x": 8,
+          "y": 72,
+          "w": 48,
+          "h": 48
+        }
+      },
+      "theme": "vhbb",
+      "note": "48x48 RGBA glyphs; button mapping is presentation only, not input handling"
     }
   },
   "notes": [
@@ -1442,5 +2190,15 @@
       }
     },
     "note": "Visual-only: obtain actual battery percentage and charging state from the application/system. Do not use these icon names as fixed percentages in the UI."
+  },
+  "theme_sources": {
+    "vhbb": {
+      "project": "Vita Homebrew Browser",
+      "author": "devnoname120 and VHBB contributors",
+      "url": "https://github.com/devnoname120/vhbb",
+      "license": "CC BY-NC-SA 4.0",
+      "notice": "themes/vhbb/NOTICE.txt",
+      "changes": "Panels and header adapted to 9-slice; new unbranded wallpaper; VitaGram icons and fonts."
+    }
   }
 }

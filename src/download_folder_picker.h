@@ -1,11 +1,12 @@
 #pragma once
+#include "i18n.h"
 #include <string>
 #include <vector>
 
 class DownloadFolderPicker {
 public:
     bool active = false;
-    std::string path, error;
+    std::string path; i18n::Text error;
     std::vector<std::string> folders;
     int selected = 0;
 

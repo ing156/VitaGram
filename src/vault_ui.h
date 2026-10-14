@@ -9,6 +9,7 @@ namespace vault_ui {
 struct Env {
     vita2d_pgf* font;
     bool dark;
+    int theme = -1; // Default keeps existing callers compatible; main passes the saved theme ID.
 };
 
 // Launch gate: asks once whether to encrypt, unlocks an existing vault. Returns when the app may
@@ -26,4 +27,10 @@ Outcome change_flow(const Env& env);   // current key, new key twice
 // Lists how many files are sealed, seals the plain ones on request, verifies sealed files and can
 // delete damaged ones. Safe while TDLib runs: recently changed files (maybe downloading) are skipped.
 Outcome check_flow(const Env& env);
+
+// Lock while the app runs (auto-lock after inactivity, sleep or the PS button): asks for the key until
+// it verifies. Nothing is closed or wiped - TDLib, downloads and the cache keep working - and there is
+// no "forgot the key" path. `tick` runs once per drawn frame (not while the key is being derived) so
+// the caller can keep pumping its event queues.
+void relock(const Env& env, void (*tick)(void*), void* context);
 }

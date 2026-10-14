@@ -60,7 +60,8 @@ int main(int argc,char** argv) {
         while ((rc=avcodec_receive_frame(decoders[index],frame))>=0) {
             if (index==video) {
                 ++pictures;
-                assert(frame->data[0][0]<35 && frame->data[0][120*frame->linesize[0]+120]>70);
+                const int center=frame->data[0][120*frame->linesize[0]+120];
+                assert(center>70 && std::abs(int(frame->data[0][0])-center)<5);
             } else {
                 audio_samples+=frame->nb_samples;
                 assert(frame->format==AV_SAMPLE_FMT_FLTP);

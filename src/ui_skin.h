@@ -9,7 +9,7 @@ namespace ui_skin {
 enum class Slice { Panel, Row, RowFocused, TabNormal, TabActive, Menu, MenuItemFocus, DateChip,
                    MediaFrame, FocusRing, ProgressTrack, ProgressFill, ScrollThumb, Dialog, Count };
 enum class Image { Background, Header, ActiveIndicator, Count };
-enum class Icon { File, Back, Next, Play, Pause, Search, Check, Close, Count };
+enum class Icon { File, Back, Next, Play, Pause, Search, Check, Close, Download, Send, Trash, Leave, Reply, Forward, ClearHistory, Count };
 
 // Region of an atlas sprite plus the bounds of its visible (non-transparent) pixels.
 struct Sprite {
@@ -20,7 +20,8 @@ struct Sprite {
 
 // Loads the textures of one theme, releasing the previous theme first. UI thread, outside a frame.
 // Returns true when the manifest was read; individual missing files only disable their own element.
-bool load(bool dark);
+// Theme IDs: 0 = light, 1 = dark, 2 = VHBB.
+bool load(int theme);
 void unload();
 // True when the last load() left the manifest, wallpaper or header missing and a retry is due.
 bool needs_retry();

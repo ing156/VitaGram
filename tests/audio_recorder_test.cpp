@@ -39,6 +39,9 @@ int main() {
         AudioRecorder r;
         fail_open=true; assert(r.start("failed.ogg")); waitFor([&]{return !r.recording();});
         assert(r.status()=="Микрофон недоступен");
+        assert(i18n::select("en"));
+        assert(r.status() == tr("rec.mic_unavailable"));
+        assert(i18n::select("ru"));
         fail_open=false; blocks=0; assert(r.start("voice.ogg"));
         waitFor([&]{return blocks>=40;}); r.stop();
         assert(!r.start("overwrite.ogg"));

@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <atomic>
 #include <cstdint>
 #include <pthread.h>
@@ -26,7 +27,7 @@ public:
     int percent() const { return progress_.load(); }
     int level() const { return level_.load(); }
     bool rearCamera() const { return device_.load() == 1; }
-    std::string status() const;
+    i18n::Text status() const;
     const std::string& path() const { return path_; }
     void upload();
     vita2d_texture* preview() const { return texture_; }
@@ -39,8 +40,8 @@ private:
     void writeCapture();
     bool openCamera(int device);
     void closeCamera();
-    void setStatus(const std::string& value);
-    void fail(const std::string& value);
+    void setStatus(const i18n::Text& value);
+    void fail(const i18n::Text& value);
     pthread_t thread_{}, audio_thread_{}, writer_thread_{};
     bool thread_started_ = false, audio_started_ = false, writer_started_ = false;
     std::unique_ptr<video_note::CaptureBuffer> capture_;
@@ -57,5 +58,6 @@ private:
     mutable pthread_mutex_t mutex_ = PTHREAD_MUTEX_INITIALIZER;
     std::vector<uint32_t> preview_pixels_;
     bool preview_ready_ = false;
-    std::string path_, raw_path_, pcm_path_, status_;
+    std::string path_, raw_path_, pcm_path_;
+    i18n::Text status_;
 };

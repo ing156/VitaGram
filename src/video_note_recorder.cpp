@@ -18,19 +18,19 @@ using namespace video_note;
 namespace {
 constexpr int Grain = 512;
 static_assert(Grain==CaptureBuffer::AudioGrain,"Audio queue block size");
-std::string camera_error(const std::string& text, int rc) {
+i18n::Text camera_error(const i18n::Text& text, int rc) {
     char code[24]; std::snprintf(code,sizeof(code)," (0x%08X)",(unsigned)rc); return text+code;
 }
 }
 VideoNoteRecorder::VideoNoteRecorder() = default;
 VideoNoteRecorder::~VideoNoteRecorder() { cancel(); pthread_mutex_destroy(&mutex_); }
-void VideoNoteRecorder::setStatus(const std::string& value) {
+void VideoNoteRecorder::setStatus(const i18n::Text& value) {
     pthread_mutex_lock(&mutex_); status_=value; pthread_mutex_unlock(&mutex_);
 }
-std::string VideoNoteRecorder::status() const {
-    pthread_mutex_lock(&mutex_); std::string value=status_; pthread_mutex_unlock(&mutex_); return value;
+i18n::Text VideoNoteRecorder::status() const {
+    pthread_mutex_lock(&mutex_); i18n::Text value=status_; pthread_mutex_unlock(&mutex_); value.refresh(); return value;
 }
-void VideoNoteRecorder::fail(const std::string& value) { setStatus(value); state_=State::Error; }
+void VideoNoteRecorder::fail(const i18n::Text& value) { setStatus(value); state_=State::Error; }
 int VideoNoteRecorder::seconds() const { return (samples_.load()+SampleRate-1)/SampleRate; }
 
 bool VideoNoteRecorder::open(const std::string& path) {
@@ -44,12 +44,13 @@ bool VideoNoteRecorder::open(const std::string& path) {
     preview_pixels_.assign(Side*Side,0); preview_ready_=false;
     vita2d_wait_rendering_done();
     texture_=vita2d_create_empty_texture(Side,Side);
-    if (!texture_) { fail(tr("vnr.err.camera_memory")); return false; }
+    if (!texture_) { fail(i18n::text("vnr.err.camera_memory")); return false; }
+    vita2d_texture_set_filters(texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
     std::memset(vita2d_texture_get_datap(texture_),0,vita2d_texture_get_stride(texture_)*Side);
-    setStatus(tr("vnr.opening_front")); state_=State::Opening;
+    setStatus(i18n::text("vnr.opening_front")); state_=State::Opening;
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr,2*1024*1024);
     int rc=pthread_create(&thread_,&attr,entry,this); pthread_attr_destroy(&attr);
-    if (rc) { fail(tr("vnr.start_failed")); return false; }
+    if (rc) { fail(i18n::text("vnr.start_failed")); return false; }
     thread_started_=true; return true;
 }
 void VideoNoteRecorder::record() { if (state()==State::Preview) begin_=true; }
@@ -78,9 +79,9 @@ void VideoNoteRecorder::releaseFile() {
 
 bool VideoNoteRecorder::openCamera(int device) {
     memory_=sceKernelAllocMemBlock("VitaGramVideoNote",SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW,1024*1024,nullptr);
-    if (memory_<0) { setStatus(camera_error(tr("cam.memory"),memory_)); return false; }
+    if (memory_<0) { setStatus(camera_error(i18n::text("cam.memory"),memory_)); return false; }
     void* data=nullptr; int rc=sceKernelGetMemBlockBase(memory_,&data);
-    if (rc<0) { setStatus(camera_error(tr("cam.buffer"),rc)); closeCamera(); return false; }
+    if (rc<0) { setStatus(camera_error(i18n::text("cam.buffer"),rc)); closeCamera(); return false; }
     camera_=static_cast<uint8_t*>(data);
     device_=device;
     SceCameraInfo info{}; info.size=sizeof(info);
@@ -89,9 +90,9 @@ bool VideoNoteRecorder::openCamera(int device) {
     info.sizeIBase=320*240; info.sizeUBase=info.sizeVBase=320*240/4;
     info.pIBase=camera_; info.pUBase=camera_+info.sizeIBase; info.pVBase=camera_+info.sizeIBase+info.sizeUBase;
     rc=sceCameraOpen(device,&info);
-    if (rc<0) { setStatus(camera_error(tr("cam.open_failed"),rc)); closeCamera(); return false; }
+    if (rc<0) { setStatus(camera_error(i18n::text("cam.open_failed"),rc)); closeCamera(); return false; }
     camera_open_=true; rc=sceCameraStart(device);
-    if (rc<0) { setStatus(camera_error(tr("cam.start_failed"),rc)); closeCamera(); return false; }
+    if (rc<0) { setStatus(camera_error(i18n::text("cam.start_failed"),rc)); closeCamera(); return false; }
     camera_started_=true; return true;
 }
 void VideoNoteRecorder::closeCamera() {
@@ -109,7 +110,7 @@ void VideoNoteRecorder::writeCapture() {
     FILE* raw=std::fopen(raw_path_.c_str(),"wb");
     FILE* pcm=std::fopen(pcm_path_.c_str(),"wb");
     auto fail_write=[&](const char* key) {
-        setStatus(tr(key)); writer_error_=true; capture_->abort();
+        setStatus(i18n::text(key)); writer_error_=true; capture_->abort();
     };
     if (!raw || !pcm) fail_write(raw ? "vnr.audio_file_failed" : "vnr.record_file_space");
     // Supply owned memory and check success: the old NULL-buffer request could
@@ -142,20 +143,20 @@ void VideoNoteRecorder::captureAudio() {
     cpu_scheduler::Media workload(cpu_scheduler::Role::Audio);
     int port=sceAudioInOpenPort(SCE_AUDIO_IN_PORT_TYPE_VOICE,Grain,SampleRate,SCE_AUDIO_IN_PARAM_FORMAT_S16_MONO);
     if (port<0) {
-        setStatus(tr("rec.mic_unavailable"));
+        setStatus(i18n::text("rec.mic_unavailable"));
         audio_error_=true; audio_done_=true; return;
     }
     int16_t pcm[Grain];
     while (!cancel_ && !audio_stop_ && !writer_error_ && samples_<SampleRate*MaxSeconds) {
         int rc=sceAudioInInput(port,pcm);
-        if (rc<0) { setStatus(tr("rec.mic_read_error")); audio_error_=true; break; }
+        if (rc<0) { setStatus(i18n::text("rec.mic_read_error")); audio_error_=true; break; }
         int count=rc>0 && rc<=Grain ? rc : Grain;
         count=std::min<uint32_t>(count,SampleRate*MaxSeconds-samples_.load());
         int peak=0; for (int i=0;i<count;++i) peak=std::max(peak,std::abs((int)pcm[i]));
         level_=std::min(100,peak*100/32768);
         auto queued=capture_->audio(pcm,count);
         if (queued!=CaptureBuffer::Result::Queued) {
-            if (queued==CaptureBuffer::Result::Full) setStatus(tr("vnr.audio_save_space"));
+            if (queued==CaptureBuffer::Result::Full) setStatus(i18n::text("vnr.audio_save_space"));
             audio_error_=true; break;
         }
         samples_.fetch_add(count);
@@ -167,7 +168,7 @@ void VideoNoteRecorder::run() {
     cpu_scheduler::Thread role(cpu_scheduler::Role::Video);
     cpu_scheduler::Media workload(cpu_scheduler::Role::Video);
     if (!openCamera(SCE_CAMERA_DEVICE_FRONT)) { state_=State::Error; return; }
-    state_=State::Preview; setStatus(tr("vnr.hint_preview"));
+    state_=State::Preview; setStatus(i18n::text("vnr.hint_preview"));
     std::vector<uint8_t> frame(FrameBytes);
     std::vector<uint8_t> camera_copy(320*240*3/2);
     std::vector<uint32_t> preview_frame(Side*Side);
@@ -180,19 +181,19 @@ void VideoNoteRecorder::run() {
             int previous=device_; closeCamera();
             if (!openCamera(1-previous)) {
                 if (!openCamera(previous)) { error=true; break; }
-                setStatus(tr("vnr.other_camera_unavailable"));
-            } else setStatus(state()==State::Recording ? tr("rec.recording") : tr("vnr.hint_preview"));
+                setStatus(i18n::text("vnr.other_camera_unavailable"));
+            } else setStatus(state()==State::Recording ? i18n::text("rec.recording") : i18n::text("vnr.hint_preview"));
             last_frame=UINT64_MAX;
         }
         if (begin_.exchange(false) && state()==State::Preview) {
             try { capture_.reset(new CaptureBuffer()); }
-            catch (const std::bad_alloc&) { setStatus(tr("vnr.err.camera_memory")); error=true; break; }
-            setStatus(tr("rec.recording"));
+            catch (const std::bad_alloc&) { setStatus(i18n::text("vnr.err.camera_memory")); error=true; break; }
+            setStatus(i18n::text("rec.recording"));
             pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr,128*1024);
             int rc=pthread_create(&writer_thread_,&attr,writerEntry,this);
             if (!rc) { writer_started_=true; rc=pthread_create(&audio_thread_,&attr,audioEntry,this); }
             pthread_attr_destroy(&attr);
-            if (rc) { setStatus(tr("vnr.mic_start_failed")); error=true; break; }
+            if (rc) { setStatus(i18n::text("vnr.mic_start_failed")); error=true; break; }
             audio_started_=true; state_=State::Recording; last_frame=UINT64_MAX;
         }
         if (state()==State::Recording && (finish_ || audio_done_ || writer_error_)) break;
@@ -227,7 +228,7 @@ void VideoNoteRecorder::run() {
                 if (queued==CaptureBuffer::Result::Queued) { ++frames; last_pts=pts; }
             }
         } else if (rc<0 && rc!=(int)SCE_CAMERA_ERROR_ALREADY_READ && rc!=(int)SCE_CAMERA_ERROR_NOT_ACTIVE && rc!=(int)SCE_CAMERA_ERROR_TIMEOUT) {
-            setStatus(camera_error(tr("cam.error"),rc)); error=true; break;
+            setStatus(camera_error(i18n::text("cam.error"),rc)); error=true; break;
         }
         sceKernelDelayThread(2000);
     }
@@ -236,7 +237,7 @@ void VideoNoteRecorder::run() {
     closeCamera();
     if (capture_) {
         if (cancel_ || error || audio_error_ || writer_error_) capture_->abort();
-        else { state_=State::Encoding; setStatus(tr("vnr.encoding")); capture_->finish(); }
+        else { state_=State::Encoding; setStatus(i18n::text("vnr.encoding")); capture_->finish(); }
         if (writer_started_) { pthread_join(writer_thread_,nullptr); writer_started_=false; }
         auto stats=capture_->stats();
         performance::observe(performance::Metric::VideoCaptureQueuePeak,stats.video_peak);
@@ -246,16 +247,16 @@ void VideoNoteRecorder::run() {
     }
     if (cancel_) return;
     if (error || audio_error_ || writer_error_) { state_=State::Error; return; }
-    if (!frames || samples_<SampleRate) { fail(tr("vnr.too_short")); return; }
-    state_=State::Encoding; setStatus(tr("vnr.encoding"));
-    std::string message;
+    if (!frames || samples_<SampleRate) { fail(i18n::text("vnr.too_short")); return; }
+    state_=State::Encoding; setStatus(i18n::text("vnr.encoding"));
+    i18n::Text message;
     performance::Scope encode_measurement(performance::Metric::VideoEncode);
     bool ok=encode_video_note(raw_path_,pcm_path_,path_,samples_,cancel_,progress_,message);
     encode_measurement.finish();
     std::remove(raw_path_.c_str()); std::remove(pcm_path_.c_str());
     if (cancel_) return;
-    if (!ok) { fail(tr("vnr.video_error",{message})); return; }
-    setStatus(tr("vnr.ready")); state_=State::Review;
+    if (!ok) { fail(i18n::text("vnr.video_error",{message})); return; }
+    setStatus(i18n::text("vnr.ready")); state_=State::Review;
 }
 void VideoNoteRecorder::upload() {
     if (!texture_) return;

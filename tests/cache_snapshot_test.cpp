@@ -122,7 +122,7 @@ int main() {
     event(light, R"({"@type":"chat","id":1,"title":"Lower","positions":[{"list":{"@type":"chatListMain"},"order":10}],"photo":{"small":{"@type":"file","id":99}}})");
     event(light, R"({"@type":"chat","id":2,"title":"Top","positions":[{"list":{"@type":"chatListMain"},"order":20}]})");
     event(light, R"({"@type":"updateChatPhoto","chat_id":1,"photo":{"small":{"@type":"file","id":99,"size":4,"local":{"path":"ux0:data/vitagram/files/avatar.png","is_downloading_completed":true}}}})");
-    event(light, R"({"@type":"user","id":7,"first_name":"Name","profile_photo":{"small":{"id":99}}})");
+    event(light, R"({"@type":"user","id":7,"first_name":"Name","type":{"@type":"userTypeDeleted"},"profile_photo":{"small":{"id":99}}})");
     event(light, R"({"@type":"updateNewMessage","message":{"id":55,"chat_id":1,"content":{"@type":"messageText","text":{"text":"History stays separate"}}}})");
     auto* small = light.startupSnapshot();
     assert(!json_object_get(small, "history") && !json_object_get(small, "sticker_items"));
@@ -130,6 +130,10 @@ int main() {
     assert(!std::strcmp(json_object_iter_key(json_object_iter(rows)), "2"));
     assert(!json_object_get(json_object_get(rows, "1"), "photo"));
     assert(!json_object_get(json_object_get(json_object_get(small, "users"), "7"), "profile_photo"));
+    assert(!std::strcmp(json_string_value(json_object_get(json_object_get(json_object_get(json_object_get(small, "users"), "7"), "type"), "@type")), "userTypeDeleted"));
+    auto* full_users = light.snapshot();
+    assert(!std::strcmp(json_string_value(json_object_get(json_object_get(json_object_get(json_object_get(full_users, "users"), "7"), "type"), "@type")), "userTypeDeleted"));
+    json_decref(full_users);
     auto* history = light.history(1); assert(json_object_get(history, "55")); json_decref(history);
     {   // Parser-side persistence of a history reply: same filters, 60 newest, no second copy in remember().
         UiCache parsed;

@@ -72,16 +72,16 @@ std::vector<uint8_t> h264_configuration(const uint8_t* bytes, int size) {
 bool prepare_portrait_video(const std::string& source, std::string& prepared,
                             const std::function<bool()>& cancelled,
                             const std::function<void(int)>& progress,
-                            std::string& error, bool cache_only) {
+                            i18n::Text& error, bool cache_only) {
     // minih264e requires both dimensions to be multiples of 16.
     constexpr int Width=432, Height=768;
     prepared.clear(); error.clear();
     vault::Reader source_file;
-    if (!source_file.open(source)) { error=tr("pv.open_failed"); return false; }
+    if (!source_file.open(source)) { error=i18n::text("pv.open_failed"); return false; }
     const int64_t input_size=source_file.size();
-    if (input_size<=0) { error=tr("pv.empty"); return false; }
+    if (input_size<=0) { error=i18n::text("pv.empty"); return false; }
     uint64_t key=0;
-    if (!portrait_video_cache::key(source_file,key)) { error=tr("pv.read_failed"); return false; }
+    if (!portrait_video_cache::key(source_file,key)) { error=i18n::text("pv.read_failed"); return false; }
     source_file.close();
     const int64_t progress_size=input_size; // decrypted bytes, as the demuxer counts them
     char name[96];
@@ -118,7 +118,7 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
         std::fflush(diagnostic);
     }
     Resources r;
-    auto fail=[&](const std::string& message, int rc=0) {
+    auto fail=[&](const i18n::Text& message, int rc=0) {
         error=message;
         if (rc<0) { char detail[AV_ERROR_MAX_STRING_SIZE]; av_strerror(rc,detail,sizeof(detail)); error+=std::string(": ")+detail; }
         if (diagnostic) { std::fprintf(diagnostic,"error=%s rc=%d\n",message.c_str(),rc); std::fflush(diagnostic); }
@@ -127,13 +127,13 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
     uint64_t output_bytes=0;
     auto work=[&]() -> bool {
         r.input=avformat_alloc_context();
-        if (!r.input) return fail(tr("pv.read_failed"),AVERROR(ENOMEM));
+        if (!r.input) return fail(i18n::text("pv.read_failed"),AVERROR(ENOMEM));
         const int64_t open_started=av_gettime_relative();
         const int sealed=r.sealed_input.attach(r.input,source); // sealed sources are decrypted on the fly
         timing.sealed=sealed;
         int rc=sealed<0 ? AVERROR(EIO) : avformat_open_input(&r.input,sealed ? source.c_str() : ("file:"+source).c_str(),nullptr,nullptr);
         timing.open=av_gettime_relative()-open_started;
-        if (rc<0) return fail(tr("pv.read_failed"),rc);
+        if (rc<0) return fail(i18n::text("pv.read_failed"),rc);
         r.input->interrupt_callback={[](void* opaque)->int { return (*static_cast<const std::function<bool()>*>(opaque))(); },
                                       (void*)&cancelled};
         // The MOV header already carries everything used below (avcC, esds, sizes). With FFmpeg 7.1
@@ -154,34 +154,34 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
             rc=avformat_find_stream_info(r.input,nullptr);
         }
         timing.probe=av_gettime_relative()-probe_started;
-        if (rc<0) return fail(tr("pv.streams_failed"),rc);
+        if (rc<0) return fail(i18n::text("pv.streams_failed"),rc);
         int vi=av_find_best_stream(r.input,AVMEDIA_TYPE_VIDEO,-1,-1,nullptr,0);
         if (vi<0 || r.input->streams[vi]->codecpar->codec_id!=AV_CODEC_ID_H264)
-            return fail(tr("pv.h264_only"));
+            return fail(i18n::text("pv.h264_only"));
         int ai=av_find_best_stream(r.input,AVMEDIA_TYPE_AUDIO,-1,-1,nullptr,0);
         if (ai>=0 && r.input->streams[ai]->codecpar->codec_id!=AV_CODEC_ID_AAC)
-            return fail(tr("pv.aac_needed"));
+            return fail(i18n::text("pv.aac_needed"));
         const AVCodec* software=avcodec_find_decoder_by_name("h264");
         r.decoder=software ? avcodec_alloc_context3(software) : nullptr;
-        if (!r.decoder) return fail(tr("pv.sw_decoder_missing"));
+        if (!r.decoder) return fail(i18n::text("pv.sw_decoder_missing"));
         r.decoder->thread_count=1;
         const int64_t codec_started=av_gettime_relative();
         if ((rc=avcodec_parameters_to_context(r.decoder,r.input->streams[vi]->codecpar))<0 ||
-            (rc=avcodec_open2(r.decoder,software,nullptr))<0) return fail(tr("pv.h264_open"),rc);
+            (rc=avcodec_open2(r.decoder,software,nullptr))<0) return fail(i18n::text("pv.h264_open"),rc);
         timing.codec=av_gettime_relative()-codec_started;
         H264E_create_param_t params{};
         params.width=Width; params.height=Height; params.gop=30;
         params.const_input_flag=1; params.vbv_size_bytes=256000; params.enableNEON=1;
         int persistent=0,scratch=0;
-        if (H264E_sizeof(&params,&persistent,&scratch)) return fail(tr("pv.h264_size"));
+        if (H264E_sizeof(&params,&persistent,&scratch)) return fail(i18n::text("pv.h264_size"));
         r.persist=memalign(64,persistent); r.scratch=memalign(64,scratch);
         if (!r.persist || !r.scratch || H264E_init((H264E_persist_t*)r.persist,&params))
-            return fail(tr("pv.prep_memory"));
+            return fail(i18n::text("pv.prep_memory"));
         if ((rc=avformat_alloc_output_context2(&r.output,nullptr,"mp4",partial.c_str()))<0 || !r.output)
-            return fail(tr("vne.mp4_muxer_missing_short"),rc);
+            return fail(i18n::text("vne.mp4_muxer_missing_short"),rc);
         AVStream* out_video=avformat_new_stream(r.output,nullptr);
         AVStream* out_audio=ai>=0 ? avformat_new_stream(r.output,nullptr) : nullptr;
-        if (!out_video || (ai>=0 && !out_audio)) return fail(tr("pv.mp4_streams"));
+        if (!out_video || (ai>=0 && !out_audio)) return fail(i18n::text("pv.mp4_streams"));
         out_video->time_base=r.input->streams[vi]->time_base;
         out_video->codecpar->codec_type=AVMEDIA_TYPE_VIDEO;
         out_video->codecpar->codec_id=AV_CODEC_ID_H264;
@@ -189,15 +189,15 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
         out_video->codecpar->format=AV_PIX_FMT_YUV420P;
         if (out_audio) {
             if ((rc=avcodec_parameters_copy(out_audio->codecpar,r.input->streams[ai]->codecpar))<0)
-                return fail(tr("pv.aac_copy"),rc);
+                return fail(i18n::text("pv.aac_copy"),rc);
             out_audio->codecpar->codec_tag=0;
             out_audio->time_base=r.input->streams[ai]->time_base;
         }
         r.packet=av_packet_alloc(); r.coded=av_packet_alloc();
         r.frame=av_frame_alloc(); r.scaled=av_frame_alloc();
-        if (!r.packet || !r.coded || !r.frame || !r.scaled) return fail(tr("pv.frames_memory"));
+        if (!r.packet || !r.coded || !r.frame || !r.scaled) return fail(i18n::text("pv.frames_memory"));
         r.scaled->format=AV_PIX_FMT_YUV420P; r.scaled->width=Width; r.scaled->height=Height;
-        if ((rc=av_frame_get_buffer(r.scaled,32))<0) return fail(tr("pv.frame_alloc"),rc);
+        if ((rc=av_frame_get_buffer(r.scaled,32))<0) return fail(i18n::text("pv.frame_alloc"),rc);
         bool header=false;
         int64_t last_pts=AV_NOPTS_VALUE;
         int frame_count=0;
@@ -215,12 +215,12 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
             r.scaler=sws_getCachedContext(r.scaler,r.frame->width,r.frame->height,
                 (AVPixelFormat)r.frame->format,Width,Height,AV_PIX_FMT_YUV420P,SWS_BILINEAR,
                 nullptr,nullptr,nullptr);
-            if (!r.scaler || av_frame_make_writable(r.scaled)<0) return fail(tr("pv.scale_failed"));
+            if (!r.scaler || av_frame_make_writable(r.scaled)<0) return fail(i18n::text("pv.scale_failed"));
             timing.source_w=r.frame->width; timing.source_h=r.frame->height;
             if (timing.first_frame<0) timing.first_frame=av_gettime_relative()-started;
             const int64_t scale_started=av_gettime_relative();
             if (sws_scale(r.scaler,r.frame->data,r.frame->linesize,0,r.frame->height,
-                          r.scaled->data,r.scaled->linesize)<=0) return fail(tr("pv.scale_error"));
+                          r.scaled->data,r.scaled->linesize)<=0) return fail(i18n::text("pv.scale_error"));
             timing.scale+=av_gettime_relative()-scale_started;
             H264E_io_yuv_t yuv{};
             for (int i=0;i<3;++i) { yuv.yuv[i]=r.scaled->data[i]; yuv.stride[i]=r.scaled->linesize[i]; }
@@ -230,25 +230,25 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
             const int64_t encode_started=av_gettime_relative();
             const int encoded=H264E_encode((H264E_persist_t*)r.persist,(H264E_scratch_t*)r.scratch,&run,&yuv,&bytes,&length);
             timing.encode+=av_gettime_relative()-encode_started;
-            if (encoded || length<=0) return fail(tr("vne.h264_encode"));
+            if (encoded || length<=0) return fail(i18n::text("vne.h264_encode"));
             if (!header) {
                 auto config=h264_configuration(bytes,length);
-                if (config.empty()) return fail(tr("pv.no_h264_params"));
+                if (config.empty()) return fail(i18n::text("pv.no_h264_params"));
                 auto* extra=(uint8_t*)av_mallocz(config.size()+AV_INPUT_BUFFER_PADDING_SIZE);
-                if (!extra) return fail(tr("pv.mp4_memory"));
+                if (!extra) return fail(i18n::text("pv.mp4_memory"));
                 std::memcpy(extra,config.data(),config.size());
                 out_video->codecpar->extradata=extra;
                 out_video->codecpar->extradata_size=config.size();
                 if ((rc=avio_open(&r.output->pb,("file:"+partial).c_str(),AVIO_FLAG_WRITE))<0 ||
-                    (rc=avformat_write_header(r.output,nullptr))<0) return fail(tr("vne.mp4_create"),rc);
+                    (rc=avformat_write_header(r.output,nullptr))<0) return fail(i18n::text("vne.mp4_create"),rc);
                 header=true;
-                for (auto* p:r.pending_audio) if (!write_audio(p)) return fail(tr("pv.aac_write"));
+                for (auto* p:r.pending_audio) if (!write_audio(p)) return fail(i18n::text("pv.aac_write"));
                 for (auto*& p:r.pending_audio) av_packet_free(&p);
                 r.pending_audio.clear();
             }
-            if ((rc=av_new_packet(r.coded,length))<0) return fail(tr("pv.h264_memory"),rc);
+            if ((rc=av_new_packet(r.coded,length))<0) return fail(i18n::text("pv.h264_memory"),rc);
             output_bytes+=length;
-            if (output_bytes>120ULL*1024*1024) return fail(tr("pv.limit"));
+            if (output_bytes>120ULL*1024*1024) return fail(i18n::text("pv.limit"));
             std::memcpy(r.coded->data,bytes,length);
             int64_t pts=r.frame->best_effort_timestamp;
             if (pts==AV_NOPTS_VALUE || (last_pts!=AV_NOPTS_VALUE && pts<=last_pts))
@@ -264,7 +264,7 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
             timing.mux+=av_gettime_relative()-mux_started;
             timing.frames=frame_count;
             av_packet_unref(r.coded);
-            return rc>=0 || fail(tr("pv.mp4_write"),rc);
+            return rc>=0 || fail(i18n::text("pv.mp4_write"),rc);
         };
         auto drain=[&]() -> bool {
             for (;;) {
@@ -272,7 +272,7 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
                 int result=avcodec_receive_frame(r.decoder,r.frame);
                 timing.decode+=av_gettime_relative()-decode_started;
                 if (result==AVERROR(EAGAIN) || result==AVERROR_EOF) return true;
-                if (result<0) return fail(tr("pv.decode_error"),result);
+                if (result<0) return fail(i18n::text("pv.decode_error"),result);
                 bool ok=emit(); av_frame_unref(r.frame);
                 if (!ok) return false;
             }
@@ -287,13 +287,13 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
                 const int64_t decode_started=av_gettime_relative();
                 rc=avcodec_send_packet(r.decoder,r.packet);
                 timing.decode+=av_gettime_relative()-decode_started;
-                if (rc<0 || !drain()) return error.empty() ? fail(tr("pv.h264_error"),rc) : false;
+                if (rc<0 || !drain()) return error.empty() ? fail(i18n::text("pv.h264_error"),rc) : false;
             } else if (r.packet->stream_index==ai) {
                 if (header) {
-                    if (!write_audio(r.packet)) return fail(tr("pv.aac_write"));
+                    if (!write_audio(r.packet)) return fail(i18n::text("pv.aac_write"));
                 } else {
                     AVPacket* copy=av_packet_clone(r.packet);
-                    if (!copy) return fail(tr("pv.aac_memory"));
+                    if (!copy) return fail(i18n::text("pv.aac_memory"));
                     r.pending_audio.push_back(copy);
                 }
             }
@@ -301,12 +301,12 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
             if (progress_size>0 && (frame_count%16)==0 && r.input->pb)
                 progress(std::min(99,(int)(avio_tell(r.input->pb)*100/progress_size)));
         }
-        if (cancelled()) return fail(tr("pv.cancelled"));
-        if (rc!=AVERROR_EOF && rc<0) return fail(tr("pv.read_error"),rc);
+        if (cancelled()) return fail(i18n::text("pv.cancelled"));
+        if (rc!=AVERROR_EOF && rc<0) return fail(i18n::text("pv.read_error"),rc);
         if ((rc=avcodec_send_packet(r.decoder,nullptr))<0 || !drain())
-            return error.empty() ? fail(tr("pv.h264_finish"),rc) : false;
+            return error.empty() ? fail(i18n::text("pv.h264_finish"),rc) : false;
         if (!header || (rc=av_write_trailer(r.output))<0 || (rc=avio_closep(&r.output->pb))<0)
-            return fail(tr("pv.mp4_finish"),rc);
+            return fail(i18n::text("pv.mp4_finish"),rc);
         return true;
     };
     bool ok=work();
@@ -331,7 +331,7 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
         return false;
     }
     if (std::rename(partial.c_str(),prepared.c_str())!=0) {
-        fail(tr("pv.mp4_save"));
+        fail(i18n::text("pv.mp4_save"));
         std::remove(partial.c_str());
         if (diagnostic) std::fclose(diagnostic);
         return false;
@@ -339,7 +339,7 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
     if (vault::sealing() && vault::seal_file(prepared)==vault::Convert::Failed) {
         // The result is only a cache of the user's video: never leave it behind in plain text.
         std::remove(prepared.c_str());
-        fail(tr("pv.mp4_save"));
+        fail(i18n::text("pv.mp4_save"));
         if (diagnostic) std::fclose(diagnostic);
         return false;
     }
@@ -348,4 +348,13 @@ bool prepare_portrait_video(const std::string& source, std::string& prepared,
         std::fclose(diagnostic);
     }
     progress(100); return true;
+}
+
+bool prepare_portrait_video(const std::string& source, std::string& prepared,
+                            const std::function<bool()>& cancelled, const std::function<void(int)>& progress,
+                            std::string& error, bool cache_only) {
+    i18n::Text localized_error;
+    const bool result = prepare_portrait_video(source, prepared, cancelled, progress, localized_error, cache_only);
+    error = localized_error;
+    return result;
 }

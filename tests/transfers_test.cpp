@@ -92,6 +92,78 @@ static void event(MediaUploads& u, const char* text, int64_t now) { auto* r=pars
 int main() {
     use_test_language();
     {
+        TelegramClient localized;
+        localized.ready_ = localized.worker_started_ = true;
+        localized.current_chat_id_ = 42;
+        localized.setInput(InputKind::None, i18n::text("status.online"));
+        localized.auth_detail_ = i18n::text("auth.code_sent", {"+123", i18n::text("auth.via.sms")});
+        localized.proxy_check_status_ = i18n::text("proxy.check.ok", {"123 ms"});
+        localized.sticker_status_ = i18n::text("sticker.choose_set");
+        localized.gif_status_ = i18n::text("gif.choose");
+        localized.reaction_status_ = i18n::text("reaction.hint");
+        localized.topics_status_ = i18n::text("topics.none");
+        localized.document_status_ = i18n::text("doc.saved", {"ux0:data/Online.pdf"});
+        localized.video_note_status_ = i18n::text("video_note.send_failed");
+        i18n::Text retained_send_error = localized.videoNoteStatus();
+        localized.history_error_ = i18n::text("history.no_older");
+        localized.error_ = "SERVER_ERROR: Online";
+        localized.current_chat_title_ = i18n::Text("Online") + " / " + i18n::text("comments.title");
+        localized.sticker_packs_ = {{0, i18n::text("sticker.favorites")}, {1, i18n::text("sticker.recent")}, {123, "Online"}};
+        localized.folders_ = {{0, i18n::text("folder.all")}, {123, "Online"}};
+        localized.poll_requests_[{42, 7}] = {false, i18n::text("poll.updated")};
+        localized.user_names_[77] = ""; // Missing sender names are localized at display time.
+        localized.reply_cache_[{99, 1}].text = i18n::text("media.photo");
+        const std::string custom_label = tr("reaction.emoji_n", {"1"});
+        localized.reaction_choices_ = {"👍", custom_label};
+        localized.reaction_custom_choices_[custom_label] = 123456;
+        auto* photo = parse(R"({"id":1,"chat_id":42,"content":{"@type":"messagePhoto","photo":{"sizes":[]}}})");
+        localized.history_items_.push_back(localized.parseMessage(photo)); json_decref(photo);
+        auto* literal = parse(R"({"id":2,"chat_id":42,"content":{"@type":"messageText","text":{"text":"Online / Все чаты"}},"reply_to":{"@type":"messageReplyToMessage","chat_id":42,"message_id":1}})");
+        localized.history_items_.push_back(localized.parseMessage(literal)); json_decref(literal);
+        auto* unnamed = parse(R"({"id":3,"chat_id":42,"content":{"@type":"messageDocument","document":{"file_name":""}}})");
+        localized.history_items_.push_back(localized.parseMessage(unnamed)); json_decref(unnamed);
+        auto* service = parse(R"({"id":4,"chat_id":42,"sender_id":{"@type":"messageSenderUser","user_id":77},"content":{"@type":"messageChatJoinByLink"}})");
+        localized.history_items_.push_back(localized.parseMessage(service)); json_decref(service);
+        localized.rebuildHistory(false);
+        const auto requests = localized.outgoing_.size();
+        const auto languages = i18n::languages();
+        for (const auto& language : languages) {
+            assert(i18n::select(language.code));
+            localized.refreshLanguage(); // No TDLib event, reopen or restart.
+            assert(localized.status() == tr("status.online"));
+            assert(localized.authDetail() == tr("auth.code_sent", {"+123", tr("auth.via.sms")}));
+            assert(localized.proxyCheckStatus() == tr("proxy.check.ok", {"123 ms"}));
+            assert(localized.stickerStatus() == tr("sticker.choose_set"));
+            assert(localized.gifStatus() == tr("gif.choose"));
+            assert(localized.reactionStatus() == tr("reaction.hint"));
+            assert(localized.topicsStatus() == tr("topics.none"));
+            assert(localized.documentStatus() == tr("doc.saved", {"ux0:data/Online.pdf"}));
+            retained_send_error.refresh();
+            assert(retained_send_error == tr("video_note.send_failed"));
+            assert(localized.historyError() == tr("history.no_older"));
+            assert(localized.lastError() == "SERVER_ERROR: Online");
+            assert(localized.currentChatTitle() == "Online / " + tr("comments.title"));
+            assert(localized.folders_[0].title == tr("folder.all") && localized.folders_[1].title == "Online");
+            assert(localized.folders_.back().title == tr("folder.archive"));
+            assert(localized.sticker_packs_[0].title == tr("sticker.favorites"));
+            assert(localized.sticker_packs_[1].title == tr("sticker.recent") && localized.sticker_packs_[2].title == "Online");
+            assert(localized.poll_requests_.at({42, 7}).status == tr("poll.updated"));
+            assert(localized.reply_cache_.at({99, 1}).text == tr("media.photo"));
+            assert(localized.reaction_choices_[0] == "👍");
+            assert(localized.reaction_choices_[1] == tr("reaction.emoji_n", {"1"}));
+            assert(localized.reaction_custom_choices_.at(localized.reaction_choices_[1]) == 123456);
+            assert(localized.messages_[0].media_label == tr("media.photo"));
+            assert(localized.messages_[1].text == "Online / Все чаты");
+            assert(localized.messages_[1].reply_text == tr("media.photo"));
+            assert(localized.messages_[2].text == tr("media.no_name"));
+            assert(localized.messages_[3].text == tr("service.joined_by_link", {tr("user.participant")}));
+            assert(localized.outgoing_.size() == requests);
+        }
+        localized.worker_started_ = false;
+        i18n::select("ru");
+    }
+    std::puts("Language refresh: all shipped locales, retained UI state, messages, replies and custom names passed without network events");
+    {
         TelegramClient status_only;
         status_only.worker_started_ = true;
         for (int i = 0; i < 32; ++i)
@@ -274,7 +346,10 @@ int main() {
         live.openChat(44, "Cached chat");
         assert(live.outgoing_.empty());
         live.process(parse(R"({"@type":"updateAuthorizationState","authorization_state":{"@type":"authorizationStateReady"}})"));
-        request_is(0, "openChat", 44);
+        auto* identity = parse(live.outgoing_[0].text.c_str());
+        assert(MediaUploads::string(identity, "@type") == "getMe");
+        assert(MediaUploads::string(identity, "@extra") == "account_identity"); json_decref(identity);
+        request_is(1, "openChat", 44);
         assert(std::any_of(live.outgoing_.begin(), live.outgoing_.end(), [](const auto& request) {
             return request.text.find("\"ignore_file_names\"") != std::string::npos; })); // One create per download.
         live.worker_started_ = false;
@@ -700,6 +775,54 @@ int main() {
     assert(!tg.answerPoll(55,{0}));
     std::puts("Polls: parsing, multiple answers, order, errors, refresh, quiz and closed-state checks passed");
 
+    // Permission reads during an open menu and Delete must never restart the TTL refresh.
+    {
+        TelegramClient deletion;
+        deletion.ready_ = true; deletion.worker_started_ = true; deletion.current_chat_id_ = 42;
+        MessageItem item; item.id = 77;
+        deletion.history_items_ = {item};
+        assert(!deletion.canDeleteMessage(77));
+        assert(deletion.deletePermissionPending(77) && deletion.outgoing_.size() == 1);
+        auto reply = [&](bool allowed) {
+            auto* response = json_pack("{s:s,s:b,s:{s:s,s:I,s:I,s:I}}", "@type", "messageProperties",
+                "can_be_deleted_for_all_users", allowed, "@extra", "kind", "delete_permission",
+                "chat", (json_int_t)42, "message", (json_int_t)77,
+                "generation", (json_int_t)deletion.history_generation_);
+            deletion.process(response);
+        };
+        reply(true);
+        assert(!deletion.deletePermissionPending(77) && deletion.canDeleteMessage(77, false));
+        deletion.delete_permissions_[77].checked = sceKernelGetSystemTimeWide() - 6000000;
+        auto count = deletion.outgoing_.size();
+        for (int frame=0; frame<600; ++frame) assert(deletion.canDeleteMessage(77, false));
+        assert(deletion.outgoing_.size() == count); // No request while displaying the snapshot.
+        assert(deletion.canDeleteMessage(77)); // Refresh retains the last known result.
+        assert(deletion.deletePermissionPending(77) && deletion.outgoing_.size() == count + 1);
+        reply(true);
+        deletion.delete_permissions_[77].checked = sceKernelGetSystemTimeWide() - 6000000;
+        count = deletion.outgoing_.size();
+        deletion.deleteMessage(77);
+        assert(deletion.outgoing_.size() == count + 1);
+        auto* request = parse(deletion.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request, "@type") == "deleteMessages"); json_decref(request);
+        deletion.message_delete_pending_ = false;
+        reply(false);
+        count = deletion.outgoing_.size(); deletion.deleteMessage(77);
+        assert(deletion.outgoing_.size() == count && !deletion.canDeleteMessage(77, false));
+        // All loaded photo-album members need a completed permission check.
+        item.media_album_id = 3; item.photos.push_back({});
+        MessageItem other = item; other.id = 78;
+        deletion.history_items_ = {item, other}; deletion.delete_permissions_.clear();
+        assert(!deletion.canDeleteMessage(77) && deletion.deletePermissionPending(77));
+        reply(true);
+        assert(deletion.deletePermissionPending(77) && !deletion.canDeleteMessage(77, false));
+        deletion.delete_permissions_[78].pending = false;
+        deletion.delete_permissions_[78].allowed = true;
+        assert(!deletion.deletePermissionPending(77) && deletion.canDeleteMessage(77, false));
+        deletion.worker_started_ = false; deletion.ready_ = false;
+        std::puts("Deletion permissions: stable cached reads, TTL refresh, direct delete, denial and album pending checks passed");
+    }
+
     auto* video_message=parse(R"({"@type":"message","id":66,"chat_id":42,"content":{"@type":"messageVideo","video":{"width":1920,"height":1080,"duration":20,"video":{"id":100,"size":200000000,"local":{"is_downloading_completed":true,"path":"original.mp4"}}},"alternative_videos":[{"width":640,"height":360,"codec":"h264","video":{"id":101,"size":2000000}},{"width":320,"height":180,"codec":"h264","video":{"id":102,"size":1000000}},{"width":160,"height":90,"codec":"av1","video":{"id":103,"size":500000}},{"width":320,"height":180,"codec":"h264","video":{"id":104,"size":800000},"hls_file":{"id":999}}]}})");
     auto small=tg.parseMessage(video_message);
     assert(small.animation_file_id==104 && small.video_width==320 && small.video_height==180);
@@ -709,6 +832,37 @@ int main() {
     assert(MediaUploads::string(download,"@type")=="downloadFile" && MediaUploads::number(download,"file_id")==104);
     json_decref(download);
     auto* video_content=json_object_get(video_message,"content");
+    // Spoiler consent gates full media, including the minimum-quality alternative.
+    {
+        TelegramClient hidden;
+        json_object_set_new(video_content, "has_spoiler", json_true());
+        auto* original_video = json_object_get(video_content, "video");
+        json_object_set_new(original_video, "thumbnail", parse(R"({"format":{"@type":"thumbnailFormatJpeg"},"file":{"id":501}})"));
+        json_object_set_new(original_video, "minithumbnail", parse(R"({"data":"/9j/"})"));
+        auto item = hidden.parseMessage(video_message);
+        assert(item.spoiler && item.media_file_id == 501 && !item.media_fallback.empty());
+        hidden.ready_ = true; hidden.worker_started_ = true;
+        hidden.messages_ = {item};
+        hidden.setAnimationTarget(0);
+        assert(hidden.outgoing_.empty() && hidden.active_animation_file_ == 0);
+        hidden.ensureMessageMedia(0);
+        assert(hidden.outgoing_.size() == 1);
+        auto* request = parse(hidden.outgoing_.back().text.c_str());
+        assert(MediaUploads::number(request, "file_id") == 501); json_decref(request);
+        hidden.setAnimationTarget(0, true);
+        request = parse(hidden.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request, "@type") == "downloadFile" && MediaUploads::number(request, "file_id") == 104);
+        json_decref(request);
+        hidden.setAnimationTarget(0, false);
+        request = parse(hidden.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request, "@type") == "cancelDownloadFile" && MediaUploads::number(request, "file_id") == 104);
+        json_decref(request);
+        assert(hidden.active_animation_file_ == 0);
+        hidden.ready_ = false; hidden.worker_started_ = false;
+        json_object_set_new(video_content, "has_spoiler", json_false());
+        std::puts("Video spoilers: blurred preview metadata, thumbnail-only download, explicit consent and cancellation passed");
+    }
+
     auto* alternatives=json_object_get(video_content,"alternative_videos");
     auto* cached_file=json_object_get(json_array_get(alternatives,3),"video");
     json_object_set_new(cached_file,"id",json_integer(0));
@@ -897,6 +1051,26 @@ int main() {
     MessageItem channel_sender=sender; channel_sender.sender_chat=true; channel_sender.sender_id=22;
     ChatItem channel; channel.id=22; channel.avatar_file_id=203; channel.avatar_path="channel.jpg"; tg.known_chats_.push_back(channel);
     assert(tg.senderAvatar(channel_sender)=="channel.jpg");
+    // Deleted users can carry blank or stale names/photos; the TDLib type wins.
+    user=parse(R"({"id":21,"first_name":"Old name","type":{"@type":"userTypeDeleted"},"profile_photo":{"small":{"id":201,"local":{"path":"old.jpg","is_downloading_completed":true}}}})");
+    tg.parseUser(user); json_decref(user);
+    assert(tg.senderIsDeleted(sender) && tg.senderName(sender)==tr("user.deleted"));
+    assert(tg.senderAvatar(sender).empty() && tg.user_photos_[21].file==0);
+    assert(!tg.senderIsDeleted(channel_sender));
+    ChatItem deleted_chat; deleted_chat.id=23; deleted_chat.user_id=21;
+    assert(tg.chatIsDeleted(deleted_chat) && tg.chatTitle(deleted_chat)==tr("user.deleted"));
+    tg.known_chats_.push_back(deleted_chat); tg.current_chat_id_=23;
+    assert(tg.currentChatIsDeleted() && tg.currentChatTitle()==tr("user.deleted"));
+    tg.current_chat_id_=42;
+    user=parse(R"({"id":21,"first_name":" \t ","last_name":" "})");
+    tg.parseUser(user); json_decref(user);
+    assert(tg.senderIsDeleted(sender) && tg.senderName(sender)==tr("user.deleted"));
+    user=parse(R"({"id":21,"first_name":"  Restored  ","last_name":" User ","type":{"@type":"userTypeRegular"}})");
+    tg.parseUser(user); json_decref(user);
+    assert(!tg.senderIsDeleted(sender) && tg.senderName(sender)=="Restored User");
+    user=parse(R"({"id":21,"first_name":" ","type":{"@type":"userTypeUnknown"}})");
+    tg.parseUser(user); json_decref(user);
+    assert(!tg.senderIsDeleted(sender) && tg.senderName(sender)==tr("user.participant"));
     std::puts("Avatars: visible sender lookup, small file, deduplication, updates, deletion, cache refresh and chat senders passed");
     tg.worker_started_=false; std::remove("upload-test.bin");
     // Pack icons must be static and independent of the opened sticker grid.
@@ -1285,6 +1459,31 @@ int main() {
         assert(client.gif_status_ == timeout);
     }
     std::puts("GIF client: saved results, bot resolution, string query IDs, sending and timeout recovery passed");
+
+    {
+        TelegramClient streaming;
+        streaming.current_chat_id_ = 42;
+        streaming.process(parse(R"({"@type":"updateNewMessage","message":{"id":901,"chat_id":42,"content":{"@type":"messageVideo","video":{"width":640,"height":360,"duration":10,"video":{"@type":"file","id":901,"size":1048576,"local":{"path":"partial.mp4","is_downloading_completed":false,"download_offset":0,"downloaded_prefix_size":131072,"downloaded_size":786432}}}}}})"));
+        assert(streaming.messages_.size() == 1);
+        auto stream = streaming.messages_[0].animation_stream;
+        assert(stream && !stream->ready() && streaming.messages_[0].animation_path.empty());
+        streaming.process(parse(R"({"@type":"updateFile","file":{"@type":"file","id":901,"size":1048576,"local":{"path":"partial.mp4","is_downloading_completed":false,"download_offset":65536,"downloaded_prefix_size":786432,"downloaded_size":851968}}})"));
+        assert(!stream->ready()); // Total bytes and a nonzero-offset prefix cannot start playback.
+        streaming.process(parse(R"({"@type":"updateFile","file":{"@type":"file","id":901,"size":1048576,"local":{"path":"partial.mp4","is_downloading_completed":false,"download_offset":0,"downloaded_prefix_size":262144,"downloaded_size":851968}}})"));
+        assert(stream->ready() && stream->snapshot().prefix == 262144);
+        auto* old_message = parse(R"({"content":{"@type":"messageVideo","video":{"video":{"@type":"file","id":901,"size":1048576,"local":{"path":"partial.mp4","is_downloading_completed":false,"downloaded_prefix_size":0}}}}})");
+        auto reparsed = streaming.parseMessage(old_message); json_decref(old_message);
+        assert(reparsed.animation_stream == stream && stream->snapshot().prefix == 262144);
+        const auto source = stream->source;
+        // The actual TDLib path must be published before cache validation hides it.
+        streaming.process(parse(R"({"@type":"updateFile","file":{"@type":"file","id":901,"size":1048576,"remote":{"unique_id":"progressive-video"},"local":{"path":"final.mp4","is_downloading_completed":true,"downloaded_prefix_size":1048576,"downloaded_size":1048576}}})"));
+        assert(stream->snapshot().complete && stream->snapshot().path == "final.mp4");
+        assert(stream->source == source && streaming.messages_[0].animation_stream == stream);
+        assert(streaming.messages_[0].animation_path.empty()); // Async validation still pending.
+        streaming.clearAccountMemory();
+        assert(streaming.media_streams_.empty());
+    }
+    std::puts("Progressive playback: live prefix bounds, offset gaps, stale message metadata, completion before cache validation and stable source passed");
 
     // Real disk cleanup, asynchronous lifecycle and crash recovery, using only
     // the test runner's isolated temporary working directory.

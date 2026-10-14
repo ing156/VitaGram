@@ -71,13 +71,13 @@ bool AudioRecorder::start(const std::string& path) {
     path_ = std::string(VITAGRAM_FILES_DIR) + "/" + file_name;
     pcm_path_ = path_ + ".pcm.wav";
     FILE* file = std::fopen(pcm_path_.c_str(), "wb");
-    if (!file) { status_ = tr("rec.file_create_failed"); return false; }
+    if (!file) { status_ = i18n::text("rec.file_create_failed"); return false; }
     unsigned char empty[44]{}; std::fwrite(empty, 1, sizeof(empty), file); std::fclose(file);
-    data_bytes_ = 0; capture_failed_ = false; stop_ = false; level_ = 0; peak_ = 0; conversion_percent_ = 0; completed_path_.clear(); status_ = tr("rec.recording");
+    data_bytes_ = 0; capture_failed_ = false; stop_ = false; level_ = 0; peak_ = 0; conversion_percent_ = 0; completed_path_.clear(); status_ = i18n::text("rec.recording");
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 64 * 1024);
     recording_ = true;
     int result = pthread_create(&thread_, &attr, entry, this); pthread_attr_destroy(&attr);
-    if (result != 0) { recording_ = false; std::remove(pcm_path_.c_str()); status_ = tr("rec.start_failed"); return false; }
+    if (result != 0) { recording_ = false; std::remove(pcm_path_.c_str()); status_ = i18n::text("rec.start_failed"); return false; }
     started_ = true; return true;
 }
 
@@ -108,12 +108,12 @@ std::string AudioRecorder::stop() {
     pthread_join(thread_, nullptr);
     started_ = false; recording_ = false;
     if (capture_failed_) { std::remove(pcm_path_.c_str()); return {}; }
-    if (data_bytes_ == 0) { std::remove(pcm_path_.c_str()); status_ = tr("rec.empty"); return {}; }
+    if (data_bytes_ == 0) { std::remove(pcm_path_.c_str()); status_ = i18n::text("rec.empty"); return {}; }
     cancel_encode_ = false;
-    conversion_percent_ = 0; processing_ = true; status_ = tr("rec.converting", {"0"});
+    conversion_percent_ = 0; processing_ = true; status_ = i18n::text("rec.converting", {"0"});
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 512 * 1024);
     if (pthread_create(&encode_thread_, &attr, encodeEntry, this) != 0) {
-        pthread_attr_destroy(&attr); processing_ = false; std::remove(pcm_path_.c_str()); status_ = tr("rec.convert_start_failed"); return {};
+        pthread_attr_destroy(&attr); processing_ = false; std::remove(pcm_path_.c_str()); status_ = i18n::text("rec.convert_start_failed"); return {};
     }
     pthread_attr_destroy(&attr);
     encode_started_ = true;
@@ -138,20 +138,20 @@ std::string AudioRecorder::takeCompleted() {
 
 void AudioRecorder::runEncode() {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Video);
-    std::string error;
+    i18n::Text error;
     bool ok = encodeOggOpus(error);
     std::remove(pcm_path_.c_str());
     pthread_mutex_lock(&mutex_);
-    if (ok) { completed_path_ = path_; status_ = tr("rec.ready"); }
-    else { std::remove(path_.c_str()); status_ = tr("rec.opus_failed", {error}); }
+    if (ok) { completed_path_ = path_; status_ = i18n::text("rec.ready"); }
+    else { std::remove(path_.c_str()); status_ = i18n::text("rec.opus_failed", {error}); }
     pthread_mutex_unlock(&mutex_);
     processing_ = false;
 }
 
-bool AudioRecorder::encodeOggOpus(std::string& error) {
+bool AudioRecorder::encodeOggOpus(i18n::Text& error) {
     performance::Scope measurement(performance::Metric::AudioEncode);
     FILE* input = std::fopen(pcm_path_.c_str(), "rb");
-    if (!input) { error = tr("rec.err.pcm_open"); return false; }
+    if (!input) { error = i18n::text("rec.err.pcm_open"); return false; }
     std::fseek(input, 44, SEEK_SET);
     struct stat input_info{};
     const long total_bytes = !stat(pcm_path_.c_str(), &input_info) ? std::max<long>(1, input_info.st_size - 44) : 1;
@@ -164,7 +164,7 @@ bool AudioRecorder::encodeOggOpus(std::string& error) {
     AVPacket* packet = nullptr;
     bool ok = false;
     do {
-        if (!context || !codec) { error = tr("rec.err.opus_missing"); break; }
+        if (!context || !codec) { error = i18n::text("rec.err.opus_missing"); break; }
         context->bit_rate = 24000;
         context->sample_rate = opus_sample_rate;
         av_channel_layout_default(&context->ch_layout, channels);
@@ -178,9 +178,9 @@ bool AudioRecorder::encodeOggOpus(std::string& error) {
             error = std::string("Opus encoder: ") + message;
             break;
         }
-        if (avformat_alloc_output_context2(&format, nullptr, "ogg", path_.c_str()) < 0 || !format) { error = tr("rec.err.ogg_missing"); break; }
+        if (avformat_alloc_output_context2(&format, nullptr, "ogg", path_.c_str()) < 0 || !format) { error = i18n::text("rec.err.ogg_missing"); break; }
         stream = avformat_new_stream(format, nullptr);
-        if (!stream || avcodec_parameters_from_context(stream->codecpar, context) < 0) { error = tr("rec.err.ogg_stream"); break; }
+        if (!stream || avcodec_parameters_from_context(stream->codecpar, context) < 0) { error = i18n::text("rec.err.ogg_stream"); break; }
         stream->time_base = context->time_base;
         if (!(format->oformat->flags & AVFMT_NOFILE)) {
             const std::string file_url = "file:" + path_;
@@ -188,21 +188,21 @@ bool AudioRecorder::encodeOggOpus(std::string& error) {
             if (open_result < 0) {
                 char message[AV_ERROR_MAX_STRING_SIZE]{};
                 av_strerror(open_result, message, sizeof(message));
-                error = tr("rec.err.ogg_open", {message});
+                error = i18n::text("rec.err.ogg_open", {message});
                 break;
             }
         }
-        if (avformat_write_header(format, nullptr) < 0) { error = tr("rec.err.ogg_header"); break; }
+        if (avformat_write_header(format, nullptr) < 0) { error = i18n::text("rec.err.ogg_header"); break; }
         if (swr_alloc_set_opts2(&resampler, &context->ch_layout, context->sample_fmt, opus_sample_rate,
             &context->ch_layout, AV_SAMPLE_FMT_S16, sample_rate, 0, nullptr) < 0)
-            { error = tr("rec.err.resampler_create"); break; }
-        if (!resampler || swr_init(resampler) < 0) { error = tr("rec.err.resampler_init"); break; }
+            { error = i18n::text("rec.err.resampler_create"); break; }
+        if (!resampler || swr_init(resampler) < 0) { error = i18n::text("rec.err.resampler_init"); break; }
         frame = av_frame_alloc(); packet = av_packet_alloc();
-        if (!frame || !packet) { error = tr("rec.err.encoder_memory"); break; }
+        if (!frame || !packet) { error = i18n::text("rec.err.encoder_memory"); break; }
         frame->format = context->sample_fmt; frame->sample_rate = opus_sample_rate; frame->ch_layout = context->ch_layout;
         const int frame_samples = context->frame_size > 0 ? context->frame_size : 320;
         frame->nb_samples = frame_samples;
-        if (av_frame_get_buffer(frame, 0) < 0) { error = tr("rec.err.encoder_buffer"); break; }
+        if (av_frame_get_buffer(frame, 0) < 0) { error = i18n::text("rec.err.encoder_buffer"); break; }
         const int input_samples = std::max(1, frame_samples * (int)sample_rate / (int)opus_sample_rate);
         std::vector<int16_t> pcm(input_samples * channels);
         int64_t next_pts = 0;
@@ -230,7 +230,7 @@ bool AudioRecorder::encodeOggOpus(std::string& error) {
         bool eof = false;
         bool drained = false;
         while (!drained && error.empty()) {
-            if (cancel_encode_) { error = tr("rec.err.cancelled"); break; }
+            if (cancel_encode_) { error = i18n::text("rec.err.cancelled"); break; }
             frame->nb_samples = frame_samples;
             if (failed(av_frame_make_writable(frame), "Opus frame buffer")) break;
             int filled = 0;
@@ -238,7 +238,7 @@ bool AudioRecorder::encodeOggOpus(std::string& error) {
             // frame. Accumulate samples; only the very last frame may be short.
             while (filled < frame_samples && !drained) {
                 size_t count = eof ? 0 : std::fread(pcm.data(), sizeof(int16_t), pcm.size(), input);
-                if (std::ferror(input)) { error = tr("rec.err.pcm_read"); break; }
+                if (std::ferror(input)) { error = i18n::text("rec.err.pcm_read"); break; }
                 if (!count) eof = true;
                 const uint8_t* source[] = {reinterpret_cast<const uint8_t*>(pcm.data())};
                 uint8_t* output[] = {frame->data[0] + filled * sizeof(float)};
@@ -257,13 +257,13 @@ bool AudioRecorder::encodeOggOpus(std::string& error) {
         }
         if (!error.empty()) break;
         if (failed(avcodec_send_frame(context, nullptr), "Opus flush") || !write_packets()) break;
-        if (!packet_count) { error = tr("rec.err.no_packets"); break; }
+        if (!packet_count) { error = i18n::text("rec.err.no_packets"); break; }
         if (failed(av_write_trailer(format), "Ogg trailer")) break;
         ok = true;
     } while (false);
     if (format && !(format->oformat->flags & AVFMT_NOFILE)) {
         int close_result = avio_closep(&format->pb);
-        if (close_result < 0) { error = tr("rec.err.ogg_close"); ok = false; }
+        if (close_result < 0) { error = i18n::text("rec.err.ogg_close"); ok = false; }
     }
     if (format) avformat_free_context(format);
     av_frame_free(&frame); av_packet_free(&packet); swr_free(&resampler); avcodec_free_context(&context); std::fclose(input);
@@ -276,11 +276,11 @@ int AudioRecorder::seconds() const {
     return (int)(data_bytes_.load() / (sample_rate * channels * (bits / 8)));
 }
 
-std::string AudioRecorder::status() const {
-    pthread_mutex_lock(&mutex_); auto result = status_; pthread_mutex_unlock(&mutex_); return result;
+i18n::Text AudioRecorder::status() const {
+    pthread_mutex_lock(&mutex_); auto result = status_; pthread_mutex_unlock(&mutex_); result.refresh(); return result;
 }
 
-void AudioRecorder::setStatus(const std::string& status) {
+void AudioRecorder::setStatus(const i18n::Text& status) {
     pthread_mutex_lock(&mutex_); status_ = status; pthread_mutex_unlock(&mutex_);
 }
 
@@ -290,14 +290,14 @@ void* AudioRecorder::encodeEntry(void* self) { static_cast<AudioRecorder*>(self)
 void AudioRecorder::run() {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Audio);
     int port = sceAudioInOpenPort(SCE_AUDIO_IN_PORT_TYPE_VOICE, grain, sample_rate, SCE_AUDIO_IN_PARAM_FORMAT_S16_MONO);
-    if (port < 0) { setStatus(tr("rec.mic_unavailable")); capture_failed_ = true; recording_ = false; return; }
+    if (port < 0) { setStatus(i18n::text("rec.mic_unavailable")); capture_failed_ = true; recording_ = false; return; }
     cpu_scheduler::Media reservation(cpu_scheduler::Role::Audio);
     FILE* file = std::fopen(pcm_path_.c_str(), "ab");
-    if (!file) { sceAudioInReleasePort(port); setStatus(tr("rec.file_error")); capture_failed_ = true; recording_ = false; return; }
+    if (!file) { sceAudioInReleasePort(port); setStatus(i18n::text("rec.file_error")); capture_failed_ = true; recording_ = false; return; }
     int16_t samples[grain]{};
     while (!stop_) {
         int result = sceAudioInInput(port, samples);
-        if (result < 0) { setStatus(tr("rec.mic_read_error")); capture_failed_ = true; break; }
+        if (result < 0) { setStatus(i18n::text("rec.mic_read_error")); capture_failed_ = true; break; }
         const int count = result > 0 && result <= grain ? result : grain;
         int maximum = 0;
         uint64_t energy = 0;
@@ -311,11 +311,11 @@ void AudioRecorder::run() {
         peak_ = std::min(100, maximum * 100 / 32768);
         size_t written = std::fwrite(samples, sizeof(samples[0]), count, file);
         data_bytes_ += (uint32_t)(written * sizeof(samples[0]));
-        if (written != (size_t)count) { setStatus(tr("rec.no_space")); capture_failed_ = true; break; }
+        if (written != (size_t)count) { setStatus(i18n::text("rec.no_space")); capture_failed_ = true; break; }
     }
     bool failed = std::fflush(file) != 0;
     failed = std::fclose(file) != 0 || failed;
-    if (failed) { setStatus(tr("rec.save_error")); capture_failed_ = true; }
+    if (failed) { setStatus(i18n::text("rec.save_error")); capture_failed_ = true; }
     sceAudioInReleasePort(port);
     recording_ = false;
 }

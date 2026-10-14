@@ -53,33 +53,33 @@ std::vector<uint8_t> configuration(const uint8_t* data, int size) {
 
 bool encode_video_note(const std::string& frames, const std::string& pcm, const std::string& output,
                        uint32_t samples, const std::atomic<bool>& cancel, std::atomic<int>& progress,
-                       std::string& error) {
+                       i18n::Text& error) {
     using namespace video_note;
     Resources r;
     bool success = false;
     error.clear(); progress = 0;
-    auto fail = [&](const std::string& what, int rc = 0) {
+    auto fail = [&](const i18n::Text& what, int rc = 0) {
         error = what;
         if (rc < 0) { char text[AV_ERROR_MAX_STRING_SIZE]; av_strerror(rc, text, sizeof(text)); error += std::string(": ")+text; }
         return false;
     };
     auto work = [&]() -> bool {
-        if (!samples || samples > SampleRate*MaxSeconds) return fail(tr("vne.bad_duration"));
+        if (!samples || samples > SampleRate*MaxSeconds) return fail(i18n::text("vne.bad_duration"));
         r.frames = std::fopen(frames.c_str(), "rb"); r.pcm = std::fopen(pcm.c_str(), "rb");
-        if (!r.frames || !r.pcm) return fail(tr("vne.open_failed"));
+        if (!r.frames || !r.pcm) return fail(i18n::text("vne.open_failed"));
         H264E_create_param_t params{};
         params.width = params.height = Side; params.gop = KeyframeInterval; params.const_input_flag = 1;
         params.vbv_size_bytes = VideoBitrate / 8 * 2; params.enableNEON = 1;
         int persistent=0, scratch=0;
-        if (H264E_sizeof(&params, &persistent, &scratch)) return fail(tr("vne.h264_params"));
+        if (H264E_sizeof(&params, &persistent, &scratch)) return fail(i18n::text("vne.h264_params"));
         r.persist=memalign(64,persistent); r.scratch=memalign(64,scratch); r.pixels=memalign(64,FrameBytes);
-        if (!r.persist || !r.scratch || !r.pixels) return fail(tr("vne.h264_memory"));
+        if (!r.persist || !r.scratch || !r.pixels) return fail(i18n::text("vne.h264_memory"));
         auto* encoder=static_cast<H264E_persist_t*>(r.persist);
-        if (H264E_init(encoder,&params)) return fail(tr("vne.h264_open"));
+        if (H264E_init(encoder,&params)) return fail(i18n::text("vne.h264_open"));
         const AVCodec* aac=avcodec_find_encoder(AV_CODEC_ID_AAC);
-        if (!aac || !(r.audio=avcodec_alloc_context3(aac))) return fail(tr("vne.aac_missing"));
+        if (!aac || !(r.audio=avcodec_alloc_context3(aac))) return fail(i18n::text("vne.aac_missing"));
         int rc=avformat_alloc_output_context2(&r.format,nullptr,"mp4",output.c_str());
-        if (rc<0 || !r.format) return fail(tr("vne.mp4_muxer_missing"),rc);
+        if (rc<0 || !r.format) return fail(i18n::text("vne.mp4_muxer_missing"),rc);
         r.audio->sample_rate=SampleRate; r.audio->sample_fmt=AV_SAMPLE_FMT_FLTP;
         av_channel_layout_default(&r.audio->ch_layout,1);
         r.audio->bit_rate=AudioBitrate; r.audio->time_base={1,SampleRate};
@@ -87,14 +87,14 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
         if ((rc=avcodec_open2(r.audio,aac,nullptr))<0) return fail("AAC encoder",rc);
         AVStream* video=avformat_new_stream(r.format,nullptr);
         AVStream* audio=avformat_new_stream(r.format,nullptr);
-        if (!video || !audio) return fail(tr("vne.streams"));
+        if (!video || !audio) return fail(i18n::text("vne.streams"));
         video->time_base={1,SampleRate}; video->avg_frame_rate={FrameRate,1};
         video->codecpar->codec_type=AVMEDIA_TYPE_VIDEO; video->codecpar->codec_id=AV_CODEC_ID_H264;
         video->codecpar->width=video->codecpar->height=Side; video->codecpar->format=AV_PIX_FMT_YUV420P;
         audio->time_base=r.audio->time_base;
         if ((rc=avcodec_parameters_from_context(audio->codecpar,r.audio))<0) return fail("AAC parameters",rc);
         r.frame=av_frame_alloc(); r.packet=av_packet_alloc();
-        if (!r.frame || !r.packet) return fail(tr("vne.mp4_memory"));
+        if (!r.frame || !r.packet) return fail(i18n::text("vne.mp4_memory"));
         r.frame->format=r.audio->sample_fmt; r.frame->sample_rate=SampleRate;
         av_channel_layout_default(&r.frame->ch_layout,1); r.frame->nb_samples=r.audio->frame_size;
         if ((rc=av_frame_get_buffer(r.frame,0))<0) return fail("AAC buffer",rc);
@@ -114,7 +114,7 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
         auto audio_until = [&](uint32_t until) -> bool {
             while (audio_pts<until && audio_pts<samples && !cancel) {
                 int count=std::min<uint32_t>(r.audio->frame_size,samples-audio_pts);
-                if (std::fread(pcm_samples.data(),sizeof(int16_t),count,r.pcm)!=(size_t)count) return fail(tr("vne.audio_read"));
+                if (std::fread(pcm_samples.data(),sizeof(int16_t),count,r.pcm)!=(size_t)count) return fail(i18n::text("vne.audio_read"));
                 if ((rc=av_frame_make_writable(r.frame))<0) return fail("AAC writable frame",rc);
                 auto* dst=reinterpret_cast<float*>(r.frame->data[0]);
                 for (int i=0;i<count;++i) dst[i]=pcm_samples[i]/32768.0f;
@@ -124,15 +124,15 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
             return true;
         };
         uint32_t pts=0;
-        if (std::fread(&pts,sizeof(pts),1,r.frames)!=1 || pts!=0) return fail(tr("vne.no_first_frame"));
+        if (std::fread(&pts,sizeof(pts),1,r.frames)!=1 || pts!=0) return fail(i18n::text("vne.no_first_frame"));
         int frame_number=0;
         bool header=false;
         while (!cancel) {
-            if (pts>=samples || std::fread(r.pixels,1,FrameBytes,r.frames)!=FrameBytes) return fail(tr("vne.frame_corrupt"));
+            if (pts>=samples || std::fread(r.pixels,1,FrameBytes,r.frames)!=FrameBytes) return fail(i18n::text("vne.frame_corrupt"));
             uint32_t next=samples;
             size_t got=std::fread(&next,1,sizeof(next),r.frames);
             if (std::ferror(r.frames) || (got && got!=sizeof(next)) || next<=pts || next>samples)
-                return fail(tr("vne.timestamps_corrupt"));
+                return fail(i18n::text("vne.timestamps_corrupt"));
             H264E_io_yuv_t input{};
             auto* pixels=static_cast<uint8_t*>(r.pixels);
             input.yuv[0]=pixels; input.yuv[1]=pixels+Side*Side; input.yuv[2]=pixels+Side*Side*5/4;
@@ -144,15 +144,15 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
             run.qp_min=20; run.qp_max=45;
             unsigned char* coded=nullptr; int size=0;
             if (H264E_encode(encoder,static_cast<H264E_scratch_t*>(r.scratch),&run,&input,&coded,&size) || size<=0)
-                return fail(tr("vne.h264_encode"));
+                return fail(i18n::text("vne.h264_encode"));
             if (!header) {
                 auto config=configuration(coded,size);
-                if (config.empty()) return fail(tr("vne.no_sps_pps"));
+                if (config.empty()) return fail(i18n::text("vne.no_sps_pps"));
                 video->codecpar->extradata=static_cast<uint8_t*>(av_mallocz(config.size()+AV_INPUT_BUFFER_PADDING_SIZE));
-                if (!video->codecpar->extradata) return fail(tr("vne.mp4_header_memory"));
+                if (!video->codecpar->extradata) return fail(i18n::text("vne.mp4_header_memory"));
                 std::memcpy(video->codecpar->extradata,config.data(),config.size());
                 video->codecpar->extradata_size=config.size();
-                if ((rc=avio_open(&r.format->pb,("file:"+output).c_str(),AVIO_FLAG_WRITE))<0) return fail(tr("vne.mp4_create"),rc);
+                if ((rc=avio_open(&r.format->pb,("file:"+output).c_str(),AVIO_FLAG_WRITE))<0) return fail(i18n::text("vne.mp4_create"),rc);
                 if ((rc=avformat_write_header(r.format,nullptr))<0) return fail("MP4 header",rc);
                 header=true;
             }
@@ -168,7 +168,7 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
             if (!got) break;
             pts=next;
         }
-        if (cancel) return fail(tr("vne.cancelled"));
+        if (cancel) return fail(i18n::text("vne.cancelled"));
         if (!header || !audio_until(samples)) return false;
         if ((rc=avcodec_send_frame(r.audio,nullptr))<0 || !drain()) return error.empty() ? fail("AAC flush",rc) : false;
         if ((rc=av_write_trailer(r.format))<0) return fail("MP4 trailer",rc);
@@ -181,4 +181,13 @@ bool encode_video_note(const std::string& frames, const std::string& pcm, const 
         std::remove(output.c_str());
     }
     return success;
+}
+
+bool encode_video_note(const std::string& frames, const std::string& pcm, const std::string& output,
+                       uint32_t samples, const std::atomic<bool>& cancel, std::atomic<int>& progress,
+                       std::string& error) {
+    i18n::Text localized_error;
+    const bool result = encode_video_note(frames, pcm, output, samples, cancel, progress, localized_error);
+    error = localized_error;
+    return result;
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -10,18 +11,18 @@ class UploadPicker {
 public:
     enum class Kind { Photo, Video, File };
     enum class Stage { Closed, Menu, Browse, Review };
-    struct Entry { std::string name; bool dir = false; int64_t size = 0; uint64_t modified = 0; std::string date, label, full; };
+    struct Entry { std::string name; bool dir = false; int64_t size = 0; uint64_t modified = 0; std::string date; i18n::Text label; std::string full; };
     struct Item { std::string path, name; Kind kind = Kind::File; int64_t size = 0; };
     static constexpr size_t MaxItems = 10;
 
     Stage stage = Stage::Closed;
     Kind kind = Kind::Photo;       // type being browsed
-    std::string path, error;
+    std::string path; i18n::Text error;
     std::vector<Entry> entries;
     std::vector<Item> items;       // collected attachments
     int selected = 0;              // row in the current stage
     bool show_hidden = false;
-    std::string info;              // why the list is empty (raw entries vs. filtered)
+    i18n::Text info;              // why the list is empty (raw entries vs. filtered)
     std::vector<int> history;      // selected row of every folder we descended from
 
     bool active() const { return stage != Stage::Closed; }

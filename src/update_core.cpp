@@ -63,27 +63,37 @@ bool parse_release(const std::string& json, Release& out, std::string& error) {
         Release release;
         release.version = normalize_version(tag);
         json_t* assets = json_object_get(root, "assets");
-        std::string sig_name;
         size_t index;
         json_t* asset;
+        // Several .vpk files may be attached (e.g. the separate updater app); the application package
+        // is the one that comes with its detached signature.
+        auto asset_url = [&](const std::string& wanted) {
+            std::string found;
+            size_t i;
+            json_t* candidate;
+            json_array_foreach(assets, i, candidate) {
+                const char* name = json_string_value(json_object_get(candidate, "name"));
+                const char* url = json_string_value(json_object_get(candidate, "browser_download_url"));
+                if (name && url && wanted == name) { found = url; break; }
+            }
+            return found;
+        };
+        bool have_vpk = false;
         json_array_foreach(assets, index, asset) {
             const char* name = json_string_value(json_object_get(asset, "name"));
             const char* url = json_string_value(json_object_get(asset, "browser_download_url"));
             if (!name || !url) continue;
             std::string n = name;
-            if (n.size() > 4 && n.compare(n.size() - 4, 4, ".vpk") == 0 && release.vpk_url.empty()) {
-                release.vpk_name = n; release.vpk_url = url;
-                json_t* size = json_object_get(asset, "size");
-                release.vpk_size = json_is_integer(size) ? (uint64_t)json_integer_value(size) : 0;
-            }
+            if (n.size() <= 4 || n.compare(n.size() - 4, 4, ".vpk") != 0) continue;
+            have_vpk = true;
+            std::string sig = asset_url(n + ".sig");
+            if (sig.empty()) continue;
+            release.vpk_name = n; release.vpk_url = url; release.sig_url = sig;
+            json_t* size = json_object_get(asset, "size");
+            release.vpk_size = json_is_integer(size) ? (uint64_t)json_integer_value(size) : 0;
+            break;
         }
-        if (release.vpk_url.empty()) { error = "release has no .vpk asset"; break; }
-        sig_name = release.vpk_name + ".sig";
-        json_array_foreach(assets, index, asset) {
-            const char* name = json_string_value(json_object_get(asset, "name"));
-            const char* url = json_string_value(json_object_get(asset, "browser_download_url"));
-            if (name && url && sig_name == name) release.sig_url = url;
-        }
+        if (!have_vpk) { error = "release has no .vpk asset"; break; }
         if (release.sig_url.empty()) { error = "release has no signature (.vpk.sig)"; break; }
         out = release;
         ok = true;
@@ -454,6 +464,9 @@ bool extract_zip(FILE* zip, const std::string& dest,
             do {
                 stream.next_out = out.data(); stream.avail_out = (uInt)out.size();
                 zr = inflate(&stream, Z_NO_FLUSH);
+                // The previous call filled the output exactly and used all input (typical for stored
+                // blocks of incompressible data such as eboot.bin): nothing is wrong, more input is needed.
+                if (zr == Z_BUF_ERROR && stream.avail_in == 0) break;
                 if (zr != Z_OK && zr != Z_STREAM_END) { error = "corrupt data in " + e.name; ok = false; break; }
                 if (!emit(out.data(), out.size() - stream.avail_out)) { ok = false; break; }
             } while (stream.avail_out == 0 && zr != Z_STREAM_END);

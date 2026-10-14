@@ -2,6 +2,7 @@
 #include "vault.h"
 #include "vault_sweep.h"
 #include "settings.h"
+#include "download_stream.h"
 #include <jansson.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -36,6 +37,39 @@ int main() {
                           "ux0:data/vitagram/db/thumbnails", "ux0:data/vitagram/db/thumbnails/b1", "ux0:data/vitagram/db/old.trash"})
         assert(!mkdir(d, 0777));
     const std::string files = "ux0:data/vitagram/files", db = "ux0:data/vitagram/db";
+    // All theme IDs survive JSON and the pre-unlock hint, including VHBB (ID 2).
+    {
+        for (int theme = 0; theme < AppSettings::kThemeChoices; ++theme) {
+            AppSettings settings; settings.theme = theme; assert(settings.save());
+            AppSettings loaded; loaded.load();
+            assert(loaded.loaded && loaded.theme == theme);
+            assert(loaded.isDark() == (theme != 0));
+            assert(AppSettings::themeHint(-1) == theme);
+        }
+        spit(AppSettings::kThemeHint, "9");
+        assert(AppSettings::themeHint(1) == 1);
+        spit("ux0:data/vitagram/settings.json", "{}");
+        AppSettings defaults; defaults.load(); assert(defaults.theme == 1);
+    }
+    // Shortcut preferences and the single spoiler mode survive saving; invalid modes use the default.
+    {
+        AppSettings settings;
+        assert(settings.recording_shortcuts && settings.spoiler_reset == 3);
+        settings.recording_shortcuts = false;
+        for (int mode = 0; mode < AppSettings::kSpoilerResetChoices; ++mode) {
+            settings.spoiler_reset = mode; assert(settings.save());
+            AppSettings loaded; loaded.load();
+            assert(loaded.loaded && !loaded.recording_shortcuts && loaded.spoiler_reset == mode);
+            assert(loaded.spoilerHideChat() == bool(mode & 1) && loaded.spoilerHideApp() == bool(mode & 2));
+        }
+        spit("ux0:data/vitagram/settings.json", R"({"recording_shortcuts":"invalid","spoiler_reset":-1})");
+        AppSettings loaded; loaded.load(); assert(loaded.recording_shortcuts && loaded.spoiler_reset == 3);
+        spit("ux0:data/vitagram/settings.json", R"({"spoiler_reset":9})");
+        loaded.load(); assert(loaded.spoiler_reset == 3);
+        spit("ux0:data/vitagram/settings.json", R"({"spoiler_hide_chat":false,"spoiler_hide_app":true})");
+        loaded.load(); assert(loaded.spoiler_reset == 2); // Migrate the earlier two-switch layout.
+    }
+
     struct Item { std::string path, data; } items[] = {
         {files + "/photos/a.jpg", blob(30000, 1)}, {files + "/videos/v.mp4", blob(200000, 2)},
         {db + "/stickers/s.webp", blob(9000, 3)}, {db + "/thumbnails/b1/t.jpg", blob(1, 4)},
@@ -98,6 +132,19 @@ int main() {
     sealer.enqueue(db + "/db.sqlite");                                                  // ignored: not user data
     for (int i = 0; i < 50 && !vault::is_sealed(files + "/photos/live.jpg"); ++i) usleep(100000);
     assert(vault::is_sealed(files + "/photos/live.jpg") && !vault::is_sealed(db + "/db.sqlite"));
+    sealer.stop();
+
+    // Audio-only progressive readers also postpone sealing, then release it.
+    const std::string streamed = files + "/photos/streamed.bin";
+    spit(streamed, blob(12345, 12));
+    {
+        download_stream::Pin reading(true);
+        sealer.start(); sealer.enqueue(streamed);
+        usleep(600000);
+        assert(!vault::is_sealed(streamed));
+    }
+    for (int i = 0; i < 50 && !vault::is_sealed(streamed); ++i) usleep(100000);
+    assert(vault::is_sealed(streamed));
     sealer.stop();
 
     // Protected state is not downgraded (F02): with the vault on and no migration pending, plain or

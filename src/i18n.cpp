@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <memory>
@@ -15,6 +16,7 @@
 
 namespace i18n {
 namespace {
+std::atomic<uint64_t> catalog_revision{0};
 
 using Table = std::unordered_map<std::string, std::string>;
 
@@ -228,6 +230,24 @@ void init(const std::string& directory, const std::string& preference) {
     select(preference);
 }
 
+std::string resolve(const std::string& preference) {
+    std::vector<Language> languages;
+    {
+        std::lock_guard<std::mutex> lock(state().mutex);
+        languages = state().languages;
+    }
+    const Language* chosen = nullptr;
+    if (!preference.empty()) {
+        chosen = find_language(languages, preference);
+    }
+    if (!chosen) {
+        std::string system = systemLanguage();
+        if (!system.empty()) chosen = find_language(languages, system);
+    }
+    if (!chosen) chosen = find_language(languages, "en");
+    return chosen ? chosen->code : "en";
+}
+
 bool select(const std::string& preference) {
     State& s = state();
     std::vector<Language> languages;
@@ -237,22 +257,13 @@ bool select(const std::string& preference) {
         languages = s.languages;
         directory = s.directory;
     }
-    const Language* chosen = nullptr;
-    bool known = true;
-    if (!preference.empty()) {
-        chosen = find_language(languages, preference);
-        known = chosen != nullptr;
-    }
-    if (!chosen && (preference.empty() || !known)) {
-        std::string system = systemLanguage();
-        if (!system.empty()) chosen = find_language(languages, system);
-    }
-    if (!chosen) chosen = find_language(languages, "en");
-    std::string code = chosen ? chosen->code : "en";
-    auto table = load_table(chosen ? file_code_for(directory, code) : "en");
+    const bool known = preference.empty() || find_language(languages, preference);
+    const std::string code = resolve(preference);
+    auto table = load_table(file_code_for(directory, code));
     std::lock_guard<std::mutex> lock(s.mutex);
     s.current = code;
     s.active = table;
+    ++catalog_revision;
     return known;
 }
 
@@ -296,6 +307,75 @@ std::string tr(const char* key, std::initializer_list<std::string> args) {
         out += text[i];
     }
     return out;
+}
+
+uint64_t revision() { return catalog_revision.load(); }
+Text Text::computed(std::function<std::string()> render) {
+    Text result;
+    result.render_ = std::make_shared<const std::function<std::string()>>(std::move(render));
+    result.revision_ = revision() - 1;
+    result.refresh();
+    return result;
+}
+std::string Text::localized() const {
+    if (!render_ || revision_ == revision()) return static_cast<const std::string&>(*this);
+    Text updated = *this;
+    updated.refresh();
+    return static_cast<const std::string&>(updated);
+}
+void Text::refresh() {
+    if (!render_) { revision_ = revision(); return; }
+    for (;;) {
+        const uint64_t generation = revision();
+        if (revision_ == generation) return;
+        std::string value = (*render_)();
+        // A media/storage worker may finish while the UI commits another locale.
+        // Do not mark an older rendering as belonging to the new catalog.
+        if (generation != revision()) continue;
+        std::string::operator=(std::move(value));
+        revision_ = generation;
+        return;
+    }
+}
+Text text(const char* key, std::initializer_list<Text> args) {
+    return Text::computed([key = std::string(key), args = std::vector<Text>(args)] {
+        const std::string pattern = tr(key.c_str());
+        std::string out;
+        for (size_t i = 0; i < pattern.size(); ++i) {
+            if (pattern[i] == '{') {
+                size_t end = i + 1, index = 0;
+                while (end < pattern.size() && std::isdigit(static_cast<unsigned char>(pattern[end])))
+                    index = index * 10 + (pattern[end++] - '0');
+                if (end > i + 1 && end < pattern.size() && pattern[end] == '}') {
+                    if (index < args.size()) out += args[index].localized();
+                    i = end; continue;
+                }
+            }
+            out += pattern[i];
+        }
+        return out;
+    });
+}
+Text operator+(const Text& left, const Text& right) {
+    if (!left.render_ && !right.render_)
+        return Text(static_cast<const std::string&>(left) + static_cast<const std::string&>(right));
+    return Text::computed([left, right] { return left.localized() + right.localized(); });
+}
+Text operator+(const Text& left, const std::string& right) { return left + Text(right); }
+Text operator+(const std::string& left, const Text& right) { return Text(left) + right; }
+Text operator+(const Text& left, std::string&& right) { return left + Text(std::move(right)); }
+Text operator+(std::string&& left, const Text& right) { return Text(std::move(left)) + right; }
+Text operator+(const Text& left, const char* right) { return left + Text(right); }
+Text operator+(const char* left, const Text& right) { return Text(left) + right; }
+Text& Text::operator+=(const Text& value) { return *this = *this + value; }
+void Text::replaceTranslation(const Text& needle, const Text& replacement) {
+    *this = computed([original = *this, needle, replacement] {
+        std::string value = original.localized();
+        const std::string from = needle.localized();
+        const auto position = value.find(from);
+        if (position != std::string::npos) value.replace(position, from.size(), replacement.localized());
+        return value;
+    });
 }
 
 }  // namespace i18n

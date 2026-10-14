@@ -85,7 +85,7 @@ cam.open_failed = Could not open the camera
 cam.start_failed = Could not start the camera
 
 # --- cfg ---
-cfg.edit = Edit src/config.h and set your Telegram api_id/api_hash
+cfg.edit = Edit src/config.local.h and set your Telegram api_id/api_hash
 cfg.required = Configuration required
 
 # --- chat ---
@@ -325,10 +325,10 @@ proxy.type.socks5 = SOCKS5
 proxy.username = Username
 proxy.cleartext = The proxy login and password are sent unencrypted; your Telegram data stays encrypted.
 proxy.footer = {cross} Edit / apply    {circle} Back without saving
-proxy.import_confirm = Set up this MTProxy? Check the fields and choose "Save and apply".
-proxy.kb.port = MTProxy port
+proxy.import_confirm = Set up this proxy? Check the fields and choose "Save and apply".
+proxy.kb.port = proxy port
 proxy.kb.secret = MTProxy secret
-proxy.kb.server = MTProxy server
+proxy.kb.server = proxy server
 proxy.need_fields = Enter the server and port (and secret for MTProxy)
 proxy.port = Port
 proxy.save_apply = Save and apply
@@ -377,9 +377,9 @@ qr.err.memory = Not enough memory for the QR scanner
 qr.err.open_rear = Could not open the rear camera
 qr.err.preview_memory = Not enough memory for the preview
 qr.err.start = Could not start the QR scanner
-qr.footer = Rear camera: MTProxy QR code    {circle} Cancel
-qr.hint = Point the rear camera at the MTProxy QR code
-qr.no_link = The QR code does not contain an MTProxy link
+qr.footer = Rear camera: proxy QR code    {circle} Cancel
+qr.hint = Point the rear camera at the proxy QR code
+qr.no_link = The QR code does not contain an proxy link
 
 # --- reaction ---
 reaction.anon_admin = Reactions are unavailable for an anonymous administrator
@@ -446,6 +446,7 @@ settings.show_threads = Show threads
 settings.theme = Theme
 settings.theme_dark = Dark
 settings.theme_light = Light
+settings.theme_vhbb = VHBB
 settings.opacity = Opacity
 settings.avatar_shape = Avatar shape
 settings.show_archive = Show archived chats
@@ -492,6 +493,7 @@ unit.mb = {0} MB
 unit.mib = {0} MiB
 unit.per_sec = {0}/s
 unit.sec = {0} s
+unit.min = {0} min
 
 # --- unsupported ---
 unsupported.footer = {cross} Prepare    {circle} Cancel
@@ -614,6 +616,8 @@ update.downloading = Downloading {0}% - {cross}: cancel
 update.verifying = Verifying signature...
 update.extracting = Unpacking {0}%
 update.installing = Installing...
+update.applying = Installing update...
+update.applying_hint = Please wait, do not turn off the console. VitaGram will restart.
 update.installed = {0} installed - restarting...
 update.hint = Update {0} available: {start} Settings
 update.err.network = Cannot reach GitHub - {cross}: retry
@@ -623,12 +627,13 @@ update.err.storage = Write error or storage full
 update.err.package = The update package is damaged
 update.err.install = Install failed, VPK saved in ux0:data/vitagram/update
 update.err.cancelled = Cancelled - {cross}: retry
+update.err.helper = Updater app missing - install vitagram-updater.vpk from the update folder with VitaShell
 update.direct = Update checks connect to GitHub directly, not through the proxy.
 
 # Data encryption (key made of console buttons)
 vault.title = Data encryption
 vault.ask.title = Protect your data?
-vault.ask.body = VitaGram can encrypt everything it keeps on the memory card: the Telegram database, photos, videos, stickers, voice messages and settings.\n\nYou unlock it at every start with either a key made of console buttons or a typed passphrase (stronger).\n\nIf you forget the key, the data cannot be recovered; you would have to sign in to Telegram again. You can change this later in Start > Settings.\n\nEncryption is optional, but strongly recommended.\n⚠ Since you are using the app on a hacked console, storing data on it is inherently unsafe. ⚠\nThe app does not send any metrics or data to third-party services.\n
+vault.ask.body = To operate, VitaGram stores your data locally on the console: the Telegram session, database, photos, videos, stickers, voice messages and settings. The app can encrypt this local storage to protect it against unauthorized copying.\n\nChoose a console button sequence or a passphrase to unlock it. A passphrase is recommended for better protection.\n\n⚠ If you forget the key, local data cannot be recovered. You will need to delete it and sign in to Telegram again.\n\nYou can manage encryption later in Start > Settings.\n\nPeriodically check in settings that all local files are encrypted. Closing the app or turning off the console during writing may interrupt encryption. Some files may remain unencrypted until the next processing pass or check.\n\nVitaGram does not collect telemetry or send your data to third-party services.\n\nDespite our efforts to improve VitaGram security, the application runs on a modified console with the associated risks. Software with system access may access data in the running application and console memory. Local storage encryption cannot guarantee protection against such access.
 vault.ask.footer = {cross} Encrypt data    {circle} Not now
 vault.setup.title = Create a key
 vault.new.title = New key
@@ -643,6 +648,8 @@ vault.unlock.hint = Enter your key with the console buttons and press Start.
 vault.unlock.hint_disabling = Encryption is being turned off. Enter your key to finish decrypting your data.
 vault.entry.footer = Start: OK    L: delete    R: clear    Select: cancel
 vault.unlock.footer = Start: unlock    L: delete    R: clear    Select: forgot key
+vault.relock.footer = Start: unlock    L: delete    R: clear
+vault.relock.title = VitaGram is locked
 vault.strength = {0} presses, {1} bits
 vault.empty = Press some buttons first.
 vault.one_button = Press one button at a time.
@@ -688,7 +695,7 @@ auth.qr_requesting = Requesting a QR code...
 auth.qr_steps = On your phone open Telegram > Settings > Devices > Link Desktop Device and scan this code. The code refreshes by itself.\n\nIf the account has two-step verification, the password is asked next.
 auth.qr_footer = {circle} Cancel (restarts the app)
 vault.method.title = Choose how to unlock
-vault.method.buttons = {cross}  Console buttons\nQuick to enter: D-pad, {cross} {circle} {triangle} {square}. Good protection with a long sequence (12 or more presses).
+vault.method.buttons = {cross}  Console buttons\nQuick to enter: D-pad, {cross} {circle} {triangle} {square}. At least 12 presses. The limited set of buttons makes this less reliable than a passphrase, but convenient. Use a long sequence for better protection.
 vault.method.text = {square}  Text passphrase\nStronger: a typed phrase of at least 10 characters, entered on the app's own on-screen keyboard, so the system keyboard never learns it. Best for long-term protection. Use plain letters, digits and symbols: accented letters can be typed in different ways and may not match later.
 vault.method.footer = {cross} Buttons    {square} Passphrase    {circle} Back
 vault.text.hint = Type a passphrase of at least {0} characters. A phrase of several words, with digits or symbols, is much stronger than a single word.
@@ -699,6 +706,8 @@ vault.text.short = Too short: use at least {0} characters.
 vault.text.retry_footer = {cross} Type again    {triangle} Forgot the passphrase
 vault.text.cancelled = The passphrase was not entered.
 vault.settings.check = Check files
+vault.settings.lock_on_leave = Lock after sleep or PS button
+vault.settings.auto_lock = Auto-lock after inactivity
 vault.check.title = Check encrypted files
 vault.check.scanning = Scanning files... {0}/{1}
 vault.check.encrypting = Encrypting files... {0}/{1}
@@ -830,12 +839,12 @@ leave.title = Leave {0}?
 leave.warning = You will stop receiving its messages. You can join again later if the chat is public or you are invited.
 leave.confirm = {cross}  Leave chat
 leave.cancel = {circle}  Cancel
-menu.clear_chat = Clear chat
+menu.clear_chat = Clear history
 menu.delete_chat = Delete chat
 delete.title = Delete chat with {0}?
 delete.warning = The conversation will be removed from your chat list and its messages deleted from this account.
 delete.confirm = {cross}  Delete chat
-clear.title = Clear chat with {0}?
+clear.title = Clear chat history with {0}?
 clear.warning = All messages in this conversation will be deleted from this account. The chat stays in your list.
 clear.confirm = {cross}  Clear chat
 notice.deleted = Chat deleted
@@ -854,7 +863,7 @@ vault.kb.delete = Delete
 vault.kb.ok = OK
 vault.kb.help = {cross} Type    {square} Space    {triangle} Layout
 spoiler.title = Sensitive content
-spoiler.warning = This message may contain sensitive photos. Show all photos in this message?
+spoiler.warning = This message may contain sensitive photos or videos. Show the hidden media?
 spoiler.footer = {cross}  Show    {circle}  Cancel
 spoiler.hidden = Hidden
 
@@ -887,3 +896,76 @@ logs.audio = Video audio (audio-video.log)
 logs.vault = Encrypted playback (vault-playback.log)
 logs.note = Files go to ux0:data/vitagram and are not encrypted.
 logs.footer = {dpad}: select    {cross} On / off    {circle} Back
+
+# About VitaGram
+about.title = About
+
+vault.ask.scroll = {dpad}: scroll
+about.brand = VitaGram — Telegram for PS Vita
+about.version = Version {0}
+about.description = An unofficial open-source Telegram client built with VitaSDK, vita2d and TDLib. Chat, read channels and view media on your PS Vita using console buttons and the touchscreen.
+about.development = The project is actively developed. Not all Telegram features are available yet, and some features may have limitations or errors.
+about.privacy_title = Privacy
+about.privacy_servers = VitaGram does not send your messages, files or diagnostic logs to the project author's servers.
+about.privacy_logs = Diagnostic logs contain technical information about the application and are disabled by default. VitaGram does not record message text, phone numbers or passwords in them. Logs remain on the console and are never sent automatically. If a problem occurs, you may choose to send logs to the developer manually for troubleshooting.
+about.privacy_connections = The client connects to Telegram servers. Update checks and downloads use GitHub. TDLib may also contact external services to resolve proxy hostnames and obtain connection configuration. When a proxy is enabled, the connection passes through your chosen server.
+about.security_title = Security and risks
+about.security_intro = VitaGram is an unofficial client. Application errors and platform limitations may affect security.
+about.risk_data_title = Local storage
+about.risk_data = The client stores user data locally on the console. The app can encrypt this storage to protect it against unauthorized copying. Without data encryption, anyone or any software with memory-card access may access local account data and downloaded media.
+about.risk_encryption_title = Encryption
+about.risk_encryption = Protects local data, but cannot guarantee protection against access to the running application or console memory. Use a long text passphrase: short button sequences are easier to guess. If you lose the key, the encrypted vault cannot be recovered.
+about.risk_temporary_title = Temporary files and logs
+about.risk_temporary = Some data may briefly remain unencrypted during downloading and processing. Diagnostic logs and separately exported files are not protected by vault encryption. Special diagnostic builds may record folder paths and filenames in the file-picker log.
+about.risk_proxy_title = Proxies
+about.risk_proxy = Use servers you trust. Their operators may see your IP address and connection metadata. SOCKS5 and HTTP proxies transmit proxy credentials without encryption, while Telegram data remains MTProto-encrypted.
+about.risk_updates_title = Installation and updates
+about.risk_updates = Install the application from a trusted source. The built-in updater verifies the VPK digital signature before installation.
+about.author_title = Author and source code
+about.license_title = License
+about.license_mit = VitaGram's own code is licensed under MIT. You may use, modify and distribute it, including commercially, provided you retain the copyright notice and license text.
+about.license_warranty = The application is provided as is, without warranties. Third-party libraries and fonts have their own licenses.
+about.project_link = GitHub · ing156/VitaGram
+about.author_link = Telegram · @Ing156
+about.footer = {dpad}: scroll  {l}/{r}: page  ←/→: links  {cross}: open  {circle}: back
+about.telegram_unavailable = Sign in to Telegram to open the author’s chat.
+about.platform_risk = Despite our efforts to improve VitaGram security, the application runs on a modified console with the associated risks. Software with system access may access data in the running application and console memory. Local storage encryption cannot guarantee protection against such access.
+
+menu.seek_time = Go to time
+media.seek_hint = {dpad}  Left/right: field; up/down: time (hours:minutes:seconds)
+media.seek_apply = {cross}  Go
+
+# --- Message deletion ---
+menu.delete_message = Delete message
+message.deleting = Deleting message…
+message.deleted = Message deleted
+message.delete_failed = Could not delete: {0}
+message.delete_rights = Insufficient permission to delete
+message.delete_missing = Message is no longer available
+message.delete_retry = Too many requests; try again later
+message.delete_other = Telegram could not delete the message
+message.delete_timeout = Telegram did not respond in time; check the connection and retry
+update.err.github_detail = Accessing GitHub resource: {0}
+
+# --- Voice recording window and optional shortcuts ---
+settings.recording_shortcuts = L/R recording shortcuts
+audio_record.preview = Press {cross} to start recording
+audio_record.review = Recording ready. {square}: listen; {cross}: send
+upload.video_note_shortcut = {l}  Video note
+upload.voice_message_shortcut = {r}  Voice message
+
+about.third_party_core = TDLib — Boost Software License 1.0; vita2d (Sergi Granell / xerpi) — MIT; Jansson (Petri Lehtinen) — MIT; OpenSSL 3.5 — Apache-2.0.
+about.third_party_media = FFmpeg — LGPL-2.1-or-later; rlottie — MIT, BSD, FreeType License (FTL); FreeType — FTL / GPL-2.0.
+about.third_party_fonts = Noto Sans, Noto Sans JP/KR/SC/TC, Noto Sans Coptic/Math/Symbols 2, Noto Color Emoji — SIL Open Font License 1.1.
+about.third_party_title = Third-party licenses
+about.third_party_vhbb = VHBB theme: panels and header adapted from Vita Homebrew Browser by devnoname120 and contributors, under CC BY-NC-SA 4.0. Attribution, noncommercial use and ShareAlike apply to these assets.
+about.third_party_notices = License texts and notices are included in the VPK: app0:assets/ and app0:ui/themes/vhbb/. Source: github.com/devnoname120/vhbb.
+
+# --- Spoiler visibility reset events ---
+settings.spoiler_reset = Hide spoilers again
+settings.spoiler_chat = On leaving chat
+settings.spoiler_app = On leaving app
+settings.spoiler_both = On both events
+
+settings.language_loading = Loading language…
+settings.font_load_failed = Could not load the font. Previous language kept.

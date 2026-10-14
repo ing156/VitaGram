@@ -23,7 +23,7 @@ public:
         Kind kind = Kind::Audio;
         int64_t file_time = 0;
         double speed = 0;
-        std::string path, error;
+        std::string path; i18n::Text error;
     };
     json_t* begin(const std::string& path, int64_t size, bool video, int64_t chat, int64_t now) {
         items_.erase(std::remove_if(items_.begin(), items_.end(), [now](const Item& i) {
@@ -119,7 +119,7 @@ public:
                     if (!json_is_object(state)) finish(i, "", now);
                     else if (string(state, "@type") == "messageSendingStateFailed") {
                         auto error = string(json_object_get(state, "error"), "message");
-                        finish(i, error.empty() ? tr("up.unknown_error") : error, now);
+                        finish(i, error.empty() ? i18n::text("up.unknown_error") : i18n::Text(error), now);
                     }
                     for (const auto& ended : ended_) if (!i.terminal && ended.chat == i.chat && ended.message == i.message)
                         finish(i, ended.error, ended.time);
@@ -141,8 +141,8 @@ public:
         else if (type == "updateMessageSendSucceeded" || type == "updateMessageSendFailed") {
             json_t* m = json_object_get(root, "message");
             const int64_t chat = number(m, "chat_id"), old = number(root, "old_message_id");
-            auto error = type == "updateMessageSendFailed" ? string(json_object_get(root, "error"), "message") : "";
-            if (type == "updateMessageSendFailed" && error.empty()) error = tr("up.unknown_error");
+            i18n::Text error = type == "updateMessageSendFailed" ? string(json_object_get(root, "error"), "message") : "";
+            if (type == "updateMessageSendFailed" && error.empty()) error = i18n::text("up.unknown_error");
             file(messageFile(m), now);
             if (chat && old) {
                 if (ended_.size() >= 64) ended_.erase(ended_.begin());
@@ -187,9 +187,9 @@ public:
 private:
     int64_t serial_ = 0;
     std::vector<Item> items_;
-    struct Ended { int64_t chat, message, time; std::string error; };
+    struct Ended { int64_t chat, message, time; i18n::Text error; };
     std::vector<Ended> ended_;
-    static void finish(Item& i, const std::string& error, int64_t now) {
+    static void finish(Item& i, const i18n::Text& error, int64_t now) {
         i.terminal = true; i.ended = now; i.error = error; i.active = false;
         if (error.empty()) { i.done = i.size; i.uploaded = true; }
     }
@@ -213,7 +213,7 @@ private:
         std::string s = tr(kindKey(i));
         if (i.terminal && i.reused && i.error.empty()) return tr("up.sent", {s});
         if (i.terminal) return i.error.empty() ? tr("up.sent_info", {s, bytes(i.size), seconds(i.ended-i.started)})
-                                               : tr("up.failed", {s, i.error});
+                                               : tr("up.failed", {s, i.error.localized()});
         if (i.reused) return tr("up.confirming", {s, seconds(now-i.started)});
         if (!i.file) return tr("up.awaiting", {s, seconds(now-i.started)});
         s = tr("up.progress", {s, bytes(i.done), bytes(i.size),

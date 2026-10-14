@@ -24,7 +24,7 @@ constexpr const char* kBackgroundFile = "background_960x544.png";
 constexpr std::array<const char*, (size_t)Slice::Count> kSliceNames = {
     "panel", "row", "row_focused", "tab_normal", "tab_active", "menu", "menu_item_focus", "date_chip",
     "media_frame", "focus_ring", "progress_track", "progress_fill", "scroll_thumb", "dialog"};
-constexpr std::array<const char*, (size_t)Icon::Count> kIconNames = {"file", "back", "next", "play", "pause", "search", "check", "close"};
+constexpr std::array<const char*, (size_t)Icon::Count> kIconNames = {"file", "back", "next", "play", "pause", "search", "check", "close", "download", "send", "trash", "leave", "reply", "forward", "clear-history"};
 constexpr std::array<const char*, 9> kButtonNames = {"triangle", "square", "cross", "circle", "dpad", "START", "SELECT", "L", "R"};
 
 struct SliceTexture {
@@ -184,21 +184,22 @@ bool needs_retry() {
     return g.attempted >= 0 && !complete() && g.retries < 4 && sceKernelGetProcessTimeWide() >= g.retry_at;
 }
 
-bool load(bool dark) {
-    if (g.attempted == (dark ? 1 : 0) && !needs_retry()) return g.ready;
-    if (g.attempted == (dark ? 1 : 0)) ++g.retries; else g.retries = 0;
+bool load(int theme_id) {
+    theme_id = std::max(0, std::min(2, theme_id));
+    if (g.attempted == theme_id && !needs_retry()) return g.ready;
+    if (g.attempted == theme_id) ++g.retries; else g.retries = 0;
     // Textures of the previous theme may still be referenced by the last submitted frame.
     vita2d_wait_rendering_done();
     free_all();
-    g.dark = dark;
-    g.attempted = dark ? 1 : 0;
+    g.dark = theme_id != 0;
+    g.attempted = theme_id;
     json_error_t error;
     std::vector<unsigned char> manifest;
     json_t* root = read_file(std::string(kRoot) + "manifest.json", manifest)
         ? json_loadb(reinterpret_cast<const char*>(manifest.data()), manifest.size(), 0, &error) : nullptr;
     g.retry_at = sceKernelGetProcessTimeWide() + 1000000ull;
     if (!root) { std::fprintf(stderr, "ui_skin: manifest unreadable\n"); return false; }
-    const std::string theme = dark ? "dark" : "light";
+    const std::string theme = theme_id == 2 ? "vhbb" : theme_id == 1 ? "dark" : "light";
     const std::string base = "themes/" + theme + "/";
 
     json_t* colors = json_object_get(json_object_get(root, "themes"), theme.c_str());

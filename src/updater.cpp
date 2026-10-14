@@ -1,9 +1,13 @@
 #include "updater.h"
 #include "https_client.h"
 #include "update_core.h"
+#include "package_promote.h"
 #include <cstdio>
 #include <vector>
 #ifdef __vita__
+#include <psp2/appmgr.h>
+#include <psp2/io/devctl.h>
+#include <sys/stat.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/promoterutil.h>
 #include <psp2/sysmodule.h>
@@ -18,10 +22,74 @@ const char kLatestRelease[] = "https://api.github.com/repos/" VITAGRAM_UPDATE_RE
 constexpr size_t kMaxJson = 512 * 1024;
 constexpr size_t kMaxSignature = 1024;
 constexpr uint64_t kMaxPackage = 256ull << 20;
+// The promoter wants a shallow folder (deep ones failed on the console, shallow ones are what VitaShell and
+// PSVitaAlive use), so the unpacked package does not live inside the update folder.
+const char kPackageDir[] = "ux0:data/vitagram-pkg";
+const char kUpdaterPackageDir[] = "ux0:data/vitagram-updater-pkg";
+// The VPK and its unpacked copy exist side by side, plus the signature, marker and head.bin.
+constexpr uint64_t kSpaceMargin = 16ull << 20;
+constexpr uint64_t kUnknownSize = 64ull << 20; // release without a reported size
+
+#ifdef __vita__
+struct DevInfo { int64_t max_size, free_size, cluster_size; void* unknown; }; // layout of devctl 0x3001
+#endif
+// Free bytes on the device holding `path`; false when it cannot be determined (then nothing is refused).
+bool free_space(const std::string& path, uint64_t& bytes) {
+#ifdef __vita__
+    size_t colon = path.find(':');
+    if (colon == std::string::npos) return false;
+    DevInfo info{};
+    if (sceIoDevctl(path.substr(0, colon + 1).c_str(), 0x3001, nullptr, 0, &info, sizeof(info)) < 0 || info.free_size < 0) return false;
+    bytes = (uint64_t)info.free_size;
+    return true;
+#else
+    (void)path; (void)bytes;
+    return false;
+#endif
 }
 
-Updater::Updater(std::string current_version, std::string ca_file, std::string work_dir)
-    : current_(std::move(current_version)), ca_file_(std::move(ca_file)), work_dir_(std::move(work_dir)) {}
+// A directory is usable when it can be created and a file written into it.
+bool writable_dir(const std::string& dir, std::string& why) {
+    if (!update::make_directories(dir)) { why = "cannot create " + dir; return false; }
+    const std::string probe = dir + "/probe";
+    FILE* f = std::fopen(probe.c_str(), "wb");
+    bool ok = f && std::fputc('0', f) != EOF;
+    if (f && std::fclose(f) != 0) ok = false;
+    std::remove(probe.c_str());
+    if (!ok) why = "cannot write in " + dir;
+    return ok;
+}
+
+std::string mib(uint64_t bytes) { return std::to_string((bytes + (1u << 20) - 1) >> 20) + " MiB"; }
+}
+
+Updater::Updater(std::string current_version, std::string ca_file, std::string work_dir, std::string fallback_dir)
+    : current_(std::move(current_version)), ca_file_(std::move(ca_file)), work_dir_(std::move(work_dir)),
+      fallback_dir_(std::move(fallback_dir)) {}
+
+// Picks the first of work_dir_/fallback_dir_ that is writable and has room for the package and its
+// unpacked copy. A stale staged package in the other directory is dropped so that only one can be applied.
+bool Updater::chooseDir(uint64_t package_size, std::string& dir, std::string& detail) {
+    const uint64_t need = (package_size ? package_size : kUnknownSize) * 2 + kSpaceMargin;
+    std::vector<std::string> candidates{work_dir_};
+    if (!fallback_dir_.empty() && fallback_dir_ != work_dir_) candidates.push_back(fallback_dir_);
+    detail.clear();
+    for (const std::string& candidate : candidates) {
+        std::string why;
+        uint64_t free_bytes = 0;
+        if (!writable_dir(candidate, why)) { detail += (detail.empty() ? "" : "; ") + why; continue; }
+        if (free_space(candidate, free_bytes) && free_bytes < need) {
+            detail += (detail.empty() ? "" : "; ") + std::string("not enough space on ") + candidate + ": need " + mib(need) +
+                      ", free " + mib(free_bytes);
+            continue;
+        }
+        dir = candidate;
+        for (const std::string& other : candidates)
+            if (other != dir) std::remove((other + "/pending").c_str());
+        return true;
+    }
+    return false;
+}
 
 Updater::~Updater() {
     cancel_ = true;
@@ -122,9 +190,10 @@ void Updater::runInstall() {
         version = snap_.version; vpk_url = vpk_url_; sig_url = sig_url_; expected = vpk_size_;
     }
     if (expected > kMaxPackage) { fail(Error::Package, "package is unreasonably large"); return; }
-    const std::string vpk_path = work_dir_ + "/update.vpk", package_dir = work_dir_ + "/pkg";
+    std::string dir, why;
+    if (!chooseDir(expected, dir, why)) { fail(Error::Storage, why); return; }
+    const std::string vpk_path = dir + "/update.vpk", package_dir = dir + "/pkg";
     update::remove_tree(package_dir);
-    if (!update::make_directories(work_dir_)) { fail(Error::Storage, "cannot create " + work_dir_); return; }
 
     // The signature is small: fetch it first so a bad release fails before a long download.
     std::vector<unsigned char> signature;
@@ -193,14 +262,15 @@ void Updater::runInstall() {
     }
     // Stage only: applyPending() installs at the next start and verifies the signature again, because
     // the card is writable by other software in between. The marker is written last.
-    FILE* sig_file = std::fopen((work_dir_ + "/update.sig").c_str(), "wb");
+    FILE* sig_file = std::fopen((dir + "/update.sig").c_str(), "wb");
     bool sig_ok = sig_file && std::fwrite(signature.data(), 1, signature.size(), sig_file) == signature.size();
     if (sig_file && std::fclose(sig_file) != 0) sig_ok = false;
     if (!sig_ok) { fail(Error::Storage, "cannot write the signature"); return; }
-    FILE* marker = std::fopen((work_dir_ + "/pending").c_str(), "wb");
+    FILE* marker = std::fopen((dir + "/pending").c_str(), "wb");
     bool marker_ok = marker && std::fwrite(version.data(), 1, version.size(), marker) == version.size();
     if (marker && std::fclose(marker) != 0) marker_ok = false;
     if (!marker_ok) { fail(Error::Storage, "cannot write the install marker"); return; }
+    update::remove_tree(package_dir); // only a trial unpack: the next start unpacks the verified VPK again
     set(State::Installed); // the verified VPK stays until applyPending() succeeds, for a manual install
 }
 
@@ -223,7 +293,8 @@ bool read_small(const std::string& path, size_t limit, std::string& out) {
 // the signed message, so a tampered marker or package fails here.
 // Checks the open package against the release signature and leaves it rewound: the caller unpacks
 // exactly the file that was checked (replacing the name in between has no effect).
-bool verify_staged(FILE* vpk, const std::string& work_dir, const std::string& version, std::string& detail) {
+bool verify_staged(FILE* vpk, const std::string& work_dir, const std::string& version, std::string& detail,
+                   const std::function<void(int)>& progress) {
     std::string signature;
     if (version.empty() || !read_small(work_dir + "/update.sig", kMaxSignature, signature) || signature.empty()) {
         detail = "the staged signature is missing"; return false;
@@ -232,7 +303,15 @@ bool verify_staged(FILE* vpk, const std::string& work_dir, const std::string& ve
     if (!verifier.begin(version)) { detail = "cannot load the signing key"; return false; }
     std::vector<unsigned char> buffer(64 * 1024);
     size_t n;
-    while ((n = std::fread(buffer.data(), 1, buffer.size(), vpk)) > 0) verifier.update(buffer.data(), n);
+    std::fseek(vpk, 0, SEEK_END);
+    const long total = std::ftell(vpk);
+    std::rewind(vpk);
+    long done = 0;
+    while ((n = std::fread(buffer.data(), 1, buffer.size(), vpk)) > 0) {
+        verifier.update(buffer.data(), n);
+        done += (long)n;
+        if (progress && total > 0) progress((int)(done * 100 / total));
+    }
     if (std::ferror(vpk) || !verifier.finish(reinterpret_cast<const unsigned char*>(signature.data()), signature.size())) {
         detail = "the staged package does not match its signature"; return false;
     }
@@ -241,8 +320,100 @@ bool verify_staged(FILE* vpk, const std::string& work_dir, const std::string& ve
 }
 }
 
-Updater::Pending Updater::applyPending(const std::string& work_dir, const std::string& current_version, std::string& detail) {
-    const std::string marker = work_dir + "/pending", package_dir = work_dir + "/pkg", result = work_dir + "/result.txt";
+#ifdef __vita__
+namespace {
+const char kUpdaterApp[] = "ux0:app/VGUPDATE1";
+const char kUpdaterTitle[] = "VGUPDATE1";
+const char kUpdaterVpk[] = "app0:updater/vitagram-updater.vpk";
+const char kUpdaterHead[] = "app0:updater/head.bin";
+const char kHandoffDir[] = "ux0:data/vitagram/update";
+const char kHandoffFile[] = "ux0:data/vitagram/update/handoff"; // where the updater app looks for it
+
+bool copy_file(const char* from, const std::string& to) {
+    FILE* in = std::fopen(from, "rb");
+    if (!in) return false;
+    FILE* out = std::fopen(to.c_str(), "wb");
+    if (!out) { std::fclose(in); return false; }
+    char buffer[16 * 1024];
+    size_t n;
+    bool ok = true;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), in)) > 0) if (std::fwrite(buffer, 1, n, out) != n) ok = false;
+    std::fclose(in);
+    return std::fclose(out) == 0 && ok;
+}
+}
+
+// Hands the unpacked package to the VitaGram Updater app. The running application cannot be replaced,
+// so the updater app (a separate title) closes VitaGram and installs the package after this process ends.
+bool Updater::startInstaller(const std::string& work_dir, const std::string& package_dir, const HandoffText& text, std::string& detail) {
+    struct stat info;
+    const std::string updater_eboot = std::string(kUpdaterApp) + "/eboot.bin";
+    if (stat(updater_eboot.c_str(), &info) != 0) {
+        // First update: install the updater app packaged inside this VPK. It is a different title, so the
+        // console accepts it while VitaGram runs.
+        const std::string package = kUpdaterPackageDir;
+        update::remove_tree(package);
+        std::string reason, error;
+        bool installed = update::extract_zip(kUpdaterVpk, package, nullptr, error);
+        if (!installed) reason = "package: " + error;
+        // head.bin carries the content id of its own title: the updater app's one comes from its package
+        // (assets/updater-head.bin), VitaGram's own would not match this title id.
+        struct stat head_info;
+        const bool own_head = stat(kUpdaterHead, &head_info) == 0;
+        if (installed) installed = stageHead(package, reason, own_head ? kUpdaterHead : "app0:sce_sys/package/head.bin");
+        struct stat package_eboot;
+        const long long expected = stat((package + "/eboot.bin").c_str(), &package_eboot) == 0 ? (long long)package_eboot.st_size : -1;
+        if (installed) installed = promote_package(package, reason, updater_eboot.c_str(), expected);
+        update::remove_tree(package);
+        if (!installed || stat(updater_eboot.c_str(), &info) != 0) {
+            // Leave the updater's own VPK next to the update so it can be installed from VitaShell.
+            const std::string target = work_dir + "/vitagram-updater.vpk";
+            const bool copied = copy_file(kUpdaterVpk, target);
+            detail = "helper: the VitaGram Updater app could not be installed automatically (" + reason +
+                     "); install " + (copied ? target : std::string(kUpdaterVpk)) + " with VitaShell";
+            return false;
+        }
+    }
+    update::make_directories(kHandoffDir);
+    FILE* f = std::fopen(kHandoffFile, "wb");
+    // Text lines are single lines: strip anything that would break the format.
+    auto line = [](std::string value) { for (char& c : value) if (c == '\n' || c == '\r') c = ' '; return value; };
+    const std::string body = work_dir + "\n" + package_dir + "\n" + line(text.title) + "\n" + line(text.hint) + "\n";
+    bool written = f && std::fwrite(body.data(), 1, body.size(), f) == body.size();
+    if (f && std::fclose(f) != 0) written = false;
+    if (!written) { detail = "cannot write the hand-off file"; return false; }
+    // Plain launch from the main thread, no delays or other-app shutdown first (PSVitaAlive found those hang).
+    const std::string uri = std::string("psgm:play?titleid=") + kUpdaterTitle;
+    int rc = sceAppMgrLaunchAppByUri(0xFFFFF, uri.c_str());
+    if (rc < 0) {
+        char code[64];
+        std::snprintf(code, sizeof(code), "helper launch: 0x%08X", rc);
+        std::remove(kHandoffFile);
+        detail = code;
+        return false;
+    }
+    return true;
+}
+#else
+bool Updater::startInstaller(const std::string&, const std::string&, const HandoffText&, std::string& detail) {
+    detail = "installing is only possible on the console";
+    return false;
+}
+#endif
+
+Updater::Pending Updater::applyPending(const std::string& work_dir, const std::string& fallback_dir,
+                                       const std::string& current_version, const HandoffText& text, const Progress& progress, std::string& detail) {
+    Pending result = applyIn(work_dir, current_version, text, progress, detail);
+    if (result == Pending::None && !fallback_dir.empty() && fallback_dir != work_dir)
+        result = applyIn(fallback_dir, current_version, text, progress, detail);
+    return result;
+}
+
+Updater::Pending Updater::applyIn(const std::string& work_dir, const std::string& current_version, const HandoffText& text,
+                                  const Progress& progress, std::string& detail) {
+    // Overall scale: signature check 0-25, unpacking 25-90, starting the updater app 90-100.
+    auto report = [&](int percent) { if (progress) progress(percent); };
+    const std::string marker = work_dir + "/pending", package_dir = kPackageDir, result = work_dir + "/result.txt";
     std::string version;
     if (!read_small(marker, 64, version)) {
         FILE* found = std::fopen(marker.c_str(), "rb");
@@ -256,40 +427,80 @@ Updater::Pending Updater::applyPending(const std::string& work_dir, const std::s
     FILE* vpk = std::fopen((work_dir + "/update.vpk").c_str(), "rb");
     bool ok = vpk != nullptr;
     if (!ok) detail = "the staged package is missing";
-    if (ok) ok = verify_staged(vpk, work_dir, version, detail);
+    report(0);
+    if (ok) ok = verify_staged(vpk, work_dir, version, detail, [&](int p) { report(p * 25 / 100); });
     // A validly signed but older release must not be installed over a newer one.
     if (ok && update::compare_versions(current_version, version) >= 0) {
         detail = "the staged package (" + version + ") is not newer than " + current_version;
         ok = false;
     }
+    update::remove_tree(work_dir + "/pkg"); // left by older versions and by the download step
     update::remove_tree(package_dir);
     std::string error;
-    if (ok && !update::extract_zip(vpk, package_dir, nullptr, error)) { detail = error; ok = false; }
+    if (ok && !update::extract_zip(vpk, package_dir, [&](uint64_t done, uint64_t total) {
+            report(25 + (total ? (int)(done * 65 / total) : 0));
+            return true;
+        }, error)) { detail = error; ok = false; }
     if (vpk) std::fclose(vpk);
     if (ok) ok = stageHead(package_dir, detail);
-    if (ok) ok = promote(package_dir, detail);
-    update::remove_tree(package_dir);
+    report(90);
+    if (ok) ok = startInstaller(work_dir, package_dir, text, detail);
     if (!ok) {
+        update::remove_tree(package_dir);
         std::remove((work_dir + "/update.sig").c_str());
         if (FILE* f = std::fopen(result.c_str(), "wb")) { std::fwrite(detail.data(), 1, detail.size(), f); std::fclose(f); }
         return Pending::Failed;
     }
-    std::remove((work_dir + "/update.vpk").c_str());
-    std::remove((work_dir + "/update.sig").c_str());
-    return Pending::Applied;
+    // The package, VPK and signature stay for the updater app, which removes them after installing.
+    return Pending::Handoff;
 }
 
-void Updater::reportStartupFailure(const std::string& detail) {
-    fail(Error::Install, detail);
+bool Updater::updaterCleanupDue(const std::string& work_dir, const std::string& fallback_dir) {
+    for (const std::string& dir : {work_dir, fallback_dir}) {
+        if (dir.empty()) continue;
+        if (FILE* flag = std::fopen((dir + "/cleanup").c_str(), "rb")) { std::fclose(flag); return true; }
+    }
+    return false;
 }
 
 #ifdef __vita__
-bool Updater::stageHead(const std::string& package_dir, std::string& detail) {
+void Updater::removeUpdaterApp(const std::string& work_dir, const std::string& fallback_dir) {
+    bool flagged = false;
+    for (const std::string& dir : {work_dir, fallback_dir}) {
+        if (dir.empty()) continue;
+        if (FILE* flag = std::fopen((dir + "/cleanup").c_str(), "rb")) { std::fclose(flag); flagged = true; }
+        std::remove((dir + "/cleanup").c_str()); // one attempt: a failure must not delay every start
+    }
+    struct stat info;
+    if (!flagged || stat((std::string(kUpdaterApp) + "/eboot.bin").c_str(), &info) != 0) return;
+    // The updater app exits a moment after starting VitaGram; the promoter cannot delete a running title.
+    sceAppMgrDestroyOtherApp();
+    std::string detail;
+    delete_package(kUpdaterTitle, detail);
+}
+#else
+void Updater::removeUpdaterApp(const std::string&, const std::string&) {}
+#endif
+
+bool Updater::hasPending(const std::string& work_dir, const std::string& fallback_dir) {
+    for (const std::string& dir : {work_dir, fallback_dir}) {
+        if (dir.empty()) continue;
+        if (FILE* marker = std::fopen((dir + "/pending").c_str(), "rb")) { std::fclose(marker); return true; }
+    }
+    return false;
+}
+
+void Updater::reportStartupFailure(const std::string& detail) {
+    fail(detail.compare(0, 7, "helper:") == 0 ? Error::Helper : Error::Install, detail);
+}
+
+#ifdef __vita__
+bool Updater::stageHead(const std::string& package_dir, std::string& detail, const char* source_path) {
     // The promoter wants sce_sys/package/head.bin, which only the console's own installer creates.
     // The installed copy of this very app has one for the same title id, so reuse it.
     const std::string head_dir = package_dir + "/sce_sys/package", head_path = head_dir + "/head.bin";
-    FILE* source = std::fopen("app0:sce_sys/package/head.bin", "rb");
-    if (!source) { detail = "app0:sce_sys/package/head.bin is missing"; return false; }
+    FILE* source = std::fopen(source_path, "rb");
+    if (!source) { detail = std::string(source_path) + " is missing"; return false; }
     if (!update::make_directories(head_dir)) { std::fclose(source); detail = "cannot create " + head_dir; return false; }
     FILE* target = std::fopen(head_path.c_str(), "wb");
     if (!target) { std::fclose(source); detail = "cannot write " + head_path; return false; }
@@ -302,34 +513,6 @@ bool Updater::stageHead(const std::string& package_dir, std::string& detail) {
     return true;
 }
 
-bool Updater::promote(const std::string& package_dir, std::string& detail) {
-    int rc = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-    if (rc < 0) { char text[48]; std::snprintf(text, sizeof(text), "promoter module: 0x%08X", rc); detail = text; return false; }
-    bool ok = false;
-    rc = scePromoterUtilityInit();
-    if (rc >= 0) {
-        rc = scePromoterUtilityPromotePkgWithRif(package_dir.c_str(), 1);
-        if (rc >= 0) {
-            int result = 0;
-            for (int waited = 0; waited < 600; ++waited) { // up to 60 s, until the promoter reports a result
-                int state = 0;
-                if (scePromoterUtilityGetState(&state) >= 0 && state == 0) break;
-                sceKernelDelayThread(100 * 1000);
-            }
-            rc = scePromoterUtilityGetResult(&result);
-            if (rc >= 0) rc = result;
-        }
-        ok = rc >= 0;
-        scePromoterUtilityExit();
-    }
-    sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-    if (!ok) { char text[48]; std::snprintf(text, sizeof(text), "promoter: 0x%08X", rc); detail = text; }
-    return ok;
-}
 #else
-bool Updater::stageHead(const std::string&, std::string&) { return true; }
-bool Updater::promote(const std::string&, std::string& detail) {
-    detail = "installing is only possible on the console";
-    return false;
-}
+bool Updater::stageHead(const std::string&, std::string&, const char*) { return true; }
 #endif

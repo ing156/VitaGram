@@ -1,0 +1,22 @@
+VHBB theme for VitaGram
+
+Source project: Vita Homebrew Browser (VHBB)
+Author: devnoname120 and VHBB contributors
+https://github.com/devnoname120/vhbb
+
+The source PNGs in source/ are from VHBB's assets/spr directory:
+img_itm_panel.png, img_itm_panel_highlight.png, img_catbar.png,
+img_dialog_msg_bg.png.
+These images and their adapted surfaces/header are licensed under
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+The original license text is included as LICENSE.txt.
+
+Changes: converted panel gradients to rounded 9-slice textures at VitaGram
+sizes; removed the white label band to retain readable white text; adjusted
+focus brightness; scaled and darkened the header. Wallpaper is newly drawn
+without VHBB branding. Icons/controller atlases and fonts use VitaGram's
+existing resources and their existing licenses. Segoe UI is not included.
+
+Regenerate with assets/VitaGram_UI_Assets_v1/generate_vhbb_theme.py (Pillow).
+No endorsement by VHBB's authors is implied.

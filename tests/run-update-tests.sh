@@ -25,6 +25,11 @@ u = bytearray(open(d + "/underreported.zip", "rb").read())
 struct.pack_into("<I", u, 22, 1)
 struct.pack_into("<I", u, u.index(b"PK\x01\x02") + 24, 1)
 open(d + "/underreported.zip", "wb").write(u)
+# Incompressible data: deflate stores it in blocks, so the output buffer fills exactly as the input ends.
+import os, random
+random.seed(1)
+with zipfile.ZipFile(d + "/random.zip", "w") as z:
+    z.writestr("eboot.bin", random.randbytes(3 << 20), zipfile.ZIP_DEFLATED)
 data = open(d + "/good.zip", "rb").read()
 open(d + "/corrupt.zip", "wb").write(data[:-30] + b"\0" * 30)
 PY

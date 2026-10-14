@@ -92,20 +92,24 @@ int sceAudioInReleasePort(int) { assert(audio); audio=false; return 0; }
 int sceKernelDelayThread(unsigned us) { std::this_thread::sleep_for(std::chrono::microseconds(realtime ? us : 1000)); return 0; }
 void vita2d_wait_rendering_done() { ++gpu_waits; }
 vita2d_texture* vita2d_create_empty_texture(unsigned w,unsigned h) { assert(w==Side && h==Side); ++textures; return new vita2d_texture; }
+void vita2d_texture_set_filters(vita2d_texture* t,int min,int mag) {
+    assert(t && min==SCE_GXM_TEXTURE_FILTER_LINEAR && mag==SCE_GXM_TEXTURE_FILTER_LINEAR);
+}
 void* vita2d_texture_get_datap(vita2d_texture* t) { return t->pixels.data(); }
 unsigned vita2d_texture_get_stride(vita2d_texture*) { return Side*4; }
 void vita2d_free_texture(vita2d_texture* t) { --textures; delete t; }
 bool exists(const std::string& path) { FILE* f=std::fopen(path.c_str(),"rb"); if (!f) return false; std::fclose(f); return true; }
 bool encode_video_note(const std::string& raw,const std::string& pcm,const std::string& out,uint32_t samples,
-    const std::atomic<bool>& cancel,std::atomic<int>& progress,std::string&) {
+    const std::atomic<bool>& cancel,std::atomic<int>& progress,i18n::Text&) {
     assert(!opened && !streaming && !audio && !allocated);
     assert(samples>=SampleRate && samples<=SampleRate*MaxSeconds && exists(pcm));
     FILE* f=std::fopen(raw.c_str(),"rb"); assert(f);
     std::vector<uint8_t> frame(FrameBytes); uint32_t pts=0,last=0; unsigned count=0,rear=0;
     while (std::fread(&pts,4,1,f)==1) {
         assert((count ? pts>last : pts==0) && pts<samples); last=pts; ++count;
-        assert(std::fread(frame.data(),1,FrameBytes,f)==FrameBytes && frame[0]==16 && frame[Side*Side]==128);
+        assert(std::fread(frame.data(),1,FrameBytes,f)==FrameBytes);
         auto y=frame[120*Side+120]; assert(y==100 || y==160);
+        assert(frame[0]==y && frame[Side*Side]==(y==160 ? 96 : 128));
         assert(frame[Side*Side+60*(Side/2)+60]==(y==160 ? 96 : 128));
         assert(frame[Side*Side*5/4+60*(Side/2)+60]==(y==160 ? 160 : 128));
         if (y==160) ++rear;
@@ -137,7 +141,12 @@ int main(int argc,char** argv) {
     until([&] { r.upload(); auto* pixels=static_cast<uint32_t*>(vita2d_texture_get_datap(r.preview())); return pixels[120*Side+120]==0xff679adbu; });
     int rear_second=r.seconds(); until([&] { return r.seconds()>rear_second; });
     r.switchCamera(); until([&]{return !r.rearCamera();}); r.finish(); until([&]{return r.state()==State::Review;});
-    assert(exists(path) && r.percent()==100 && encoded_rear_frames>0); r.upload(); r.cancel(); clean(r,path);
+    assert(exists(path) && r.percent()==100 && encoded_rear_frames>0);
+    for (const char* language : {"en", "ja", "zh-Hans", "ru"}) {
+        assert(i18n::select(language));
+        assert(r.status() == tr("vnr.ready")); // Retained worker status, no new recorder event.
+    }
+    r.upload(); r.cancel(); clean(r,path);
     preview(); record(); r.finish(); until([&]{return r.state()==State::Review;}); r.releaseFile(); clean(r,path,true); std::remove(path.c_str());
     preview(); record(); r.cancel(); clean(r,path);
     hold_encode=true; preview(); record(); r.finish(); until([&]{return r.state()==State::Encoding;}); r.cancel(); clean(r,path); hold_encode=false;

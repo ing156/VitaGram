@@ -2,6 +2,7 @@
 #include "config.h"
 #include "cpu_scheduler.h"
 #include "vault.h"
+#include "download_stream.h"
 #include <dirent.h>
 #include <psp2/kernel/threadmgr.h>
 #include <sys/stat.h>
@@ -168,7 +169,7 @@ void Sealer::run() {
     // video playback for the card and the CPU: give way at once and finish later.
     auto proceed = [](void* opaque) -> bool {
         auto* self = static_cast<Sealer*>(opaque);
-        if (self->stopping_ || cpu_scheduler::videoActive()) return false;
+        if (self->stopping_ || cpu_scheduler::videoActive() || download_stream::reading()) return false;
         sceKernelDelayThread(1500); // leaves room for the decoder threads even when idle
         return true;
     };
@@ -182,7 +183,7 @@ void Sealer::run() {
         // Let a freshly completed file finish being used by whoever reported it.
         if (item.second == 0) sceKernelDelayThread(300000);
         // Wait for playback to end, plus a pause so the next video does not start into a rewrite.
-        while (!stopping_ && cpu_scheduler::videoActive()) sceKernelDelayThread(200000);
+        while (!stopping_ && (cpu_scheduler::videoActive() || download_stream::reading())) sceKernelDelayThread(200000);
         if (stopping_) break;
         auto result = vault::seal_file(item.first, proceed, this);
         if (result == vault::Convert::Interrupted && !stopping_) {

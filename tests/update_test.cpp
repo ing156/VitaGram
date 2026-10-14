@@ -42,6 +42,9 @@ static void release() {
     assert(!parse_release(R"({"tag_name":"nightly","assets":[]})", r, error));
     assert(!parse_release(R"({"tag_name":"v1.0.0","assets":[{"name":"a.vpk","browser_download_url":"https://x/v"}]})", r, error)); // unsigned
     assert(!parse_release(R"({"tag_name":"v1.0.0","assets":[{"name":"a.vpk","browser_download_url":"u"},{"name":"b.vpk.sig","browser_download_url":"s"}]})", r, error)); // sig of another file
+    // An unsigned second .vpk (the updater app) is skipped in favour of the signed application package.
+    assert(parse_release(R"({"tag_name":"v2.0.0","assets":[{"name":"vitagram-updater.vpk","browser_download_url":"https://x/u"},{"name":"vitagram.vpk","browser_download_url":"https://x/a","size":7},{"name":"vitagram.vpk.sig","browser_download_url":"https://x/s"}]})", r, error));
+    assert(r.vpk_name == "vitagram.vpk" && r.vpk_url == "https://x/a" && r.sig_url == "https://x/s" && r.vpk_size == 7);
     assert(!parse_release("not json", r, error));
 }
 
@@ -103,6 +106,12 @@ static void zip(const std::string& dir) {
     assert(slurp(dir + "/out/eboot.bin") == "EBOOT");
     assert(slurp(dir + "/out/sce_sys/param.sfo") == std::string(100000, 'p')); // deflated, > one buffer
     assert(slurp(dir + "/out/lang/en.lang") == "stored");
+    {
+        // Regression: Z_BUF_ERROR after an exactly filled output buffer was reported as "corrupt data".
+        std::string random_error;
+        assert(extract_zip(dir + "/random.zip", dir + "/out_random", nullptr, random_error));
+        assert(slurp(dir + "/out_random/eboot.bin").size() == (3u << 20));
+    }
     assert(last_total == 5 + 100000 + 6);
     assert(!extract_zip(dir + "/slip.zip", dir + "/out2", nullptr, error) && error.find("unsafe") != std::string::npos);
     assert(!extract_zip(dir + "/corrupt.zip", dir + "/out3", nullptr, error));

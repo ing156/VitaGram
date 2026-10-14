@@ -60,7 +60,8 @@ int main() {
     assert(s4);
     json_t* it = json_array_get(json_object_get(s4, "stickers"), 0);
     json_t* f = json_object_get(it, "sticker");
-    assert(json_object_size(f) == 6 && json_object_size(json_object_get(f, "local")) == 4 + 1);
+    assert(json_object_size(f) == 6 && json_object_size(json_object_get(f, "local")) == 6);
+    assert(json_is_integer(json_object_get(json_object_get(f, "local"), "download_offset")));
     assert(json_object_size(json_object_get(f, "remote")) == 1);
     assert(!std::strcmp(json_string_value(json_object_get(json_object_get(f, "remote"), "unique_id")), "U1"));
     assert(!json_object_get(json_object_get(f, "local"), "can_be_deleted"));

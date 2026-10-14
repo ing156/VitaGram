@@ -6,6 +6,9 @@
 #include "portrait_video.h"
 #include "vault.h"
 #include "vault_avio.h"
+#include "download_avio.h"
+#include "media_seek.h"
+#include "circle_mask.h"
 #include "cpu_scheduler.h"
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
@@ -191,24 +194,25 @@ void AnimationPlayer::releaseYuvTexture() {
     yuv_pitch_ = yuv_height_ = 0;
 }
 
-void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare, bool cache_only) {
+void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare, bool cache_only, download_stream::Shared stream) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_setSource");
     pthread_mutex_lock(&mutex_);
-    if (path == source_ && video_ == video && round_ == round && prepare_ == prepare && cache_only_ == cache_only) { pthread_mutex_unlock(&mutex_); return; }
-    source_ = path;
+    if (path == source_ && video_ == video && round_ == round && prepare_ == prepare && cache_only_ == cache_only && stream_ == stream) { pthread_mutex_unlock(&mutex_); return; }
+    source_ = path; stream_ = stream;
     video_ = video; round_ = round; prepare_ = prepare; cache_only_ = cache_only;
     preparation_required_ = false;
     preparation_checked_ = !prepare || !cache_only;
     paused_ = video; finished_ = false; position_us_ = 0; start_us_ = 0;
+    playback_ready_ = false;
     ++generation_;
     ready_ = false;
     av_frame_free(&pending_yuv_frame_);
     pending_direct_ = false;
     yuv_logged_ = false;
     uploaded_frames_ = 0;
-    status_ = path.empty() ? "" : prepare && !cache_only ? tr("anim.preparing_video",{"0"}) : video ? tr("anim.play") : tr("anim.preparing_gif");
+    status_ = path.empty() ? "" : prepare && !cache_only ? i18n::text("anim.preparing_video",{"0"}) : video ? i18n::text("anim.play") : i18n::text("anim.preparing_gif");
     pthread_mutex_unlock(&mutex_);
-    audio_.setSource(video && !prepare ? path : "", video && !prepare);
+    audio_.setSource(video && !prepare ? path : "", video && !prepare, false, stream);
     if (yuv_valid_) { vita2d_wait_rendering_done(); releaseYuvTexture(); }
     if (texture_) { vita2d_wait_rendering_done(); vita2d_free_texture(texture_); texture_ = nullptr; }
     if (!path.empty() && !started_) {
@@ -218,7 +222,7 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
         int rc = pthread_create(&thread_, &attr, entry, this);
         pthread_attr_destroy(&attr);
         if (!rc) started_ = true;
-        else setStatus(generation_, tr("anim.decoder_start_failed"));
+        else setStatus(generation_, i18n::text("anim.decoder_start_failed"));
     }
 }
 
@@ -243,7 +247,7 @@ void AnimationPlayer::seekTo(int64_t us) {
     // (the hardware decoder needs about a second before its first picture, which used to leave the picture behind).
     audio_.setSource("");
     if (round_) {   // software-decoded notes have trustworthy picture timestamps: audio restarts at the target right away
-        if (!prepare_) { audio_.setSource(source_, true); audio_.seekTo(target); }
+        if (!prepare_) { audio_.setSource(source_, true, false, stream_); audio_.seekTo(target); }
         audio_.setPlaying(play);
     }
 }
@@ -254,7 +258,7 @@ void AnimationPlayer::toggle() {
     pthread_mutex_lock(&mutex_);
     bool replay = finished_;
     if (replay) { ++generation_; finished_ = false; ready_ = false; position_us_ = 0; start_us_ = 0; status_.clear(); }
-    if (replay) { audio_.setSource(""); if (!prepare_) audio_.setSource(source_, true); }
+    if (replay) { audio_.setSource(""); if (!prepare_) audio_.setSource(source_, true, false, stream_); }
     paused_ = replay ? false : !paused_.load();
     bool play = !paused_;
     pthread_mutex_unlock(&mutex_);
@@ -288,7 +292,7 @@ void AnimationPlayer::upload() {
                     vita2d_texture_set_filters(&yuv_texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
                     ++uploaded_frames_;
                 } else {
-                    status_ = tr("anim.nv12_failed");
+                    status_ = i18n::text("anim.nv12_failed");
                     av_frame_free(&displayed_yuv_frame_);
                 }
                 ready_ = false;
@@ -319,7 +323,7 @@ void AnimationPlayer::upload() {
                         SCE_GXM_TEXTURE_FORMAT_YVU420P2_CSC1, pitch, aligned_height, 0);
                     if (rc >= 0) { yuv_valid_ = true; yuv_pitch_ = pitch; yuv_height_ = aligned_height; }
                 }
-                if (!yuv_valid_) { releaseYuvTexture(); status_ = tr("anim.gpu_video"); }
+                if (!yuv_valid_) { releaseYuvTexture(); status_ = i18n::text("anim.gpu_video"); }
             }
             if (yuv_valid_) {
                 auto* dest = static_cast<unsigned char*>(yuv_pixels_);
@@ -353,22 +357,23 @@ void AnimationPlayer::upload() {
                 std::memcpy(dest + y * stride, pixels_.data() + y * width_ * 4, width_ * 4);
             vita2d_texture_set_filters(texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
             ++uploaded_frames_;
-        } else status_ = tr("anim.gpu_gif");
+        } else status_ = i18n::text("anim.gpu_gif");
         ready_ = false;
     }
     pthread_mutex_unlock(&mutex_);
 }
 
-std::string AnimationPlayer::status() {
+i18n::Text AnimationPlayer::status() {
     pthread_mutex_lock(&mutex_);
-    std::string result = status_;
-    if (video_ && (result.empty() || result == tr("anim.play") || result == tr("anim.video_playing")))
-        result = tr(finished_ ? "anim.finished_replay" : paused_ ? "anim.play_pause" : "anim.video_playing_hint");
+    i18n::Text result = status_;
+    result.refresh();
+    if (video_ && (result.empty() || result == i18n::text("anim.play") || result == i18n::text("anim.video_playing")))
+        result = i18n::text(finished_ ? "anim.finished_replay" : paused_ ? "anim.play_pause" : "anim.video_playing_hint");
     pthread_mutex_unlock(&mutex_);
     if (video_ && !audio_.error().empty()) result += " | " + audio_.error();
     return result;
 }
-void AnimationPlayer::setStatus(unsigned generation, const std::string& text) {
+void AnimationPlayer::setStatus(unsigned generation, const i18n::Text& text) {
     pthread_mutex_lock(&mutex_);
     if (generation == generation_) status_ = text;
     pthread_mutex_unlock(&mutex_);
@@ -402,11 +407,12 @@ void AnimationPlayer::run() {
         pthread_mutex_lock(&mutex_);
         unsigned generation = generation_;
         std::string path = source_;
+        auto stream = stream_;
         bool video = video_, round = round_, prepare = prepare_, cache_only = cache_only_;
         pthread_mutex_unlock(&mutex_);
         if (generation != handled) {
             handled = generation;
-            if (!path.empty()) decode(path, generation, video, round, prepare, cache_only);
+            if (!path.empty()) decode(path, generation, video, round, prepare, cache_only, stream);
         } else sceKernelDelayThread(10000);
     }
 }
@@ -414,7 +420,7 @@ void AnimationPlayer::run() {
 void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
 #ifdef VITAGRAM_RLOTTIE
     std::string packed;
-    if (!vault::read_file(path, tgs_policy::kMaxPacked, packed)) { setStatus(generation, tr("anim.tgs_open")); return; }
+    if (!vault::read_file(path, tgs_policy::kMaxPacked, packed)) { setStatus(generation, i18n::text("anim.tgs_open")); return; }
     std::string data;
     {
         // TGS is gzip; inflate from memory so a sealed file never has to exist in plain text.
@@ -436,7 +442,7 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
         if (initialised) inflateEnd(&stream); // also after a decode error: no zlib state is leaked
         if (stopping_ || generation != generation_) return;
         if (!ok || status != Z_STREAM_END || data.empty() || data.size() > tgs_policy::kMaxJson) {
-            setStatus(generation, tr("anim.tgs_invalid")); return;
+            setStatus(generation, i18n::text("anim.tgs_invalid")); return;
         }
     }
     // rlottie parses the whole model (and would decode embedded images) before anything below
@@ -444,17 +450,17 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
     std::string refusal;
     if (!tgs_policy::acceptable(data, &refusal)) {
         std::fprintf(stderr, "TGS refused before parsing: %s\n", refusal.c_str());
-        setStatus(generation, tr("anim.tgs_unsupported")); return;
+        setStatus(generation, i18n::text("anim.tgs_unsupported")); return;
     }
     Lottie_Animation* animation = lottie_animation_from_data(data.c_str(), path.c_str(), "");
-    if (!animation) { setStatus(generation, tr("anim.tgs_parse")); return; }
+    if (!animation) { setStatus(generation, i18n::text("anim.tgs_parse")); return; }
     size_t frames = lottie_animation_get_totalframe(animation);
     double fps = lottie_animation_get_framerate(animation);
     size_t source_w = 0, source_h = 0;
     lottie_animation_get_size(animation, &source_w, &source_h);
     if (!frames || frames > 1800 || !std::isfinite(fps) || fps <= 0 || fps > 120 ||
         !source_w || !source_h || source_w > 4096 || source_h > 4096) {
-        lottie_animation_destroy(animation); setStatus(generation, tr("anim.tgs_unsupported")); return;
+        lottie_animation_destroy(animation); setStatus(generation, i18n::text("anim.tgs_unsupported")); return;
     }
     double scale = 256.0/std::max(source_w, source_h);
     int w = std::max(1, (int)(source_w*scale)), h = std::max(1, (int)(source_h*scale));
@@ -485,7 +491,7 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
             rgba[i*4+3] = alpha;
         }
         pthread_mutex_lock(&mutex_);
-        if (generation == generation_) { pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = tr("anim.tgs_playing"); }
+        if (generation == generation_) { pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = i18n::text("anim.tgs_playing"); }
         pthread_mutex_unlock(&mutex_);
         rgba.resize(w*h*4);
         int64_t wait = 33333-(sceKernelGetSystemTimeWide()-tick);
@@ -493,11 +499,12 @@ void AnimationPlayer::decodeTgs(const std::string& path, unsigned generation) {
     }
     lottie_animation_destroy(animation);
 #else
-    setStatus(generation, tr("anim.tgs_needs_rlottie"));
+    setStatus(generation, i18n::text("anim.tgs_needs_rlottie"));
 #endif
 }
 
-void AnimationPlayer::decode(const std::string& source_path, unsigned generation, bool video, bool round, bool prepare, bool cache_only) {
+void AnimationPlayer::decode(const std::string& source_path, unsigned generation, bool video, bool round, bool prepare, bool cache_only, download_stream::Shared download) {
+    download_stream::Pin reading{bool(download)};
     std::optional<cpu_scheduler::Media> reservation;
     static std::once_flag logger_once;
     std::call_once(logger_once, [] { av_log_set_callback(capture_ffmpeg_error); });
@@ -505,7 +512,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     logged_decoder_error_length = 0;
     logged_decoder_error[0] = '\0';
     Job job{this, generation};
-    auto early_error = [&](const std::string& text) {
+    auto early_error = [&](const i18n::Text& text) {
         pthread_mutex_lock(&mutex_);
         if (generation == generation_) { status_ = text; finished_ = true; }
         pthread_mutex_unlock(&mutex_);
@@ -513,15 +520,15 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     std::string path=source_path;
     if (prepare) {
         reservation.emplace(cpu_scheduler::Role::Video);
-        std::string error;
+        i18n::Text error;
         if (!prepare_portrait_video(source_path,path,
                 [&] { return interrupted(&job)!=0; },
-                [&](int percent) { setStatus(generation,tr("anim.preparing_video",{std::to_string(percent)})); },
+                [&](int percent) { setStatus(generation,i18n::text("anim.preparing_video",{std::to_string(percent)})); },
                 error, cache_only)) {
             pthread_mutex_lock(&mutex_);
             if (generation == generation_ && cache_only) { preparation_required_ = true; preparation_checked_ = true; }
             pthread_mutex_unlock(&mutex_);
-            if (!interrupted(&job)) early_error(cache_only ? tr("video.unsupported_hint") : error);
+            if (!interrupted(&job)) early_error(cache_only ? i18n::text("video.unsupported_hint") : i18n::Text(error));
             return;
         }
         if (interrupted(&job)) return;
@@ -530,40 +537,44 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         pthread_mutex_unlock(&mutex_);
         audio_.setSource(path,true);
         audio_.setPlaying(!paused_);
-        setStatus(generation,tr("anim.play"));
+        setStatus(generation,i18n::text("anim.play"));
     }
-    vault::Reader file;
-    if (!file.open(path)) { early_error(tr("anim.media_open")); return; }
-    unsigned char signature[2]{};
-    size_t signature_size = file.read(signature, 2) == 2 ? 2 : 0;
-    if (!video && signature_size == 2 && signature[0] == 0x1f && signature[1] == 0x8b) {
-        file.close(); decodeTgs(path, generation); return;
-    }
-    int seek_rc = 0;
-    long file_size = (long)file.size();
-    auto sample_crc = [&](long offset, size_t length) {
-        uLong crc = crc32(0, Z_NULL, 0);
-        if (file.seek(offset, SEEK_SET) < 0) return crc;
-        unsigned char block[8192];
-        while (length) {
-            int64_t count = file.read(block, std::min(length, sizeof(block)));
-            if (count <= 0) break;
-            crc = crc32(crc, block, (size_t)count);
-            length -= (size_t)count;
-        }
-        return crc;
-    };
     uLong head_crc = 0, tail_crc = 0;
-    if (!seek_rc && file_size > 0) {
-        head_crc = sample_crc(0, std::min<long>(file_size, 65536));
-        tail_crc = sample_crc(std::max<long>(0, file_size - 65536), std::min<long>(file_size, 65536));
+    int64_t file_size = download ? download->snapshot().size : 0;
+    if (!download) {
+        vault::Reader file;
+        if (!file.open(path)) { early_error(i18n::text("anim.media_open")); return; }
+        unsigned char signature[2]{};
+        size_t signature_size = file.read(signature, 2) == 2 ? 2 : 0;
+        if (!video && signature_size == 2 && signature[0] == 0x1f && signature[1] == 0x8b) {
+            file.close(); decodeTgs(path, generation); return;
+        }
+        int seek_rc = 0;
+        file_size = (long)file.size();
+        auto sample_crc = [&](long offset, size_t length) {
+            uLong crc = crc32(0, Z_NULL, 0);
+            if (file.seek(offset, SEEK_SET) < 0) return crc;
+            unsigned char block[8192];
+            while (length) {
+                int64_t count = file.read(block, std::min(length, sizeof(block)));
+                if (count <= 0) break;
+                crc = crc32(crc, block, (size_t)count);
+                length -= (size_t)count;
+            }
+            return crc;
+        };
+        if (!seek_rc && file_size > 0) {
+            head_crc = sample_crc(0, std::min<long>(file_size, 65536));
+            tail_crc = sample_crc(std::max<long>(0, file_size - 65536), std::min<long>(file_size, 65536));
+        }
+        file.close();
     }
-    file.close();
-    if (seek_rc || file_size <= 0 || file_size > (video ? 128 : 20) * 1024 * 1024) {
-        early_error(video ? tr("anim.limit_video") : tr("anim.limit_gif")); return;
+    if (file_size <= 0 || file_size > (video ? 128 : 20) * 1024 * 1024) {
+        early_error(video ? i18n::text("anim.limit_video") : i18n::text("anim.limit_gif")); return;
     }
     AVFormatContext* format = avformat_alloc_context();
     VaultAvio sealed_input; // decrypts on the fly when the file is sealed
+    DownloadAvio growing_input;
     AVCodecContext* codec = nullptr;
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
@@ -585,8 +596,9 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         sws_freeContext(scaler); av_frame_free(&frame); av_packet_free(&packet);
         avcodec_free_context(&codec); avformat_close_input(&format);
         sealed_input.release();
+        growing_input.release();
     };
-    auto fail = [&](const std::string& message) {
+    auto fail = [&](const i18n::Text& message) {
         // A seek that the decoder cannot start from (open GOP, missing parameter sets) degrades to playing from the beginning.
         if (!interrupted(&job) && video && start_us_.load() > 0 && !prepare) {
             pthread_mutex_lock(&mutex_);
@@ -600,7 +612,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             pthread_mutex_unlock(&mutex_);
             if (current) {
                 audio_.setSource("");
-                audio_.setSource(source_, true);
+                audio_.setSource(source_path, true, false, download);
                 audio_.setPlaying(!paused_);
                 cleanup();
                 return;
@@ -616,7 +628,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         }
         cleanup();
     };
-    if (!format) { fail(tr("anim.memory")); return; }
+    if (!format) { fail(i18n::text("anim.memory")); return; }
     format->interrupt_callback = {interrupted, &job};
     format->probesize = 256 * 1024;
     format->max_analyze_duration = 2 * AV_TIME_BASE;
@@ -625,9 +637,12 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     av_dict_set(&options, "protocol_whitelist", "file", 0);
     av_dict_set(&options, "ignore_loop", "1", 0); // Loop explicitly after draining the decoder.
     // ux0: is a Vita mount, not an FFmpeg protocol.
-    const int sealed = sealed_input.attach(format, path);
+    const auto stream_state = download ? download->snapshot() : download_stream::State::Snapshot{};
+    const std::string input_path = download ? stream_state.path : path;
+    const bool growing = download && !(stream_state.complete && vault::is_sealed(input_path));
+    const int sealed = growing ? growing_input.attach(format, download) : sealed_input.attach(format, input_path);
     int rc = sealed < 0 ? AVERROR(EIO)
-                        : avformat_open_input(&format, sealed ? path.c_str() : ("file:" + path).c_str(), nullptr, &options);
+                        : avformat_open_input(&format, sealed ? input_path.c_str() : ("file:" + input_path).c_str(), nullptr, &options);
     av_dict_free(&options);
     // GIF/MOV/WebM headers provide stream parameters; do not decode probe frames before validating dimensions.
     if (rc < 0) { fail(decoder_error("Open", rc)); return; }
@@ -636,10 +651,10 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     AVStream* stream = format->streams[stream_index];
     auto* parameters = stream->codecpar;
     if (!media_decode::video_codec(parameters->codec_id, video)) {
-        fail(video ? tr("anim.supported_video") : tr("anim.supported_anim")); return;
+        fail(video ? i18n::text("anim.supported_video") : i18n::text("anim.supported_anim")); return;
     }
     auto dimensions_ok = [](int w, int h) { return w > 0 && h > 0 && w <= 1280 && h <= 1280 && (int64_t)w * h <= 1280 * 720; };
-    if (!dimensions_ok(parameters->width, parameters->height)) { fail(tr("anim.limit_720p")); return; }
+    if (!dimensions_ok(parameters->width, parameters->height)) { fail(i18n::text("anim.limit_720p")); return; }
     if (parameters->codec_id == AV_CODEC_ID_H264) {
         int module_rc = sceSysmoduleLoadModule(SCE_SYSMODULE_AVCDEC);
         // Some retail Vitas report INVALID_VALUE while the codec engine is
@@ -647,9 +662,9 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         std::fprintf(stderr, "Animation: AVCDEC module load 0x%08x\n", (unsigned)module_rc);
         hardware_log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-hardware.log", "w");
         if (hardware_log) {
-            std::fprintf(hardware_log, "VitaGram %s\nbackend=h264_vita\nmodule_load=0x%08x\nprofile=%d level=%d size=%dx%d\nfile_size=%ld head_crc=%08lx tail_crc=%08lx\n",
+            std::fprintf(hardware_log, "VitaGram %s\nbackend=h264_vita\nmodule_load=0x%08x\nprofile=%d level=%d size=%dx%d\nfile_size=%lld head_crc=%08lx tail_crc=%08lx\n",
                 VITAGRAM_VERSION, (unsigned)module_rc, parameters->profile, parameters->level,
-                parameters->width, parameters->height, file_size, (unsigned long)head_crc, (unsigned long)tail_crc);
+                parameters->width, parameters->height, (long long)file_size, (unsigned long)head_crc, (unsigned long)tail_crc);
             if (parameters->height > 1088)
                 std::fprintf(hardware_log, "portrait_hardware_probe=1 coded_height=%d\n", parameters->height);
             std::fclose(hardware_log);
@@ -659,7 +674,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     const AVCodec* decoder = parameters->codec_id == AV_CODEC_ID_H264
         ? avcodec_find_decoder_by_name("h264_vita") : avcodec_find_decoder(parameters->codec_id);
     codec = decoder ? avcodec_alloc_context3(decoder) : nullptr;
-    if (!codec) { fail(tr("anim.decoder_missing")); return; }
+    if (!codec) { fail(i18n::text("anim.decoder_missing")); return; }
     logged_codec = codec;
     rc = avcodec_parameters_to_context(codec, parameters);
     if (rc < 0) { fail(decoder_error("Parameters", rc)); return; }
@@ -683,14 +698,15 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         std::fflush(hardware_log);
     }
     packet = av_packet_alloc(); frame = av_frame_alloc();
-    if (!packet || !frame) { fail(tr("anim.gif_memory")); return; }
+    if (!packet || !frame) { fail(i18n::text("anim.gif_memory")); return; }
     AVRational rate = av_guess_frame_rate(format, stream, nullptr);
     int64_t fallback_delay = rate.num > 0 && rate.den > 0 ? av_rescale_q(1, av_inv_q(rate), AVRational{1,1000000}) : 100000;
     fallback_delay = std::max<int64_t>(10000, std::min<int64_t>(1000000, fallback_delay));
     std::vector<unsigned char> rgba;
+    CircleMask circle_mask;
     int64_t origin_pts = AV_NOPTS_VALUE, origin_wall = 0, next_wall = 0, last_output = 0;
     bool had_frame = false;
-    std::string frame_error;
+    i18n::Text frame_error;
     int64_t video_wall = 0, tail_wall = 0, tail_position = 0, video_end = 0;
     int64_t audio_wait_started = 0;
     bool wall_fallback = false;
@@ -728,9 +744,9 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     };
     auto wait_video = [&](int64_t due) -> int64_t {
         while (!interrupted(&job)) {
-            // A video note starts paused, but it still needs one decoded,
-            // circular frame as its preview before the user presses Play.
-            if (round && !had_frame && paused_) return due;
+            // Notes and paused seeks need one preview frame without advancing
+            // playback or starting the audio clock.
+            if ((round || seek_base > 0) && !had_frame && paused_) return due;
             if (paused_) {
                 reservation.reset();
                 int64_t start = sceKernelGetSystemTimeWide();
@@ -786,10 +802,13 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                         video_due = seek_key_us + std::max<int64_t>(0, av_rescale_q(presentation_pts - origin_pts, stream->time_base, AVRational{1,1000000}));
                 }
                 video_end = video_due + duration;
+                if (media_seek::before_target(video_due, duration, seek_base)) {
+                    av_frame_unref(frame); return true;
+                }
                 if (seek_base > 0 && !round && !seek_audio_started) {
                     seek_audio_started = true;
                     if (!prepare) {
-                        audio_.setSource(source_, true);
+                        audio_.setSource(source_path, true, false, download);
                         audio_.seekTo(video_due);
                         audio_.setPlaying(!paused_);
                     }
@@ -828,7 +847,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                     !(frame->width & 1) && !(frame->height & 1)) {
                     if (!frame->data[0] || !frame->data[1] ||
                         frame->linesize[0] < frame->width || frame->linesize[1] < frame->width) {
-                        frame_error = tr("anim.nv12_layout");
+                        frame_error = i18n::text("anim.nv12_layout");
                         return false;
                     }
                     pthread_mutex_lock(&mutex_);
@@ -836,18 +855,18 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                         if (!pending_yuv_frame_) pending_yuv_frame_ = av_frame_alloc();
                         if (!pending_yuv_frame_) {
                             pthread_mutex_unlock(&mutex_);
-                            frame_error = tr("anim.frame_memory");
+                            frame_error = i18n::text("anim.frame_memory");
                             return false;
                         }
                         av_frame_unref(pending_yuv_frame_);
                         if (av_frame_ref(pending_yuv_frame_, frame) < 0) {
                             pthread_mutex_unlock(&mutex_);
-                            frame_error = tr("anim.frame_retain");
+                            frame_error = i18n::text("anim.frame_retain");
                             return false;
                         }
                         width_ = frame->width; height_ = frame->height;
                         pending_direct_ = direct_video;
-                        ready_ = true; status_ = tr("anim.video_playing");
+                        ready_ = true; status_ = i18n::text("anim.video_playing");
                     }
                     pthread_mutex_unlock(&mutex_);
                     last_output = now;
@@ -878,16 +897,12 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                     return false;
                 }
                 if (round) {
-                    // Video notes are square; crop their displayed pixels to a circle.
-                    float cx = (w - 1) * 0.5f, cy = (h - 1) * 0.5f;
-                    float radius = std::min(w, h) * 0.5f;
-                    for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x)
-                        if ((x-cx)*(x-cx) + (y-cy)*(y-cy) > radius*radius)
-                            rgba[(y*w+x)*4+3] = 0;
+                    circle_mask.resize(w, h);
+                    circle_mask.apply(rgba.data());
                 }
                 pthread_mutex_lock(&mutex_);
                 if (generation == generation_) {
-                    pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = video ? tr("anim.video_playing") : "GIF - playing";
+                    pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = i18n::text(video ? "anim.video_playing" : "anim.play_pause");
                 }
                 pthread_mutex_unlock(&mutex_);
                 last_output = now;
@@ -985,9 +1000,14 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         if (seek_log) { std::fprintf(seek_log, " landed=%d\n", landed ? 1 : 0); std::fclose(seek_log); }
         if (!landed && !interrupted(&job)) { fail("Seek: no IDR picture before the target"); return; }
     }
+    // Only now are the headers, codec and seek position usable. A partial
+    // download may have blocked in avformat_open_input while looking for moov.
+    pthread_mutex_lock(&mutex_);
+    if (generation == generation_ && video) playback_ready_ = true;
+    pthread_mutex_unlock(&mutex_);
     bool hardware_recovered = false;
     while (!interrupted(&job)) {
-        if (video && paused_ && !(round && !had_frame)) {
+        if (video && paused_ && !((round || seek_base > 0) && !had_frame)) {
             reservation.reset();
             while (paused_ && !interrupted(&job)) sceKernelDelayThread(10000);
             if (interrupted(&job)) break;

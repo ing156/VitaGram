@@ -9,6 +9,11 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #ifndef VITAGRAM_LANG_DIR
 #error VITAGRAM_LANG_DIR must point to assets/lang
@@ -114,6 +119,10 @@ int main() {
     // Language list comes from the files; selection by code and unknown codes.
     assert(i18n::languages().size() >= 2);
     assert(i18n::select("ru") && i18n::current() == "ru");
+    assert(i18n::resolve("zh-Hans") == "zh-Hans");
+    assert(i18n::resolve("KO") == "ko");
+    assert(i18n::resolve("xx-unknown") == "en");
+    assert(i18n::current() == "ru");
     assert(i18n::tr("common.yes") == "Да");
     assert(i18n::select("en") && i18n::tr("common.yes") == "Yes");
     assert(!i18n::select("xx-unknown"));          // unknown -> automatic -> English off the console
@@ -123,6 +132,56 @@ int main() {
     // Arguments and fallbacks.
     assert(i18n::tr("sticker.page", {"2", "5"}) == "Страница 2 / 5");
     assert(i18n::tr("no.such.key") == "no.such.key");
+
+    // Retained UI strings carry keys, nested arguments and composition across changes.
+    i18n::Text retained = i18n::text("doc.downloading", {i18n::text("unit.kib", {"17"})});
+    i18n::Text camera = i18n::text("cam.open_failed") + " (0x1234)";
+    i18n::Text album = i18n::text("media.photo") + " · GIF";
+    album.replaceTranslation(i18n::text("media.photo"), i18n::text("media.photos_count", {"3"}));
+    i18n::Text literal = tr("status.online"); // Same bytes, but explicitly raw user/server content.
+    const std::string unchanged = literal;
+    const auto generation = i18n::revision();
+    assert(i18n::select("en") && i18n::revision() > generation);
+    retained.refresh(); camera.refresh(); album.refresh(); literal.refresh();
+    assert(retained == tr("doc.downloading", {tr("unit.kib", {"17"})}));
+    assert(camera == tr("cam.open_failed") + " (0x1234)");
+    assert(album == tr("media.photos_count", {"3"}) + " · GIF");
+    assert(literal == unchanged);
+    i18n::Text copy = retained;
+    retained.clear(); // Clearing must drop the recipe instead of reviving old status text.
+    camera = "SERVER_ERROR"; // Raw replacement must also drop the old key.
+    assert(i18n::select("ru"));
+    retained.refresh(); camera.refresh(); copy.refresh();
+    assert(retained.empty() && camera == "SERVER_ERROR");
+    assert(copy == tr("doc.downloading", {tr("unit.kib", {"17"})}));
+
+    // A worker that renders during a language commit must not cache the old text
+    // with the new generation. Block inside the real renderer deterministically.
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool captured = false, resume = false;
+    std::atomic<bool> first{true};
+    i18n::Text worker_status;
+    std::thread worker([&] {
+        worker_status = i18n::Text::computed([&] {
+            const std::string value = tr("status.online");
+            if (first.exchange(false)) {
+                std::unique_lock<std::mutex> lock(mutex);
+                captured = true; changed.notify_all();
+                changed.wait(lock, [&] { return resume; });
+            }
+            return value;
+        });
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(changed.wait_for(lock, std::chrono::seconds(10), [&] { return captured; }));
+    }
+    assert(i18n::select("en"));
+    { std::lock_guard<std::mutex> lock(mutex); resume = true; }
+    changed.notify_all(); worker.join();
+    assert(worker_status == tr("status.online"));
+    assert(i18n::select("ru"));
 
     // A scratch language: missing keys fall back to English, quotes keep spaces, escapes work, BOM is ignored.
     char pattern[] = "/tmp/vitagram-i18n-XXXXXX";

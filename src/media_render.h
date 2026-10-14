@@ -13,7 +13,12 @@ unsigned rich_text_revision();
 void rich_text_set_scale(float scale);
 // Font for the interface language (Korean/Chinese), nullptr when the default fonts suffice.
 // Safe before rich_text_init(); on the UI thread otherwise.
-void rich_text_set_language_font(const char* path);
+bool rich_text_set_language_font(const char* path);
+enum class LanguageFontStatus { Loading, Ready, Failed };
+// Queue only the latest request. Does not change the active face. UI thread only.
+LanguageFontStatus rich_text_prepare_language_font(const char* path);
+// Japanese uses the permanent fallback face, loaded by the startup worker.
+LanguageFontStatus rich_text_japanese_font_status();
 void emoji_load_one();
 void rich_text_shutdown();
 int rich_text_width(vita2d_pgf* font, float scale, const char* text);

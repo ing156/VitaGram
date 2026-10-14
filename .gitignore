@@ -18,6 +18,7 @@ CMakeFiles/
 /compile_commands.json
 /tdlib/
 recovery/
+project/
 
 # test metrics
 docs/

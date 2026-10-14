@@ -240,7 +240,7 @@ PATH={
  'chat':'<path d="M20.5 12a8.5 8.5 0 0 1-8.5 8.5c-1.8 0-3.4-.4-4.7-1.4L3 20.5l1.4-4.2A8.5 8.5 0 1 1 20.5 12Z"/>',
  'mic':'<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4m-4 0h8"/>',
  'heart':'<path d="M20 8c0 5-8 11-8 11S4 13 4 8a4.2 4.2 0 0 1 8-1 4.2 4.2 0 0 1 8 1Z"/>',
- 'forward':'<path d="M14 4 21 11l-7 7v-4C8 14 5 15 3 20c0-8 4-12 11-12Z"/>',
+ 'forward':'<path d="m14 4 7 7-7 7v-5c-5 0-8 2-11 8C3 12 6 7 14 7Z"/>',
  'fullscreen':'<path d="M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6"/>',
  'collapse':'<path d="M8 3v5H3M16 3v5h5M3 16h5v5M21 16h-5v5"/>',
  'more':'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
@@ -251,6 +251,10 @@ PATH={
  'edit':'<path d="m4 20 5-1 11-11-4-4L5 15Z"/><path d="M14 6l4 4"/>',
  'check':'<path d="m4.5 12 5.5 5.5L20 6"/>',
  'menu':'<path d="M4 6h16M4 12h16M4 18h16"/>',
+ 'reply':'<path d="m10 4-7 7 7 7v-5c5 0 8 2 11 8 0-9-3-14-11-14Z"/>',
+ 'clear-history':'<path d="m11 12 9-9M10 11l4 4-4 6-6-2-1-2ZM8 15l-3 3m5-2-2 4"/>',
+ 'trash':'<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>',
+ 'leave':'<path d="M13 7V4H3v16h10v-3M9 12h13m-4-4 4 4-4 4"/>',
  'close':'<path d="M5 5 19 19M19 5 5 19"/>',
  'volume':'<path d="M4 9h4l5-5v16l-5-5H4ZM17 8a6 6 0 0 1 0 8M19.5 5a10 10 0 0 1 0 14"/>',
  'calendar':'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v5M17 3v5M3 10h18M8 14h3M8 17h3"/>',
@@ -290,12 +294,12 @@ manifest['battery_icons']={'states':BATTERY_STATES,'source_size':[32,32],'recomm
     'note':'Visual only: real charge values must come from the application/system.'}
 
 for theme,p in PALETTES.items():
- names=list(PATH)+BATTERY_STATES
+ names=[name for name in PATH if name not in ('trash','leave','reply','clear-history')]+BATTERY_STATES+['trash','leave','reply','clear-history']
  cols=8;cell=64; rows=math.ceil(len(names)/cols)
  atlas=Image.new('RGBA',(cols*cell,rows*cell))
  sprites={}
  for i,name in enumerate(names):
-  icon=icon_png(name,p['text']) if name in PATH else battery_icon_png(name,theme)
+  icon=icon_png(name,('#FA6078' if theme=='dark' else '#D93751') if name=='leave' else p['text']) if name in PATH else battery_icon_png(name,theme)
   save(icon,f'themes/{theme}/icons/{name}.png')
   x=(i%cols)*cell+16;y=(i//cols)*cell+16
   atlas.alpha_composite(icon,(x,y))
@@ -388,7 +392,7 @@ def make_demo(theme,mode):
  img.alpha_composite(top,(0,0))
  sprite(img,theme,'ui_icons_atlas','send',(14,4),30)
  text_at(img,(53,7),'VitaGram',21,'#FFFFFF',True)
- text_at(img,(178,14),'0.36.17  •  UI concept',11,'#CFEAFF')
+ text_at(img,(178,14),'0.37.00  •  UI concept',11,'#CFEAFF')
  d=ImageDraw.Draw(img)
  d.ellipse((825,17,834,26),fill=rgba(p['green']))
  text_at(img,(840,12),'В сети',14,'#FFFFFF')

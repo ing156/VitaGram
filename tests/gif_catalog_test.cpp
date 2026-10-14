@@ -111,6 +111,10 @@ int main() {
     assert(queue.take(true, false, 100) == reply); // delivered even during touch interaction
     char* wire = json_dumps(reply, JSON_COMPACT);
     assert(td_reply_is_foreground(wire));
+    // Logging is off by default. Enable only GIF diagnostics for the ring checks.
+    gif_diagnostics::raw("received", wire, 555);
+    assert(gif_diagnostics::ring().count == 0);
+    diag_log::set_mask(1u << static_cast<unsigned>(diag_log::Kind::Gif));
     gif_diagnostics::raw("received", wire, 555);
     auto& ring = gif_diagnostics::ring();
     assert(ring.count == 1 && ring.events[0].generation == catalog.generation);

@@ -2,6 +2,7 @@
 #include <vita2d.h>
 #include <jansson.h>
 #include <array>
+#include <algorithm>
 #include <string>
 
 namespace ui_battery {
@@ -22,15 +23,15 @@ void unload() {
     attempted_theme = -1;
 }
 
-void load(bool dark) {
-    const int theme = dark ? 1 : 0;
+void load(int theme) {
+    theme = std::max(0, std::min(2, theme));
     if (attempted_theme == theme) return;
     unload();
     attempted_theme = theme; // Missing resources must not trigger disk reads every frame.
     json_error_t error{};
     json_t* manifest = json_load_file("app0:ui/manifest.json", 0, &error);
     if (!manifest) return;
-    const std::string path = std::string("themes/") + (dark ? "dark" : "light") + "/ui_icons_atlas.png";
+    const std::string path = std::string("themes/") + (theme == 2 ? "vhbb" : theme == 1 ? "dark" : "light") + "/ui_icons_atlas.png";
     json_t* entries = json_object_get(json_object_get(json_object_get(manifest, "sprite_atlases"), path.c_str()), "sprites");
     if (json_is_object(entries)) atlas = vita2d_load_PNG_file(("app0:ui/" + path).c_str());
     if (atlas) {

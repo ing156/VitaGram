@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include "proxy_config.h"
 #include <string>
 
@@ -11,4 +12,5 @@ struct ProxyLink {
 enum class ProxyLinkResult { NotProxy, Invalid, Valid };
 // Does not change out unless the complete link is valid. Never echoes secret in errors.
 ProxyLinkResult parse_proxy_link(const std::string& url, ProxyLink& out, std::string& error);
+ProxyLinkResult parse_proxy_link(const std::string& url, ProxyLink& out, i18n::Text& error);
 bool is_proxy_link(const std::string& url);

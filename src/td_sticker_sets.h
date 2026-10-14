@@ -183,7 +183,7 @@ inline bool keeps(Shape shape, const std::string& name) {
     case Shape::Item: return wanted(name, {"@type", "width", "height", "emoji", "format", "full_type", "thumbnail", "sticker"});
     case Shape::Thumbnail: return wanted(name, {"@type", "format", "width", "height", "file"});
     case Shape::File: return wanted(name, {"@type", "id", "size", "expected_size", "local", "remote"});
-    case Shape::Local: return wanted(name, {"path", "is_downloading_completed", "is_downloading_active", "downloaded_size", "downloaded_prefix_size"});
+    case Shape::Local: return wanted(name, {"path", "is_downloading_completed", "is_downloading_active", "download_offset", "downloaded_size", "downloaded_prefix_size"});
     case Shape::Remote: return wanted(name, {"unique_id"});
     case Shape::ChatUpdate: return wanted(name, {"@type", "@extra", "chat_id", "positions", "last_message"});
     case Shape::LastMessage: return wanted(name, {"@type", "id", "is_outgoing"});

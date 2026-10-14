@@ -79,6 +79,11 @@ int main(int argc, char** argv) {
     for (int failure=1; failure<=5; ++failure) {
         fail_at = failure;
         assert(!scanner.start() && !scanner.active() && !scanner.status().empty());
+        const i18n::Text retained_failure = scanner.status();
+        assert(i18n::select("en"));
+        assert(scanner.status() != static_cast<const std::string&>(retained_failure));
+        assert(scanner.status() == retained_failure.localized());
+        assert(i18n::select("ru"));
         clean();
     }
     fail_at = 0;

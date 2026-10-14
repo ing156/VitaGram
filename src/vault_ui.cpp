@@ -1,4 +1,5 @@
 #include "vault_ui.h"
+#include "keyboard_hold.h"
 #include "account_cleanup.h"
 #include "i18n.h"
 #include "media_render.h"
@@ -73,6 +74,15 @@ void triangle(float cx, float cy, float r, int direction, unsigned color) {
     }
 }
 
+// Opaque rounded key bases keep a visible rim even when the PNG has transparent edges.
+void rounded_key_base(float x, float y, float w, float h, float radius, unsigned color) {
+    vita2d_draw_rectangle(x + radius, y, w - 2 * radius, h, color);
+    vita2d_draw_rectangle(x, y + radius, w, h - 2 * radius, color);
+    for (float cx : {x + radius, x + w - radius})
+        for (float cy : {y + radius, y + h - radius})
+            vita2d_draw_fill_circle(cx, cy, radius, color);
+}
+
 void draw_symbol(int symbol, float cx, float cy, float r, unsigned color, unsigned background) {
     switch (symbol) {
         case 0: case 1: case 2: case 3: triangle(cx, cy, r, symbol, color); break;
@@ -131,8 +141,14 @@ std::vector<std::string> wrap(vita2d_pgf* font, const std::string& text, int wid
     return lines;
 }
 
+// Set by relock(): the app's own frame work, run while a lock screen owns the display.
+void (*g_tick)(void*) = nullptr;
+void* g_tick_context = nullptr;
+bool g_deriving = false;
+
 void begin_frame(const Env& env, const std::string& title, const std::string& footer) {
-    ui_skin::load(env.dark);   // no-op once this theme is loaded; the gate runs before the main loop
+    if (g_tick && !g_deriving) g_tick(g_tick_context);
+    ui_skin::load(env.theme >= 0 ? env.theme : (env.dark ? 1 : 0));   // no-op once this theme is loaded; the gate runs before the main loop
     Colors c = colors(env.dark);
     vita2d_set_clear_color(c.background);
     vita2d_start_drawing();
@@ -179,6 +195,8 @@ void progress_bar(const Env& env, int x, int y, int w, float fraction, unsigned 
 
 // ---- key derivation progress -------------------------------------------------------------------
 void derive_progress(void* opaque, int percent) {
+    g_deriving = true; // the key derivation must not re-enter the caller's event processing
+    struct Reset { ~Reset() { g_deriving = false; } } reset;
     const Env& env = *static_cast<const Env*>(opaque);
     Colors c = colors(env.dark);
     begin_frame(env, tr("vault.title"), "");
@@ -285,7 +303,7 @@ struct TouchTap {
     }
 };
 
-enum class Act { Char, Layer, Space, Delete, Ok };
+enum class Act { Char, Shift, Symbols, Language, Space, Delete, Clear, Cancel, Ok };
 struct Key { int x, y, w, h; Act act; std::string label; };
 struct Layer { const char* name; std::vector<std::vector<std::string>> rows; };
 
@@ -308,13 +326,13 @@ const std::vector<Layer>& keyboard_layers() {
             return layer;
         };
         return std::vector<Layer>{
-            make("abc", {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"}),
-            make("ABC", {"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"}),
-            make("!#1", {"!@#$%^&*()", "-_=+[]{}\\|", ";:'\",.<>/?", "`~"}),
-            make("\xd0\xb0\xd0\xb1\xd0\xb2", {"1234567890", "\xd0\xb9\xd1\x86\xd1\x83\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb3\xd1\x88\xd1\x89\xd0\xb7\xd1\x85",
+            make("abc", {"qwertyuiop", "asdfghjkl", "zxcvbnm"}),
+            make("ABC", {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"}),
+            make("@123", {"1234567890!@#$", "%^&*()-_=+[]{}", "\\|;:'\",.<>/?`~"}),
+            make("\xd0\xb0\xd0\xb1\xd0\xb2", {"\xd0\xb9\xd1\x86\xd1\x83\xd0\xba\xd0\xb5\xd0\xbd\xd0\xb3\xd1\x88\xd1\x89\xd0\xb7\xd1\x85",
                 "\xd1\x84\xd1\x8b\xd0\xb2\xd0\xb0\xd0\xbf\xd1\x80\xd0\xbe\xd0\xbb\xd0\xb4\xd0\xb6\xd1\x8d",
                 "\xd1\x8f\xd1\x87\xd1\x81\xd0\xbc\xd0\xb8\xd1\x82\xd1\x8c\xd0\xb1\xd1\x8e\xd1\x8a\xd1\x91"}),
-            make("\xd0\x90\xd0\x91\xd0\x92", {"1234567890", "\xd0\x99\xd0\xa6\xd0\xa3\xd0\x9a\xd0\x95\xd0\x9d\xd0\x93\xd0\xa8\xd0\xa9\xd0\x97\xd0\xa5",
+            make("\xd0\x90\xd0\x91\xd0\x92", {"\xd0\x99\xd0\xa6\xd0\xa3\xd0\x9a\xd0\x95\xd0\x9d\xd0\x93\xd0\xa8\xd0\xa9\xd0\x97\xd0\xa5",
                 "\xd0\xa4\xd0\xab\xd0\x92\xd0\x90\xd0\x9f\xd0\xa0\xd0\x9e\xd0\x9b\xd0\x94\xd0\x96\xd0\xad",
                 "\xd0\xaf\xd0\xa7\xd0\xa1\xd0\x9c\xd0\x98\xd0\xa2\xd0\xac\xd0\x91\xd0\xae\xd0\xaa\xd0\x81"}),
         };
@@ -334,38 +352,51 @@ End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
     TouchTap touch;
     const auto& layers = keyboard_layers();
     size_t layer = 0;
-    int row = 1, col = 0;
+    bool russian = false, shifted = false, symbols = false, cancel = false;
+    int row = 0, col = 0;
+    struct Hold : KeyboardHold {
+        bool touch = false;
+        Key key{};
+        std::string digit;
+    } hold;
     std::string text;
     struct Wipe { std::string& s; ~Wipe() { std::fill(s.begin(), s.end(), '\0'); s.clear(); } } wipe_on_exit{text};
-    const int hint_lines = (int)wrap(env.font, entry.hint, 864, 0.6f).size();
-    int top = 72 + hint_lines * 27;
-    if (!entry.message.empty()) top += 16 + (int)wrap(env.font, entry.message, 864, 0.6f).size() * 27;
-    const int dots_y = top + 18;
-    const int keys_top = dots_y + 24;
-    const int key_h = std::max(30, std::min(44, (466 - keys_top) / 5 - 4));
+    // Keep the keyboard anchored like the Vita IME, regardless of hint/error length.
+    constexpr int dots_y = 216, panel_top = 250, keys_top = 262, key_h = 64, gap = 8;
+    float hint_scale = 0.6f;
+    while (hint_scale > 0.42f &&
+           (wrap(env.font, entry.hint, 864, hint_scale).size() +
+            wrap(env.font, entry.message, 864, hint_scale).size()) * 23 > 112)
+        hint_scale -= 0.03f;
     for (;;) {
-        // Geometry first: the same rectangles serve drawing, the cursor and touch.
+        layer = symbols ? 2 : (russian ? 3 : 0) + (shifted ? 1 : 0);
+        // Geometry is shared by rendering, controller focus and touch hit testing.
         std::vector<std::vector<Key>> grid;
-        {
-            const Layer& current = layers[layer];
-            const int kw = 72, gap = 4;
-            int y = keys_top;
-            for (const auto& labels : current.rows) {
-                std::vector<Key> line;
-                const int width = (int)labels.size() * (kw + gap) - gap;
-                int x = 480 - width / 2;
-                for (const auto& label : labels) { line.push_back({x, y, kw, key_h, Act::Char, label}); x += kw + gap; }
-                grid.push_back(std::move(line));
-                y += key_h + gap;
-            }
-            const int widths[4] = {120, 360, 150, 150};
-            const Act acts[4] = {Act::Layer, Act::Space, Act::Delete, Act::Ok};
-            const std::string labels[4] = {layers[(layer + 1) % layers.size()].name, tr("vault.kb.space"), tr("vault.kb.delete"), tr("vault.kb.ok")};
-            int x = 480 - (120 + 360 + 150 + 150 + 3 * gap) / 2;
+        const Layer& current = layers[layer];
+        int y = keys_top;
+        for (size_t r = 0; r < current.rows.size(); ++r) {
+            const auto& labels = current.rows[r];
+            const bool last = r + 1 == current.rows.size();
+            const int side = last ? 82 : 0;
+            const int available = 928 - (last ? 2 * (side + gap) : 0);
+            const int kw = std::min(88, (available - ((int)labels.size() - 1) * gap) / (int)labels.size());
+            const int width = (int)labels.size() * (kw + gap) - gap + (last ? 2 * (side + gap) : 0);
+            int x = 480 - width / 2;
             std::vector<Key> line;
-            for (int i = 0; i < 4; ++i) { line.push_back({x, y, widths[i], key_h, acts[i], labels[i]}); x += widths[i] + gap; }
+            if (last) { line.push_back({x, y, side, key_h, Act::Shift, ""}); x += side + gap; }
+            for (const auto& label : labels) { line.push_back({x, y, kw, key_h, Act::Char, label}); x += kw + gap; }
+            if (last) line.push_back({x, y, side, key_h, Act::Delete, ""});
             grid.push_back(std::move(line));
+            y += key_h + gap;
         }
+        const int widths[] = {64, 104, 90, 394, 124, 112};
+        const Act acts[] = {Act::Cancel, Act::Symbols, Act::Language, Act::Space, Act::Clear, Act::Ok};
+        const std::string labels[] = {"", symbols ? (shifted ? "ABC" : "abc") : "@123",
+                                     russian ? "EN" : "RU", tr("vault.kb.space"), "", tr("vault.kb.ok")};
+        int x = 16;
+        std::vector<Key> line;
+        for (int i = 0; i < 6; ++i) { line.push_back({x, y, widths[i], key_h, acts[i], labels[i]}); x += widths[i] + gap; }
+        grid.push_back(std::move(line));
         row = std::max(0, std::min(row, (int)grid.size() - 1));
         col = std::max(0, std::min(col, (int)grid[row].size() - 1));
 
@@ -375,7 +406,11 @@ End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
                     if (text.size() + key.label.size() <= vault::kMaxText) text += key.label;
                     break;
                 case Act::Space: if (text.size() < vault::kMaxText) text += ' '; break;
-                case Act::Layer: layer = (layer + 1) % layers.size(); break;
+                case Act::Shift: shifted = !shifted; symbols = false; break;
+                case Act::Symbols: symbols = !symbols; break;
+                case Act::Language: russian = !russian; symbols = false; break;
+                case Act::Cancel: cancel = true; break;
+                case Act::Clear: std::fill(text.begin(), text.end(), '\0'); text.clear(); break;
                 case Act::Delete:
                     while (!text.empty() && (static_cast<unsigned char>(text.back()) & 0xc0) == 0x80) text.pop_back();
                     if (!text.empty()) text.pop_back();
@@ -388,33 +423,69 @@ End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
         unsigned pressed = pad.poll();
         int tx = 0, ty = 0;
         const bool tapped = touch.poll(tx, ty);
-        if (pressed & SCE_CTRL_SELECT) return End::Select;
+        if (pressed & (SCE_CTRL_SELECT | SCE_CTRL_CIRCLE)) return End::Select;
         bool submit = (pressed & SCE_CTRL_START) && !text.empty();
+        const int focus_x = grid[row][col].x + grid[row][col].w / 2;
         if (pressed & SCE_CTRL_UP) row = (row + (int)grid.size() - 1) % (int)grid.size();
         if (pressed & SCE_CTRL_DOWN) row = (row + 1) % (int)grid.size();
-        if (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN)) col = std::min(col, (int)grid[row].size() - 1);
+        if (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN)) {
+            col = 0;
+            for (int k = 1; k < (int)grid[row].size(); ++k)
+                if (std::abs(grid[row][k].x + grid[row][k].w / 2 - focus_x) <
+                    std::abs(grid[row][col].x + grid[row][col].w / 2 - focus_x)) col = k;
+        }
         if (pressed & SCE_CTRL_LEFT) col = (col + (int)grid[row].size() - 1) % (int)grid[row].size();
         if (pressed & SCE_CTRL_RIGHT) col = (col + 1) % (int)grid[row].size();
-        if (pressed & SCE_CTRL_CROSS) submit = press(grid[row][col]) || submit;
+        auto activate = [&](const Key& key, int r, int k, bool by_touch) {
+            hold.active = false;
+            if (!symbols && r == 0 && k < 10 && key.act == Act::Char) {
+                hold.start(sceKernelGetSystemTimeWide()); hold.touch = by_touch; hold.key = key;
+                hold.digit = std::to_string((k + 1) % 10);
+            } else submit = press(key) || submit;
+        };
+        if (hold.active) {
+            const bool down = hold.touch ? touch.was_down : (pad.old & SCE_CTRL_CROSS) != 0;
+            const bool moved = hold.touch && down &&
+                (tx < hold.key.x || tx >= hold.key.x + hold.key.w || ty < hold.key.y || ty >= hold.key.y + hold.key.h);
+            const unsigned other = SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LEFT | SCE_CTRL_RIGHT |
+                SCE_CTRL_TRIANGLE | SCE_CTRL_SQUARE | SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER;
+            switch (hold.update(sceKernelGetSystemTimeWide(), down, moved || (pressed & other))) {
+                case KeyboardHold::Result::Short: press(hold.key); break;
+                case KeyboardHold::Result::Long: press({0, 0, 0, 0, Act::Char, hold.digit}); break;
+                case KeyboardHold::Result::None: break;
+            }
+        }
+        if (pressed & SCE_CTRL_CROSS) activate(grid[row][col], row, col, false);
         if (pressed & SCE_CTRL_SQUARE) press({0, 0, 0, 0, Act::Space, ""});
-        if (pressed & SCE_CTRL_TRIANGLE) press({0, 0, 0, 0, Act::Layer, ""});
+        if (pressed & SCE_CTRL_TRIANGLE) press({0, 0, 0, 0, Act::Symbols, ""});
         if (pressed & SCE_CTRL_LTRIGGER) press({0, 0, 0, 0, Act::Delete, ""});
-        if (pressed & SCE_CTRL_RTRIGGER) { std::fill(text.begin(), text.end(), '\0'); text.clear(); }
+        if (pressed & SCE_CTRL_RTRIGGER) press({0, 0, 0, 0, Act::Clear, ""});
         if (tapped) {
             for (int r = 0; r < (int)grid.size(); ++r)
                 for (int k = 0; k < (int)grid[r].size(); ++k) {
                     const Key& key = grid[r][k];
                     if (tx >= key.x && tx < key.x + key.w && ty >= key.y && ty < key.y + key.h) {
                         row = r; col = k;
-                        submit = press(key) || submit;
+                        activate(key, r, k, true);
                     }
                 }
         }
+        if (cancel) return End::Select;
         if (submit) { out.assign(text.begin(), text.end()); return End::Submit; }
 
-        begin_frame(env, entry.title, entry.footer);
-        int y = draw_lines(env, entry.hint, 48, 72, 864, 0.6f, c.ink);
-        if (!entry.message.empty()) draw_lines(env, entry.message, 48, y + 16, 864, 0.6f, entry.message_color);
+        begin_frame(env, entry.title, "");
+        vita2d_enable_clipping();
+        vita2d_set_clip_rectangle(48, 54, 912, 184);
+        int hint_y = draw_lines(env, entry.hint, 48, 72, 864, hint_scale, c.ink, 23);
+        if (!entry.message.empty()) draw_lines(env, entry.message, 48, hint_y + 8, 864, hint_scale, entry.message_color, 23);
+        vita2d_disable_clipping();
+        if (!ui_skin::nine(ui_skin::Slice::MediaFrame, 40, 190, 880, 50))
+            vita2d_draw_rectangle(40, 190, 880, 50, c.panel);
+        // Draw an opaque full-width sheet over every underlying card/footer.
+        // The PNG's transparent corners must never expose the application below it.
+        vita2d_draw_rectangle(0, panel_top, 960, 544 - panel_top, c.panel);
+        ui_skin::nine(ui_skin::Slice::Panel, 0, panel_top, 960, 544 - panel_top);
+        vita2d_draw_rectangle(0, panel_top, 960, 2, c.separator);
         // The phrase is never shown: one dot per character (the last 32), plus the count.
         const size_t chars = count_chars(text);
         const int shown = (int)std::min<size_t>(chars, 32);
@@ -426,15 +497,88 @@ End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
             for (int k = 0; k < (int)grid[r].size(); ++k) {
                 const Key& key = grid[r][k];
                 const bool selected = r == row && k == col;
-                vita2d_draw_rectangle(key.x, key.y, key.w, key.h, selected ? c.accent : c.separator);
-                vita2d_draw_rectangle(key.x + 2, key.y + 2, key.w - 4, key.h - 4, selected ? c.accent : c.panel);
-                const unsigned color = selected ? RGBA8(255, 255, 255, 255) : (key.act == Act::Char ? c.ink : c.accent);
-                const float scale = key.act == Act::Char ? 0.75f : 0.62f;
-                const int w = rich_text_width(env.font, scale, key.label.c_str());
-                rich_text_draw(env.font, key.x + (key.w - w) / 2, key.y + key.h / 2 + 8, color, scale, key.label.c_str());
+                const bool ok = key.act == Act::Ok;
+                const bool toggled = (key.act == Act::Shift && shifted && !symbols) ||
+                                     (key.act == Act::Symbols && symbols);
+                const auto slice = selected || toggled ? ui_skin::Slice::RowFocused : ui_skin::Slice::Row;
+                const unsigned rim = selected || toggled ? c.accent : c.muted;
+                rounded_key_base(key.x, key.y, key.w, key.h, 8, rim);
+                rounded_key_base(key.x + 2, key.y + 2, key.w - 4, key.h - 4, 6, c.panel);
+                ui_skin::nine(slice, key.x + 2, key.y + 2, key.w - 4, key.h - 4);
+                const unsigned color = ok ? c.ok : c.ink;
+                if (selected) ui_skin::nine(ui_skin::Slice::FocusRing, key.x - 2, key.y - 2, key.w + 4, key.h + 4);
+                const float cx = key.x + key.w / 2.0f;
+                const float cy = key.y + key.h / 2.0f +
+                    ((key.act == Act::Delete || key.act == Act::Clear || key.act == Act::Cancel) ? 8 : 0);
+                if (key.act == Act::Shift) {
+                    triangle(cx, cy - 4, 7, 0, toggled ? c.accent : color);
+                    vita2d_draw_rectangle(cx - 4, cy + 2, 8, 10, toggled ? c.accent : color);
+                } else if (key.act == Act::Delete) {
+                    // Backspace outline and cross, independent of font coverage.
+                    vita2d_draw_line(cx - 18, cy, cx - 8, cy - 10, color);
+                    vita2d_draw_line(cx - 18, cy, cx - 8, cy + 10, color);
+                    vita2d_draw_line(cx - 8, cy - 10, cx + 17, cy - 10, color);
+                    vita2d_draw_line(cx - 8, cy + 10, cx + 17, cy + 10, color);
+                    vita2d_draw_line(cx + 17, cy - 10, cx + 17, cy + 10, color);
+                    draw_symbol(4, cx + 4, cy, 6, color, c.panel);
+                } else if (key.act == Act::Clear) {
+                    // Trash can: clear the whole phrase, paired with the R shortcut.
+                    vita2d_draw_line(cx - 10, cy - 8, cx + 10, cy - 8, color);
+                    vita2d_draw_line(cx - 6, cy - 12, cx + 6, cy - 12, color);
+                    vita2d_draw_line(cx - 8, cy - 6, cx - 6, cy + 12, color);
+                    vita2d_draw_line(cx + 8, cy - 6, cx + 6, cy + 12, color);
+                    vita2d_draw_line(cx - 6, cy + 12, cx + 6, cy + 12, color);
+                    vita2d_draw_line(cx - 3, cy - 3, cx - 3, cy + 8, color);
+                    vita2d_draw_line(cx + 3, cy - 3, cx + 3, cy + 8, color);
+                } else if (key.act == Act::Cancel) {
+                    draw_symbol(5, cx, cy + 4, 10, color, c.panel);
+                } else {
+                    float scale = key.act == Act::Char ? 0.75f : 0.62f;
+                    int w = rich_text_width(env.font, scale, key.label.c_str());
+                    if (w > key.w - 12) { scale *= (key.w - 12.0f) / w; w = rich_text_width(env.font, scale, key.label.c_str()); }
+                    rich_text_draw(env.font, key.x + (key.w - w) / 2, cy + (key.act == Act::Char ? 8 : 14), color, scale, key.label.c_str());
+                }
+                // Render shortcut badges directly from the theme's controller atlas.
+                int shortcut = -1;
+                switch (key.act) {
+                    case Act::Symbols: shortcut = 0; break;
+                    case Act::Space: shortcut = 1; break;
+                    case Act::Delete: shortcut = 7; break;
+                    case Act::Clear: shortcut = 8; break;
+                    case Act::Cancel: shortcut = 6; break;
+                    case Act::Ok: shortcut = 5; break;
+                    default: break;
+                }
+                if (shortcut >= 0) {
+                    ui_skin::Sprite sprite;
+                    if (ui_skin::button(shortcut, sprite) && sprite.vh > 0) {
+                        const float factor = 18.0f / sprite.vh;
+                        const float x = key.x + key.w - 6 - sprite.vw * factor;
+                        const float y = key.y + 6;
+                        vita2d_draw_texture_tint_part_scale(sprite.texture,
+                            x - sprite.vx * factor, y - sprite.vy * factor,
+                            sprite.x, sprite.y, sprite.w, sprite.h, factor, factor,
+                            selected ? RGBA8(255, 255, 255, 255) : RGBA8(220, 230, 240, 255));
+                    } else {
+                        // Missing assets still show a button name or shape, never a token.
+                        const unsigned tint = selected ? c.accent : c.muted;
+                        if (shortcut <= 1) draw_symbol(shortcut == 0 ? 6 : 7,
+                            key.x + key.w - 15, key.y + 15, 6, tint, c.panel);
+                        else {
+                            const char* name = shortcut == 7 ? "L" : shortcut == 8 ? "R" : shortcut == 5 ? "START" : "SELECT";
+                            const int width = rich_text_width(env.font, 0.38f, name);
+                            rich_text_draw(env.font, key.x + key.w - width - 6, key.y + 19, tint, 0.38f, name);
+                        }
+                    }
+                }
+                if (!symbols && r == 0 && k < 10) {
+                    const std::string digit = std::to_string((k + 1) % 10);
+                    const int width = rich_text_width(env.font, 0.42f, digit.c_str());
+                    rich_text_draw(env.font, key.x + key.w - width - 7, key.y + 19,
+                        hold.active && hold.fired && row == r && col == k ? c.accent : c.muted,
+                        0.42f, digit.c_str());
+                }
             }
-        const std::string help = tr("vault.kb.help");
-        rich_text_draw(env.font, 480 - rich_text_width(env.font, 0.58f, help.c_str()) / 2, 484, c.muted, 0.58f, help.c_str());
         end_frame();
     }
 }
@@ -535,12 +679,78 @@ void unlock_screen(const Env& env, Pad& pad) {
 enum class Answer { Encrypt, Decline };
 Answer ask_screen(const Env& env, Pad& pad) {
     Colors c = colors(env.dark);
+    constexpr int top = 60, bottom = 480, step = 28;
+    // Reserve a gutter for warning marks and a scrollbar, in every language.
+    std::vector<std::string> lines;
+    std::vector<bool> warnings;
+    const std::string body = tr("vault.ask.body");
+    for (size_t start = 0;;) {
+        const size_t end = body.find('\n', start);
+        std::string paragraph = body.substr(start, end == std::string::npos ? end : end - start);
+        const bool warning = paragraph.compare(0, 3, "⚠") == 0;
+        if (warning) {
+            paragraph.erase(0, 3);
+            if (paragraph.compare(0, 3, "\xef\xb8\x8f") == 0) paragraph.erase(0, 3);
+            if (!paragraph.empty() && paragraph.front() == ' ') paragraph.erase(0, 1);
+        }
+        const auto wrapped = wrap(env.font, paragraph, 832, 0.62f);
+        for (size_t i = 0; i < wrapped.size(); ++i) {
+            lines.push_back(wrapped[i]);
+            warnings.push_back(warning && i == 0);
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    const int height = (int)lines.size() * step;
+    const int max_scroll = std::max(0, height - (bottom - top));
+    int scroll = 0, touch_y = 0;
+    bool dragging = false;
+    unsigned repeat_button = 0;
+    int64_t repeat_at = 0;
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
     for (;;) {
         unsigned pressed = pad.poll();
         if (pressed & SCE_CTRL_CROSS) return Answer::Encrypt;
         if (pressed & SCE_CTRL_CIRCLE) return Answer::Decline;
-        begin_frame(env, tr("vault.ask.title"), tr("vault.ask.footer"));
-        draw_lines(env, tr("vault.ask.body"), 48, 80, 864, 0.62f, c.ink, 28);
+        const int64_t now = sceKernelGetSystemTimeWide();
+        unsigned direction = pad.old & (SCE_CTRL_UP | SCE_CTRL_DOWN);
+        if (direction != repeat_button) {
+            repeat_button = direction;
+            repeat_at = now + 350000;
+        } else if (direction && now >= repeat_at) {
+            pressed |= direction;
+            repeat_at = now + 70000;
+        }
+        if (pressed & SCE_CTRL_UP) scroll -= step;
+        if (pressed & SCE_CTRL_DOWN) scroll += step;
+        SceTouchData touch{};
+        sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
+        if (touch.reportNum) {
+            const int x = touch.report[0].x / 2, y = touch.report[0].y / 2;
+            if (dragging) scroll += touch_y - y;
+            else dragging = x >= 32 && x < 928 && y >= top && y < bottom;
+            touch_y = y;
+        } else dragging = false;
+        scroll = std::max(0, std::min(max_scroll, scroll));
+        begin_frame(env, tr("vault.ask.title"), tr("vault.ask.footer") + "    " + tr("vault.ask.scroll"));
+        vita2d_enable_clipping();
+        vita2d_set_clip_rectangle(32, top, 928, bottom);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const int y = top + 20 + (int)i * step - scroll;
+            if (y + step < top || y - step > bottom) continue;
+            if (warnings[i]) {
+                triangle(48, y - 9, 10, 0, c.warn);
+                vita2d_draw_rectangle(47, y - 13, 2, 8, c.ink);
+                vita2d_draw_rectangle(47, y - 3, 2, 2, c.ink);
+            }
+            rich_text_draw(env.font, 72, y, c.ink, 0.62f, lines[i].c_str());
+        }
+        vita2d_disable_clipping();
+        if (max_scroll > 0) {
+            const float thumb = std::max(24.0f, (float)(bottom - top) * (bottom - top) / height);
+            vita2d_draw_rectangle(920, top, 4, bottom - top, c.separator);
+            vita2d_draw_rectangle(920, top + (bottom - top - thumb) * scroll / max_scroll, 4, thumb, c.accent);
+        }
         end_frame();
         sceKernelDelayThread(1000);
     }
@@ -700,6 +910,35 @@ void run_migration(const Env& env) {
     const size_t problems = outcome.failed + outcome.unlisted;
     std::fprintf(stderr, "Vault: %zu files not converted, %zu unreadable entries\n", outcome.failed, outcome.unlisted);
     notice_screen(env, pad, tr("vault.migrate.failed", {std::to_string(problems)}));
+}
+
+void relock(const Env& env, void (*tick)(void*), void* context) {
+    struct Tick { Tick(void (*f)(void*), void* c) { g_tick = f; g_tick_context = c; }
+                  ~Tick() { g_tick = nullptr; g_tick_context = nullptr; } } scoped_tick(tick, context);
+    Pad pad;
+    Colors c = colors(env.dark);
+    const vault::Method method = vault::method();
+    std::string message;
+    for (;;) {
+        Entry entry;
+        entry.title = tr("vault.relock.title");
+        entry.hint = tr(method == vault::Method::Text ? "vault.text.unlock_hint" : "vault.unlock.hint");
+        entry.footer = tr("vault.relock.footer");
+        entry.message = message; entry.message_color = c.danger;
+        vault::Pin pin;
+        if (read_secret(env, pad, entry, method, pin) == End::Select) continue; // nothing to go back to
+        if (int wait = vault::lockout_seconds()) {
+            for (auto& symbol : pin) symbol = 0;
+            message = tr("vault.locked_out", {std::to_string(wait)});
+            continue;
+        }
+        Env derive_context = env;
+        vault::Result r = vault::verify_pin(pin, derive_progress, &derive_context);
+        for (auto& symbol : pin) symbol = 0;
+        if (r == vault::Result::Ok) return;
+        message = r == vault::Result::WrongPin && vault::lockout_seconds()
+                      ? tr("vault.locked_out", {std::to_string(vault::lockout_seconds())}) : result_text(r);
+    }
 }
 
 Outcome enable_flow(const Env& env) {

@@ -8,6 +8,8 @@
 #include "vita_net.h"
 #include "media_render.h"
 #include "ui_skin.h"
+#include "media_load_view.h"
+#include "media_seek.h"
 #include "text_layout_cache.h"
 #include "image_decoder.h"
 #include "image_retry.h"
@@ -16,6 +18,8 @@
 #include "animation_player.h"
 #include "voice_player.h"
 #include "audio_recorder.h"
+#include "audio_recording_dialog.h"
+#include "spoiler_visibility.h"
 #include "transient_status.h"
 #include "video_note_recorder.h"
 #include "video_quality.h"
@@ -67,6 +71,7 @@ struct CachedTexture {
     vita2d_texture* texture = nullptr;
     unsigned int used = 0;
     size_t bytes = 0;
+    int mask = 0;
 };
 
 // Applies the avatar shape to decoded pixels: 0 rounded square, 1 circle. Antialiased through a
@@ -144,7 +149,7 @@ static void blur_spoiler(DecodedImage& image) {
         const bool speck = (seed & 31) == 0;
         for (int c = 0; c < 3; ++c) {
             int value = small[i * 4 + c] * 85 / 100;
-            if (speck) value += 90;
+            (void)speck;
             small[i * 4 + c] = (uint8_t)std::min(255, value);
         }
     }
@@ -162,7 +167,7 @@ public:
         if (path.empty()) return nullptr;
         ++clock_;
         for (auto& item : items_) {
-            if (item.path == path) {
+            if (item.path == path && (mask != kMaskBlur || item.mask == kMaskBlur)) {
                 item.used = clock_;
                 return item.texture;
             }
@@ -236,7 +241,12 @@ public:
             used_bytes_ -= oldest->bytes;
             items_.erase(oldest);
         }
-        items_.push_back({path, texture, clock_, bytes});
+        for (auto it = items_.begin(); it != items_.end();) {
+            if (it->path != path) { ++it; continue; }
+            vita2d_free_texture(it->texture); used_bytes_ -= it->bytes; it = items_.erase(it);
+        }
+        const auto applied_mask = mask_paths_.find(path);
+        items_.push_back({path, texture, clock_, bytes, applied_mask == mask_paths_.end() ? kMaskNone : applied_mask->second});
         used_bytes_ += bytes;
         performance::cdram_images = (int64_t)used_bytes_;
     }
@@ -296,6 +306,23 @@ static void draw_texture_fit(vita2d_texture* texture, float x, float y, float ma
     vita2d_draw_texture_scale(texture, x, y, scale, scale);
 }
 
+static void draw_spoiler_particles(float x, float y, float w, float h, int64_t now, int64_t seed) {
+    if (w < 6 || h < 6) return;
+    const int count = std::max(12, std::min(180, int(w*h/750)));
+    const float time = float((now % 60000000) / 1000000.0);
+    uint32_t state = uint32_t(seed) ^ uint32_t(uint64_t(seed) >> 32) ^ 0x9e3779b9u;
+    auto random = [&]() { state = state*1664525u+1013904223u; return float(state>>8)/16777216.f; };
+    for (int i=0; i<count; ++i) {
+        const float bx=random(), by=random(), phase=random()*6.2831853f;
+        const float speed=0.7f+random()*1.3f;
+        const float dx=std::sin(time*speed+phase)*0.06f+std::sin(time*speed*1.7f+phase)*0.025f;
+        const float dy=std::cos(time*speed*0.83f+phase)*0.06f+std::sin(time*speed*1.3f+phase)*0.025f;
+        const float px=bx+dx-std::floor(bx+dx), py=by+dy-std::floor(by+dy);
+        const float size=1.f+random();
+        vita2d_draw_rectangle(x+2+px*(w-5), y+2+py*(h-5), size, size, RGBA8(255,255,255,100+int(random()*100)));
+    }
+}
+
 static void draw_text(vita2d_pgf* f, int x, int y, const std::string& s, unsigned int color, float scale = 0.8f) {
     rich_text_draw(f, x, y, color, scale, s.c_str());
 }
@@ -317,6 +344,54 @@ static void pop_utf8(std::string& text) {
 static std::string fit_text(vita2d_pgf* font, std::string text, int width, float scale) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"text_fit");
     return fit_utf8_text(text,width,[&](const std::string& value){return rich_text_width(font,scale,value.c_str());});
+}
+
+// Only the focused setting scrolls. Keep each column clipped, including the outer list viewport.
+struct SettingsTextMarquee {
+    std::string text;
+    int key = -1, measured_width = 0, cell_width = 0;
+    float scale = 0;
+    unsigned font_revision = 0;
+    int64_t started = 0, last_draw = 0;
+
+    int offset(vita2d_pgf* font, const std::string& value, int cell_key, int width, float text_scale, int64_t now) {
+        const unsigned revision = rich_text_revision();
+        if (key != cell_key || text != value || cell_width != width || scale != text_scale ||
+            font_revision != revision || now < last_draw || now - last_draw > 1000000) {
+            key = cell_key; text = value; cell_width = width; scale = text_scale;
+            font_revision = revision;
+            measured_width = rich_text_width(font, text_scale, value.c_str());
+            started = now;
+        }
+        last_draw = now;
+        const int overflow = std::max(0, measured_width - width);
+        if (!overflow) return 0;
+        constexpr int64_t pause = 1000000, pixels_per_second = 36;
+        const int64_t travel = (int64_t)overflow * 1000000 / pixels_per_second;
+        const int64_t phase = (now - started) % (2 * (pause + travel));
+        if (phase < pause) return 0;
+        if (phase < pause + travel) return (int)((phase - pause) * pixels_per_second / 1000000);
+        if (phase < 2 * pause + travel) return overflow;
+        return overflow - (int)((phase - 2 * pause - travel) * pixels_per_second / 1000000);
+    }
+};
+
+static void draw_settings_text(vita2d_pgf* font, SettingsTextMarquee& marquee, int key, bool focused,
+                               int x, int top, int width, int height, int baseline, const std::string& text,
+                               unsigned int color, float scale, int64_t now) {
+    if (width <= 0 || height <= 0) return;
+    const int enabled = vita2d_get_clipping_enabled();
+    int left = 0, upper = 0, right = 960, lower = 544;
+    if (enabled) vita2d_get_clip_rectangle(&left, &upper, &right, &lower);
+    const int x0 = std::max(x, left), y0 = std::max(top, upper);
+    const int x1 = std::min(x + width, right), y1 = std::min(top + height, lower);
+    if (x0 >= x1 || y0 >= y1) return;
+    const int offset = focused ? marquee.offset(font, text, key, width, scale, now) : 0;
+    vita2d_enable_clipping();
+    vita2d_set_clip_rectangle(x0, y0, x1, y1);
+    draw_text(font, x - offset, baseline, focused ? text : fit_text(font, text, width, scale), color, scale);
+    if (enabled) vita2d_set_clip_rectangle(left, upper, right, lower);
+    else vita2d_disable_clipping();
 }
 
 static std::vector<std::string> wrap_text(vita2d_pgf* font, const std::string& text, int width) {
@@ -379,6 +454,119 @@ static std::vector<std::string> wrap_text(vita2d_pgf* font, const std::string& t
     if (cache.size() >= 48) cache.erase(cache.begin());
     cache.push_back({text, width, lines});
     return lines;
+}
+
+// About uses separate localized blocks, so headings, risk labels and inline links
+// retain their hierarchy after wrapping. Geometry is shared by drawing and input.
+struct AboutLine {
+    std::string text;
+    int y = 0;
+    float scale = 0.68f;
+    bool bold = false, heading = false;
+};
+struct AboutLayout {
+    std::vector<AboutLine> lines;
+    int links_y = 0, height = 0;
+    int link_y(int index) const { return links_y + (index == 0 ? 0 : 164); }
+    int maximum() const { return std::max(0, height - 414); }
+    bool link_visible(int index, int offset) const {
+        const int y = link_y(index) - offset;
+        return y + 60 > 0 && y < 414;
+    }
+    int hit_link(int x, int y, int offset) const {
+        if (x < 40 || x >= 700 || y < 76 || y >= 490) return -1;
+        const int content_y = y - 76 + offset;
+        for (int i = 0; i < 2; ++i)
+            if (content_y >= link_y(i) && content_y < link_y(i) + 60) return i;
+        return -1;
+    }
+};
+static const AboutLayout& about_layout(vita2d_pgf* font) {
+    static AboutLayout layout;
+    static std::string language;
+    static unsigned revision = 0;
+    static int probe = -1;
+    const int current_probe = rich_text_width(font, 0.68f, "VitaGram");
+    if (language == i18n::current() && revision == rich_text_revision() && probe == current_probe && layout.height)
+        return layout;
+    language = i18n::current(); revision = rich_text_revision(); probe = current_probe;
+    layout = AboutLayout{};
+    int y = 10;
+    auto heading = [&](const std::string& text, float scale = 0.80f) {
+        layout.lines.push_back({text, y, scale, true, true}); y += 42;
+    };
+    auto paragraph = [&](const std::string& text, bool bold = false) {
+        for (const auto& line : wrap_text(font, text, 856)) {
+            layout.lines.push_back({line, y, 0.68f, bold, false}); y += 28;
+        }
+        y += 16;
+    };
+    heading(tr("about.brand"), 0.90f);
+    layout.lines.push_back({tr("about.version", {VITAGRAM_VERSION}), y, 0.55f, false, false}); y += 40;
+    paragraph(tr("about.description"));
+    paragraph(tr("about.development"));
+    heading(tr("about.privacy_title"));
+    paragraph(tr("about.privacy_servers"));
+    paragraph(tr("about.privacy_logs"));
+    paragraph(tr("about.privacy_connections"));
+    heading(tr("about.security_title"));
+    paragraph(tr("about.security_intro"));
+    const char* titles[] = {"about.risk_data_title", "about.risk_encryption_title", "about.risk_temporary_title",
+                            "about.risk_proxy_title", "about.risk_updates_title"};
+    const char* bodies[] = {"about.risk_data", "about.risk_encryption", "about.risk_temporary",
+                            "about.risk_proxy", "about.risk_updates"};
+    for (int i = 0; i < 5; ++i) {
+        paragraph(tr(titles[i]), true);
+        y -= 10;
+        paragraph(tr(bodies[i]));
+    }
+    paragraph(tr("about.platform_risk"));
+    heading(tr("about.author_title"));
+    layout.links_y = y; y += 244;
+    heading(tr("about.license_title"));
+    paragraph(tr("about.license_mit"));
+    paragraph(tr("about.license_warranty"));
+    heading(tr("about.third_party_title"));
+    paragraph(tr("about.third_party_core"));
+    paragraph(tr("about.third_party_media"));
+    paragraph(tr("about.third_party_fonts"));
+    paragraph(tr("about.third_party_vhbb"));
+    paragraph(tr("about.third_party_notices"));
+    layout.height = y + 8;
+    return layout;
+}
+static constexpr const char* kAboutProjectUrl = "https://github.com/ing156/VitaGram";
+static constexpr const char* kAboutAuthorUrl = "https://t.me/Ing156";
+static const QrCode& about_project_qr() {
+    static const QrCode qr = [] { QrCode result; qr_encode(kAboutProjectUrl, result); return result; }();
+    return qr;
+}
+static void about_triangle(float x1, float y1, float x2, float y2, float x3, float y3, unsigned int color) {
+    // GPU vertices must outlive submission; vita2d's frame pool owns their lifetime.
+    auto* vertices = static_cast<vita2d_color_vertex*>(vita2d_pool_memalign(3 * sizeof(vita2d_color_vertex), 4));
+    if (!vertices) return;
+    vertices[0] = {x1, y1, 0.5f, color};
+    vertices[1] = {x2, y2, 0.5f, color};
+    vertices[2] = {x3, y3, 0.5f, color};
+    vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLES, vertices, 3);
+}
+// Native vector marks stay crisp in either theme without additional textures.
+static void draw_about_link_icon(int index, float x, float y, unsigned int accent) {
+    if (index == 0) {
+        const unsigned int orange = RGBA8(240, 80, 51, 255), white = RGBA8(255, 255, 255, 255);
+        about_triangle(x + 14, y, x + 28, y + 14, x, y + 14, orange);
+        about_triangle(x, y + 14, x + 28, y + 14, x + 14, y + 28, orange);
+        for (int i = 0; i < 2; ++i) {
+            vita2d_draw_line(x + 10 + i, y + 8, x + 10 + i, y + 21, white);
+            vita2d_draw_line(x + 10, y + 9 + i, x + 20, y + 17 + i, white);
+        }
+        vita2d_draw_fill_circle(x + 10, y + 9, 2.5f, white);
+        vita2d_draw_fill_circle(x + 10, y + 21, 2.5f, white);
+        vita2d_draw_fill_circle(x + 20, y + 17, 2.5f, white);
+    } else if (!ui_skin::icon(ui_skin::Icon::Send, x, y, 28)) {
+        about_triangle(x, y + 11, x + 28, y, x + 10, y + 18, accent);
+        about_triangle(x + 10, y + 18, x + 28, y, x + 21, y + 28, accent);
+    }
 }
 
 static void rounded_rect(float x, float y, float w, float h, unsigned int color) {
@@ -450,6 +638,22 @@ static void draw_avatar_placeholder(float x, float y, float size, unsigned int c
     vita2d_draw_fill_circle(x + size - r, y + r, r, color);
     vita2d_draw_fill_circle(x + r, y + size - r, r, color);
     vita2d_draw_fill_circle(x + size - r, y + size - r, r, color);
+}
+
+// Telegram's deleted-account avatar: a white ghost on a blue background.
+static void draw_deleted_avatar(float x, float y, float size, int shape) {
+    const unsigned int blue = RGBA8(64,174,210,255), white = RGBA8(255,255,255,255);
+    draw_avatar_placeholder(x, y, size, blue, shape);
+    auto px = [&](float v) { return x + size * v; };
+    auto py = [&](float v) { return y + size * v; };
+    vita2d_draw_fill_circle(px(0.5f), py(0.40f), size * 0.22f, white);
+    vita2d_draw_rectangle(px(0.28f), py(0.40f), size * 0.44f, size * 0.29f, white);
+    about_triangle(px(0.29f), py(0.43f), px(0.17f), py(0.76f), px(0.5f), py(0.69f), white);
+    about_triangle(px(0.71f), py(0.43f), px(0.83f), py(0.76f), px(0.5f), py(0.69f), white);
+    for (float center : {0.27f, 0.5f, 0.73f})
+        vita2d_draw_fill_circle(px(center), py(0.71f), size * 0.085f, white);
+    vita2d_draw_fill_circle(px(0.42f), py(0.39f), size * 0.04f, blue);
+    vita2d_draw_fill_circle(px(0.58f), py(0.39f), size * 0.04f, blue);
 }
 
 static unsigned int scale_alpha(unsigned int color, float factor) {
@@ -557,7 +761,7 @@ static void draw_menu_button(bool dark, float glow = 0, float opacity = 1.f) {
 // button it stands for, or a special action.
 struct ChatMenuItem { const char* label; unsigned int button; int special; int icon = -1; };
 // Same geometry as the attach menu: 40 px row pitch, 36 px focus bars inset 4 px, first row 4 px below the frame top.
-static constexpr int kMenuRowHeight = 40, kMenuX = 600, kMenuWidth = 320, kMenuBottom = 486, kMenuPad = 4, kMenuFocusHeight = 36;
+static constexpr int kMenuRowHeight = 40, kMenuX = 600, kMenuWidth = 320, kMenuBottom = 486, kMenuPad = 8, kMenuFocusHeight = 36, kMenuMaxRows = 10;
 struct PostReaction { std::string text; int width; bool chosen; int64_t custom_emoji_id; };
 // A link inside one wrapped line: UTF-8 byte range of PostLine::text.
 struct LineLink { int begin, end; std::string url; };
@@ -667,6 +871,45 @@ static std::string clock_text(int64_t us) {
     char text[16]; std::snprintf(text, sizeof(text), "%d:%02d", total / 60, total % 60);
     return text;
 }
+static MediaLoadView video_load_view(const MessageItem& message, bool decoder_ready = false) {
+    const auto file = message.animation_stream ? message.animation_stream->snapshot() : download_stream::State::Snapshot{};
+    return MediaLoadView::make(std::max(message.animation_size, file.size),
+        std::max(message.animation_downloaded, file.prefix), !message.animation_path.empty() || file.complete, decoder_ready);
+}
+static std::string media_byte_count(int64_t bytes) {
+    if (bytes < 1024 * 1024) return tr("unit.kib", {std::to_string(std::max<int64_t>(0, bytes) / 1024)});
+    char value[32]; std::snprintf(value, sizeof(value), "%.1f", bytes / 1048576.0);
+    return tr("unit.mib", {value});
+}
+// Use the same panel, icon atlas and progress slices as the rest of the UI.
+// Download status stays visible even when fullscreen playback controls fade out.
+static void draw_media_loading(vita2d_pgf* font, float x, float y, float w, const MediaLoadView& view,
+                               int64_t now, unsigned accent, unsigned ink, unsigned muted,
+                               const std::string& opening = "") {
+    constexpr float h = 64;
+    skin_box(ui_skin::Slice::Panel, x, y, w, h, ui_skin::surface_color(RGBA8(24,40,58,240)));
+    if (!ui_skin::icon(ui_skin::Icon::Download, x + 16, y + 12, 24)) {
+        vita2d_draw_line(x + 28, y + 12, x + 28, y + 28, accent);
+        vita2d_draw_line(x + 22, y + 22, x + 28, y + 28, accent);
+        vita2d_draw_line(x + 34, y + 22, x + 28, y + 28, accent);
+        vita2d_draw_line(x + 20, y + 33, x + 36, y + 33, accent);
+    }
+    const std::string title = view.downloading || opening.empty() ? tr("video.loading") : opening;
+    const std::string amount = !view.downloading ? "" : view.size > 0
+        ? std::to_string(view.percent) + "%  " + media_byte_count(std::min(view.downloaded, view.size)) + " / " + media_byte_count(view.size)
+        : media_byte_count(view.downloaded);
+    const float amount_width = rich_text_width(font, 0.48f, amount.c_str());
+    draw_text(font, x + 52, y + 28, fit_text(font, title, w - 84 - amount_width, 0.56f), ink, 0.56f);
+    if (!amount.empty()) draw_text(font, x + w - 16 - amount_width, y + 28, amount, muted, 0.48f);
+    const float bx = x + 16, bw = w - 32, by = y + 46;
+    const bool determinate = view.downloading && view.percent >= 0;
+    skin_bar(bx, by, bw, 8, determinate ? view.fraction : 0.f, scale_alpha(muted, 0.4f), accent);
+    if (!determinate) {
+        const float pulse_x = bx + (bw - bw * 0.2f) * (0.5f + 0.5f * std::sin(now / 400000.0));
+        if (!ui_skin::nine(ui_skin::Slice::ProgressFill, pulse_x, by, bw * 0.2f, 8))
+            vita2d_draw_rectangle(pulse_x, by, bw * 0.2f, 8, accent);
+    }
+}
 struct ControlBar { Rect4 play, track; };
 // Play/pause, progress with a knob and "elapsed / total" in one row, so nothing overlaps at any width:
 // the time text takes what it needs on the right and the track fills the space between icon and time.
@@ -754,7 +997,7 @@ static void draw_reply_quote(vita2d_pgf* font, float x, float y, float w, const 
     const int text_width = (int)w - 26;
     if (!message.reply_sender.empty())
         draw_text(font, (int)x + 16, (int)y + 6 + scaled_px(13), fit_text(font, message.reply_sender, text_width, 0.5f), accent, 0.5f);
-    const std::string preview = message.reply_text.empty() && !message.reply_missing ? std::string("...") : message.reply_text;
+    const std::string preview = message.reply_text.empty() && !message.reply_missing ? i18n::Text("...") : message.reply_text;
     draw_text(font, (int)x + 16, (int)(y + h - 8), fit_text(font, preview, text_width, 0.55f), message.reply_missing ? scale_alpha(ink, 0.6f) : ink, 0.55f);
 }
 
@@ -1029,7 +1272,8 @@ static int post_media_height_for(const MessageItem& message) {
 static int post_panel_top(const MessageItem& message) {
     if (!message.photos.empty()) return 296 + kPostShift;
     if (message.animation || message.sticker)
-        return post_media_top + post_media_height_for(message) + (message.video && !message.video_note ? 70 : message.video ? 36 + scaled_px(14) : 30);
+        return post_media_top + post_media_height_for(message) + (message.video && !message.video_note ? 70 : message.video ? 36 + scaled_px(14) : 30) +
+            (message.video && message.animation_file_id > 0 && message.animation_error.empty() && video_load_view(message).downloading ? 72 : 0);
     return 96 + kPostShift;
 }
 // Height the reply quote adds at the top of the text panel (quote + 8 px gap).
@@ -1063,37 +1307,39 @@ static int post_scroll_max(const MessageItem& message, size_t lines) {
     return std::max(0, post_text_top(message) + std::max(0, (int)lines - 1) * post_pitch() + kPanelBottomPad + 10 - 544);
 }
 
-static std::string open_web_link(const std::string& url) {
+static i18n::Text open_web_link(const std::string& url) {
     std::string lower = url.substr(0, 8);
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if ((lower.compare(0, 7, "http://") && lower != "https://") || url.find_first_of("\r\n\t ") != std::string::npos)
-        return tr("link.invalid");
+        return i18n::text("link.invalid");
     int rc = sceAppMgrLaunchAppByUri(0x20000, ("webmodal: " + url).c_str());
     if (rc >= 0) return "";
     char code[16];
     std::snprintf(code, sizeof(code), "0x%08X", (unsigned)rc);
-    return tr("link.browser_error", {code});
+    return i18n::text("link.browser_error", {code});
 }
 
 // Korean and Chinese need their own glyphs; other languages use the standard font chain.
-static void apply_language_font() {
-    const std::string language = i18n::current();
-    const char* path = language == "ko" ? "app0:assets/NotoSansKR-Regular.otf" :
+static const char* language_font_path_for(const std::string& language) {
+    return language == "ko" ? "app0:assets/NotoSansKR-Regular.otf" :
         language == "zh-Hans" ? "app0:assets/NotoSansSC-Regular.otf" :
         language == "zh-Hant" ? "app0:assets/NotoSansTC-Regular.otf" : nullptr;
-    rich_text_set_language_font(path);
+}
+static void apply_language_font() {
+    rich_text_set_language_font(language_font_path_for(i18n::current()));
 }
 
 static void startup_screen(vita2d_pgf* font, const char* stage, int step) {
+    vita2d_set_clear_color(RGBA8(16,24,33,255));
     vita2d_start_drawing();
     vita2d_clear_screen();
     if (font) {
         // System font only: no dependency on the large Noto/emoji assets.
         vita2d_pgf_draw_text(font, 330, 225, RGBA8(35,135,210,255), 1.5f, "VitaGram " VITAGRAM_VERSION);
-        vita2d_pgf_draw_text(font, 280, 285, RGBA8(39,51,66,255), 0.8f, "Starting application...");
-        vita2d_pgf_draw_text(font, 280, 325, RGBA8(105,122,140,255), 0.7f, stage);
+        vita2d_pgf_draw_text(font, 280, 285, RGBA8(231,238,245,255), 0.8f, "Starting application...");
+        vita2d_pgf_draw_text(font, 280, 325, RGBA8(163,183,200,255), 0.7f, stage);
     }
-    vita2d_draw_rectangle(240, 370, 480, 6, RGBA8(205,216,226,255));
+    vita2d_draw_rectangle(240, 370, 480, 6, RGBA8(53,70,86,255));
     vita2d_draw_rectangle(240, 370, 480.0f*step/5, 6, RGBA8(35,135,210,255));
     vita2d_end_drawing();
     vita2d_swap_buffers();
@@ -1102,7 +1348,7 @@ static void startup_screen(vita2d_pgf* font, const char* stage, int step) {
 
 // Settings list: language, 3 cache rows... 14 rows in total; the stride leaves room for the footer.
 // Settings are a scrolling list laid out like the chat list: 47 px rows from y = 66.
-constexpr int kSettingsRows = 20, kSettingsTop = 71, kSettingsRowHeight = 47, kSettingsViewport = 400;
+constexpr int kSettingsRows = 21, kEncryptionRows = 5, kEncryptionRow = 11, kSettingsTop = 71, kSettingsRowHeight = 47, kSettingsViewport = 400;
 
 enum ProxyRow { PROXY_ROW_USE, PROXY_ROW_TYPE, PROXY_ROW_SERVER, PROXY_ROW_PORT, PROXY_ROW_SECRET,
                 PROXY_ROW_USER, PROXY_ROW_PASS, PROXY_ROW_SAVE, PROXY_ROW_SCAN, PROXY_ROW_CHECK };
@@ -1116,18 +1362,51 @@ static std::vector<int> proxy_rows(int type) {
     return rows;
 }
 
+// Staged updates live in the app data folder; the Downloads folder is the fallback (see Updater).
+static const char kUpdateDir[] = "ux0:data/vitagram/update";
+static const char kUpdateFallbackDir[] = "ux0:downloads/vitagram-update";
+
+// Shown while a staged update is installed: the install blocks for a few seconds and the app then
+// restarts, which otherwise looks like a black screen. Only the system font is available at this point,
+// and it has no CJK glyphs, so those languages get the English text.
+struct UpdateText { std::string title, hint; };
+static UpdateText update_screen_text() {
+    const std::string language = i18n::current();
+    const bool system_font_covers = language != "ja" && language != "ko" && language != "zh-Hans" && language != "zh-Hant";
+    return system_font_covers ? UpdateText{tr("update.applying"), tr("update.applying_hint")}
+                              : UpdateText{"Installing update...", "Please wait, do not turn off the console. VitaGram will restart."};
+}
+static void update_screen(vita2d_pgf* font, int percent) {
+    const UpdateText text = update_screen_text();
+    const std::string& title = text.title;
+    const std::string& hint = text.hint;
+    const std::string name = "VitaGram " VITAGRAM_VERSION;
+    for (int frame = 0; frame < (percent <= 0 ? 2 : 1); ++frame) { // both buffers on the first call, so the screen stays up
+        vita2d_set_clear_color(RGBA8(16,24,33,255));
+        vita2d_start_drawing();
+        vita2d_clear_screen();
+        if (font) {
+            auto centered = [&](int y, unsigned int color, float scale, const std::string& line) {
+                vita2d_pgf_draw_text(font, 480 - vita2d_pgf_text_width(font, scale, line.c_str()) / 2, y, color, scale, line.c_str());
+            };
+            centered(225, RGBA8(35,135,210,255), 1.5f, name);
+            centered(285, RGBA8(231,238,245,255), 0.9f, title);
+            centered(325, RGBA8(163,183,200,255), 0.65f, hint);
+        }
+        vita2d_draw_rectangle(240, 380, 480, 8, RGBA8(53,70,86,255));
+        vita2d_draw_rectangle(240, 380, 480.0f * std::min(std::max(percent, 0), 100) / 100, 8, RGBA8(35,135,210,255));
+        vita2d_end_drawing();
+        vita2d_swap_buffers();
+    }
+    vita2d_wait_rendering_done();
+}
+
 int main() {
     pthread_init();
 #if !VITAGRAM_PICKER_LOG
     std::remove("ux0:data/vitagram/picker.log"); // file names from the card, written by older versions
 #endif
-    // A staged update is installed now, while almost no memory is in use (see Updater::applyPending).
-    std::string update_failure;
-    switch (Updater::applyPending("ux0:data/vitagram/update", VITAGRAM_VERSION, update_failure)) {
-        case Updater::Pending::Applied: sceAppMgrLoadExec("app0:eboot.bin", nullptr, nullptr); sceKernelExitProcess(0); break;
-        case Updater::Pending::Failed: break; // reported in Settings below
-        case Updater::Pending::None: break;
-    }
+    std::string update_failure; // result of installing a staged update, shown in Settings
     const int64_t startup_time = performance::now();
     performance::collector().start(startup_time);
     cpu_scheduler::init();
@@ -1153,8 +1432,30 @@ int main() {
 
     vita2d_init();
     vita2d_set_vblank_wait(1);
-    vita2d_set_clear_color(RGBA8(238, 243, 248, 255));
+    vita2d_set_clear_color(RGBA8(16, 24, 33, 255));
     vita2d_pgf* font = vita2d_load_default_pgf();
+    // A staged update is installed now, while almost no memory is in use (see Updater::applyPending):
+    // only the system font and the language file are loaded, none of the large fonts or TDLib.
+    if (Updater::hasPending(kUpdateDir, kUpdateFallbackDir)) {
+        update_screen(font, 0);
+        int shown = 0;
+        const Updater::Progress show = [&](int percent) {
+            if (percent == shown) return; // redraw only when the bar moves
+            shown = percent;
+            update_screen(font, std::max(percent, 1));
+        };
+        switch (Updater::applyPending(kUpdateDir, kUpdateFallbackDir, VITAGRAM_VERSION, Updater::HandoffText{update_screen_text().title, update_screen_text().hint}, show, update_failure)) {
+            // The VitaGram Updater app closes this process's leftovers, installs the package and starts VitaGram again.
+            case Updater::Pending::Handoff: sceKernelExitProcess(0); break;
+            case Updater::Pending::Failed: break; // reported in Settings below
+            case Updater::Pending::None: break;
+        }
+    }
+    // A successful update leaves the updater app behind; remove it now (nothing is pending any more).
+    if (Updater::updaterCleanupDue(kUpdateDir, kUpdateFallbackDir)) {
+        startup_screen(font, "Finishing the update...", 0);
+        Updater::removeUpdaterApp(kUpdateDir, kUpdateFallbackDir);
+    }
     startup_screen(font, "1/5  Loading fonts and emoji", 1);
     performance::Scope font_measurement(performance::Metric::FontsInit);
     if (!rich_text_init()) std::fprintf(stderr, "Noto text/emoji font initialization incomplete\n");
@@ -1165,7 +1466,7 @@ int main() {
     // Encryption gate: first-run question, key entry, and moving old files into/out of the vault.
     // It runs before the network and TDLib start so no file is changed while TDLib may use it.
     {
-        const vault_ui::Env vault_env{font, settings.theme == 1};
+        const vault_ui::Env vault_env{font, settings.isDark(), settings.theme};
         vault_ui::run_gate(vault_env);
         if (vault::state_unauthenticated()) {
             // vault.json carried no valid signature (edited, stripped, or from an older version - these
@@ -1182,12 +1483,12 @@ int main() {
             network_held = proxy_policy_unknown(settings);
             if (network_held) vault_ui::show_notice(vault_env, tr("network.held_notice"));
         }
-        vault_ui::run_migration(vault_ui::Env{font, settings.theme == 1});
+        vault_ui::run_migration(vault_ui::Env{font, settings.isDark(), settings.theme});
     }
-    ui_skin::load(settings.theme == 1);
-    ui_battery::load(settings.theme == 1);
+    ui_skin::load(settings.theme);
+    ui_battery::load(settings.theme);
     rich_text_skin_changed();
-    skin_theme = settings.theme == 1 ? 1 : 0;
+    skin_theme = settings.theme;
     startup_screen(font, "2/5  Initializing network", 2);
     VitaNet net;
     performance::Scope network_measurement(performance::Metric::NetworkInit);
@@ -1217,11 +1518,14 @@ int main() {
     apply_font_scale(settings.fontScale());
     bool settings_open = false, confirm_logout = false, confirm_vault_off = false;
     int settings_row = 0;
-    Updater updater(VITAGRAM_VERSION, "app0:certs/cacert.pem", "ux0:data/vitagram/update");
+    Updater updater(VITAGRAM_VERSION, "app0:certs/cacert.pem", kUpdateDir, kUpdateFallbackDir);
     if (!update_failure.empty()) updater.reportStartupFailure(update_failure);
-    else if (FILE* f = std::fopen("ux0:data/vitagram/update/result.txt", "rb")) { // from a failed install at an earlier start
+    else for (const char* dir : {kUpdateDir, kUpdateFallbackDir}) {
+        // from a failed install at an earlier start (written by VitaGram or by the updater app)
+        FILE* f = std::fopen((std::string(dir) + "/result.txt").c_str(), "rb");
+        if (!f) continue;
         char text[160]; size_t n = std::fread(text, 1, sizeof(text) - 1, f); std::fclose(f); text[n] = 0;
-        if (n) updater.reportStartupFailure(text);
+        if (n) { updater.reportStartupFailure(text); break; }
     }
     const int64_t update_check_due = sceKernelGetSystemTimeWide() + 60000000; // stay out of the way of startup
     bool update_auto_checked = false, update_auto_install = false, restart_requested = false;
@@ -1235,6 +1539,7 @@ int main() {
             case Updater::Error::Package: return tr("update.err.package");
             case Updater::Error::Install: return tr("update.err.install");
             case Updater::Error::Cancelled: return tr("update.err.cancelled");
+            case Updater::Error::Helper: return tr("update.err.helper");
             default: return tr("update.err.network");
         }
     };
@@ -1254,7 +1559,12 @@ int main() {
         return std::string();
     };
     bool proxy_open = false;
+    bool encryption_open = false;
     bool logs_open = false;   // diagnostic-log switches, a sub-screen of the settings
+    bool about_open = false;
+    int about_offset = 0;
+    int about_link = -1;
+    bool about_chat_pending = false;
     int proxy_input = -1;
     DownloadFolderPicker folder_picker;
     UploadPicker upload_picker;
@@ -1267,11 +1577,16 @@ int main() {
     bool history_voice_toggle = false;
     std::vector<std::pair<int64_t, Rect4>> voice_play_rects;
     std::vector<std::pair<int64_t, Rect4>> comments_rects;   // comment badges of the visible channel posts (touch)
-    Rect4 scrub_voice, scrub_bar, scrub_play, scrub_ring, reply_hit;   // reply_hit: the quote panel of the open post   // published by the last drawn frame (ring: x,y = centre, w = radius)
+    std::vector<std::pair<int64_t, Rect4>> reply_rects;   // reply quotes of the visible messages
+    Rect4 scrub_voice, scrub_bar, scrub_play, scrub_ring, reply_hit, delete_hit;   // reply_hit: the quote panel of the open post   // published by the last drawn frame (ring: x,y = centre, w = radius)
+    int64_t delete_hit_message = 0, delete_touch_message = 0, delete_touch_chat = 0;
     float media_ui_alpha = 1.f;    // fullscreen photo/video controls fade in and out over 100 ms
     int64_t media_ui_stamp = 0;
     int64_t media_active_at = 0;   // last button/touch activity; fullscreen photo/video hide the corner button after 1 s
-    bool chat_menu_open = false;
+    bool chat_menu_open = false, chat_menu_waiting = false;
+    std::vector<ChatMenuItem> chat_menu_snapshot;
+    int64_t chat_menu_chat = 0, chat_menu_message = 0, chat_menu_wait_since = 0;
+
     // Chat search (opened from the chat-list menu or the search field) and the confirmation dialog of leave / clear / delete.
     bool search_open = false, search_input = false, confirm_leave = false, search_bar_focus = false;
     int search_index = 0, search_first = 0, confirm_age = 0;
@@ -1280,8 +1595,9 @@ int main() {
     // A transcription appearing in the open post is revealed over ~180 ms (tracked per message).
     int64_t tr_track_id = 0, tr_anim_since = 0;
     bool tr_track_has = false;
+    SettingsTextMarquee settings_label_marquee, settings_value_marquee;
     int chat_menu_sel = 0;
-    auto menu_first = [](int count, int selected) { return std::clamp(selected - 10, 0, std::max(0, count - 11)); };
+    auto menu_first = [](int count, int selected) { return std::clamp(selected - (kMenuMaxRows - 1), 0, std::max(0, count - kMenuMaxRows)); };
     int64_t chat_menu_since = 0;
     bool folder_name_input = false;
     AppSettings proxy_draft = settings;
@@ -1292,7 +1608,7 @@ int main() {
     std::string pending_web_link;
     bool web_link_proceed = false;
     int web_link_scroll = 0;
-    auto open_link = [&](const std::string& url) -> std::string {
+    auto open_link = [&](const std::string& url) -> i18n::Text {
         if (url.compare(0, 20, "vitagram:transcribe/") == 0) {
             tg.requestTranscription(std::strtoll(url.c_str() + 20, nullptr, 10));
             return "";
@@ -1302,7 +1618,7 @@ int main() {
         std::string lower = url;
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
         size_t host_start = lower.compare(0, 8, "https://") == 0 ? 8 : lower.compare(0, 7, "http://") == 0 ? 7 : 0;
-        if (!host_start || url.find_first_of("\r\n\t ") != std::string::npos) return tr("link.invalid");
+        if (!host_start || url.find_first_of("\r\n\t ") != std::string::npos) return i18n::text("link.invalid");
         auto host_end = lower.find_first_of("/?#", host_start);
         std::string host = lower.substr(host_start, host_end == std::string::npos ? host_end : host_end-host_start);
         if (host == "t.me" || host == "telegram.me" || host == "telegram.dog" || host == "telegram.org")
@@ -1311,26 +1627,31 @@ int main() {
         web_link_proceed = false; web_link_scroll = 0;
         return "";
     };
-    std::string settings_error;
+    i18n::Text settings_error;
+    std::string requested_language = settings.language;
+    bool language_pending = false;
     auto language_label = [&]() {
         auto name_of = [](const std::string& code) {
             for (const auto& language : i18n::languages()) if (language.code == code) return language.name;
             return code;
         };
-        return settings.language.empty() ? tr("settings.language_auto", {name_of(i18n::current())}) : name_of(settings.language);
+        return language_pending ? tr("settings.language_loading") :
+            settings.language.empty() ? tr("settings.language_auto", {name_of(i18n::current())}) : name_of(settings.language);
     };
     int64_t next_cache_cleanup = sceKernelGetSystemTimeWide() + 300000000;
     TextureCache textures;
     AnimationPlayer animation;
     VoicePlayer voice;
-    AudioRecorder recorder;
+    AudioRecordingDialog<AudioRecorder, VoicePlayer> recorder;
+    using AudioRecordingState = decltype(recorder)::State;
+    i18n::Text audio_error;
     int64_t audio_chat = 0;
     int32_t audio_topic = 0;
     VideoNoteRecorder circle_recorder;
     std::unique_ptr<AnimationPlayer> circle_playback;
     int64_t circle_chat = 0;
     int32_t circle_topic = 0;
-    std::string circle_error;
+    i18n::Text circle_error;
     int chat_index = 0;
     ChatListScroll chat_scroll, settings_scroll;
     bool chat_drag = false;
@@ -1355,16 +1676,23 @@ int main() {
     std::string poll_signature;
     bool photo_open = false;
     bool video_fullscreen = false;
+    media_seek::TimeSelection seek_time;
+    bool seek_open = false, seek_audio = false, seek_was_playing = false, seek_touching = false, seek_touch_release = false;
+    int64_t seek_chat = 0, seek_message = 0;
     bool unsupported_video_prompt = false;
     // Photos with a spoiler stay blurred until the user confirms; the confirmed messages live for this session only.
     bool spoiler_prompt = false;
     int64_t spoiler_prompt_chat = 0, spoiler_prompt_message = 0;
-    std::set<std::pair<int64_t, int64_t>> revealed_spoilers;
-    auto spoiler_locked = [&](const MessageItem& m) { return m.spoiler && !revealed_spoilers.count({tg.currentChatId(), m.id}); };
+    SpoilerVisibility spoiler_visibility;
+    auto spoiler_locked = [&](const MessageItem& m) { return m.spoiler && !spoiler_visibility.revealed(tg.currentChatId(), m.id); };
     auto reveal_spoiler = [&](const MessageItem& m) {
-        revealed_spoilers.insert({tg.currentChatId(), m.id});
-        for (const auto& photo : m.photos) textures.forget(photo.thumbnail_path);   // reloaded sharp
+        spoiler_visibility.reveal(tg.currentChatId(), m.id);
+        for (const auto& photo : m.photos) { // Reload both previews and any previously blurred full-size photo.
+            textures.forget(photo.thumbnail_path);
+            textures.forget(photo.full_path);
+        }
         textures.forget(m.media_path);
+        textures.forget(m.media_fallback);
     };
     int64_t unsupported_video_chat = 0, unsupported_video_message = 0;
     bool portrait_preparation_requested = false;
@@ -1382,18 +1710,44 @@ int main() {
     char header_clock[6] = "--:--";
     int battery_percent = -1;
     bool battery_charging = false;
-    std::string browser_error;
-    TransientStatus browser_notice, audio_notice;
+    i18n::Text browser_error;
+    TransientStatus browser_notice;
     int64_t status_chat = 0, status_topic = 0;
     int folder_scroll = 0, folder_touch_x = 0, shown_folder_index = -1;
     int32_t shown_folder_id = -1;
     bool folder_drag = false;
 
-    auto open_circle = [&]() {
-        if (recorder.recording() || recorder.processing()) {
-            browser_error = tr("rec.finish_first"); return;
+    auto invalidate_spoiler_view = [&](bool changed, bool returning_to_app = false) {
+        if (!changed && !returning_to_app) return;
+        spoiler_prompt = false;
+        if (changed || returning_to_app) {
+            animation.setSource("", false, false); tg.setAnimationTarget(-1);
+            video_fullscreen = false; seek_open = false; scrub_kind = 0;
+            scrub_play = {}; scrub_bar = {}; scrub_ring = {};
+            portrait_play_pending = portrait_preparation_requested = false;
         }
-        if (!tg.ready() || !tg.currentChatId()) { browser_error = tr("rec.wait_connect"); return; }
+        // Fullscreen navigation must request consent again rather than keeping a sharp photo open.
+        const bool close_view = photo_open && message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].spoiler;
+        if (close_view) { photo_open = false; photo_view.begin(); touch_down = false; }
+        // Cached GPU textures and pending decodes may still contain an unmasked image.
+        if (changed || close_view) { vita2d_wait_rendering_done(); textures.clear(); }
+    };
+    auto observe_spoiler_chat = [&]() {
+        invalidate_spoiler_view(spoiler_visibility.observe(
+            {tg.currentChatId(), tg.currentTopicId(), tg.topicsOpen(), tg.inComments()}, settings.spoilerHideChat()));
+    };
+    auto open_audio = [&]() {
+        if (!tg.ready() || !tg.currentChatId() || !tg.canPostCurrent()) { browser_error = i18n::text("rec.wait_connect"); return; }
+        if (circle_recorder.active()) return;
+        audio_chat = tg.currentChatId(); audio_topic = tg.currentTopicId(); audio_error.clear();
+        animation.setSource(""); voice.setSource("");
+        recorder.open(std::string(VITAGRAM_FILES_DIR) + "/voice-message-" + std::to_string(sceKernelGetSystemTimeWide()) + ".ogg");
+    };
+    auto open_circle = [&]() {
+        if (recorder.active()) {
+            browser_error = i18n::text("rec.finish_first"); return;
+        }
+        if (!tg.ready() || !tg.currentChatId()) { browser_error = i18n::text("rec.wait_connect"); return; }
         circle_chat = tg.currentChatId(); circle_topic = tg.currentTopicId(); circle_error.clear();
         circle_playback.reset();
         animation.setSource(""); voice.setSource("");
@@ -1408,19 +1762,26 @@ int main() {
     auto membership_items = [&](std::vector<ChatMenuItem>& v) {
         using M = TelegramClient::Membership;
         if (tg.currentChatIsPrivate()) {
-            v.push_back({"menu.clear_chat", 0, 12});
-            v.push_back({"menu.delete_chat", 0, 13, (int)ui_skin::Icon::Close});
+            v.push_back({"menu.clear_chat", 0, 12, (int)ui_skin::Icon::ClearHistory});
+            v.push_back({"menu.delete_chat", 0, 13, (int)ui_skin::Icon::Leave});
             return;
         }
         const M state = tg.currentMembership();
         if (state == M::NotMember) v.push_back({"menu.join", 0, 10, (int)ui_skin::Icon::Check});
-        else if (state == M::Member) v.push_back({"menu.leave", 0, 11, (int)ui_skin::Icon::Close});
+        else if (state == M::Member) v.push_back({"menu.leave", 0, 11, (int)ui_skin::Icon::Leave});
     };
     auto chat_menu_items = [&]() {
         std::vector<ChatMenuItem> v;
         const auto& m = tg.messages();
         const bool has_message = message_index >= 0 && message_index < (int)m.size();
-        if (circle_recorder.active()) {
+        if (recorder.active()) {
+            const auto state = recorder.state();
+            if (state == AudioRecordingState::Preview) v = {{"menu.rec_record", SCE_CTRL_CROSS, 0}};
+            else if (state == AudioRecordingState::Recording) v = {{"menu.rec_stop", SCE_CTRL_CROSS, 0}};
+            else if (state == AudioRecordingState::Review) v = {{"menu.rec_send", SCE_CTRL_CROSS, 0}, {"menu.rec_preview", SCE_CTRL_SQUARE, 0}};
+            else if (state == AudioRecordingState::Error) v = {{"menu.rec_retry", SCE_CTRL_CROSS, 0}};
+            v.push_back({"menu.rec_cancel", SCE_CTRL_CIRCLE, 0});
+        } else if (circle_recorder.active()) {
             using S = VideoNoteRecorder::State;
             const S state = circle_recorder.state();
             if (state == S::Preview) v = {{"menu.rec_record", SCE_CTRL_CROSS, 0}, {"menu.rec_camera", SCE_CTRL_TRIANGLE, 0}};
@@ -1448,8 +1809,12 @@ int main() {
         } else if (reactions_open) {
             v = {{"menu.react_toggle", SCE_CTRL_CROSS, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
         } else if (video_fullscreen) {
-            v = {{"menu.play_pause", SCE_CTRL_CROSS, 0}, {"menu.seek_back", SCE_CTRL_LTRIGGER, 0}, {"menu.seek_forward", SCE_CTRL_RTRIGGER, 0},
-                 {"menu.normal_view", SCE_CTRL_TRIANGLE, 0}, {"menu.back", SCE_CTRL_CIRCLE, 0}};
+            if (animation.readyForPlayback()) v.push_back({"menu.play_pause", SCE_CTRL_CROSS, 0});
+            if (animation.canSeek()) {
+                v.push_back({"menu.seek_back", SCE_CTRL_LTRIGGER, 0}); v.push_back({"menu.seek_forward", SCE_CTRL_RTRIGGER, 0});
+                if (has_message && m[message_index].video_duration > 0) v.push_back({"menu.seek_time", 0, 40});
+            }
+            v.push_back({"menu.normal_view", SCE_CTRL_TRIANGLE, 0}); v.push_back({"menu.back", SCE_CTRL_CIRCLE, 0});
         } else if (photo_open) {
             v = {{"menu.prev_photo_dpad", SCE_CTRL_LEFT, 0}, {"menu.next_photo_dpad", SCE_CTRL_RIGHT, 0},
                  {"menu.rotate_left", SCE_CTRL_LTRIGGER, 0}, {"menu.rotate_right", SCE_CTRL_RTRIGGER, 0},
@@ -1461,11 +1826,14 @@ int main() {
             const MessageItem& item = m[message_index];
             v = {{"menu.prev_post", SCE_CTRL_LEFT, 0}, {"menu.next_post", SCE_CTRL_RIGHT, 0}};
             if (item.photos.size() > 1) { v.push_back({"menu.prev_photo", SCE_CTRL_LTRIGGER, 0}); v.push_back({"menu.next_photo", SCE_CTRL_RTRIGGER, 0}); }
+            if (item.animation && spoiler_locked(item)) v.push_back({"spoiler.title", SCE_CTRL_CROSS, 0});
             if (!item.photos.empty()) v.push_back({"menu.open_photo", SCE_CTRL_CROSS, 0});
-            if (item.voice || item.video) v.push_back({"menu.play_pause", SCE_CTRL_CROSS, 0});
-            if ((item.voice || item.video) && item.photos.empty()) {
+            if (item.voice || (item.video && (animation.readyForPlayback() || animation.preparationRequired()))) v.push_back({"menu.play_pause", SCE_CTRL_CROSS, 0});
+            if ((item.voice || (item.video && animation.canSeek())) && item.photos.empty()) {
                 v.push_back({"menu.seek_back", SCE_CTRL_LTRIGGER, 0}); v.push_back({"menu.seek_forward", SCE_CTRL_RTRIGGER, 0});
             }
+            if ((item.voice && !item.voice_path.empty() && item.voice_error.empty() && item.voice_duration > 0) ||
+                (item.video && animation.canSeek() && item.video_duration > 0)) v.push_back({"menu.seek_time", 0, 40});
             if (item.video && !item.video_note) v.push_back({"menu.fullscreen", SCE_CTRL_TRIANGLE, 0});
             // Only voice messages and round videos can be transcribed (triangle); 3 is the "requested" note.
             if ((item.voice && !item.audio) || item.video_note) {
@@ -1476,30 +1844,44 @@ int main() {
             if (item.reply_to_id && (!item.reply_chat_id || item.reply_chat_id == tg.currentChatId())) v.push_back({"menu.go_reply", 0, 4});
             if (item.has_comments && !tg.inComments()) v.push_back({"menu.comments", SCE_CTRL_SELECT, 20});
             if (!item.service_message) {
-                if (tg.canPostCurrent()) v.push_back({"menu.reply", 0, 30});
-                v.push_back({"menu.forward", 0, 31});
+                if (tg.canPostCurrent()) v.push_back({"menu.reply", 0, 30, (int)ui_skin::Icon::Reply});
+                v.push_back({"menu.forward", 0, 31, (int)ui_skin::Icon::Forward});
             }
-            v.push_back({"menu.react", SCE_CTRL_SQUARE, 0});
             v.push_back({"menu.back", SCE_CTRL_CIRCLE, 0});
         } else {
             if (has_message) v.push_back({"menu.open_post", SCE_CTRL_CROSS, 0});
             if (has_message && m[message_index].has_comments && !tg.inComments()) v.push_back({"menu.comments_chat", SCE_CTRL_RIGHT, 20});
             if (has_message && !m[message_index].service_message) {
-                if (tg.canPostCurrent()) v.push_back({"menu.reply", 0, 30});
-                v.push_back({"menu.forward", 0, 31});
+                if (tg.canPostCurrent()) v.push_back({"menu.reply", 0, 30, (int)ui_skin::Icon::Reply});
+                v.push_back({"menu.forward", 0, 31, (int)ui_skin::Icon::Forward});
             }
             if (tg.forwardPending() && tg.canPostCurrent()) v.push_back({"menu.paste_forward", 0, 32});
             if (tg.forwardPending()) v.push_back({"menu.cancel_forward", 0, 33});
             v.push_back({"menu.compose", SCE_CTRL_SQUARE, 0});
-            v.push_back({"menu.stickers", 0, 1});
-            if (tg.canPostCurrent()) v.push_back({"gif.menu", 0, 2, (int)ui_skin::Icon::Search});
             v.push_back({"menu.attach", SCE_CTRL_SELECT, 0});
             membership_items(v);
             v.push_back({"menu.refresh", SCE_CTRL_TRIANGLE, 0});
             v.push_back({"menu.back", SCE_CTRL_CIRCLE, 0});
         }
+        if (has_message && !photo_open && !video_fullscreen && !stickers_open && !gifs_open && !reactions_open &&
+            !circle_recorder.active() && !recorder.active() && !tg.topicsOpen() && tg.canDeleteMessage(m[message_index].id, false))
+            v.push_back({"menu.delete_message", 0, 34, (int)ui_skin::Icon::Trash});
         return v;
     };
+    auto attach_menu_items = [&]() {
+        std::vector<ChatMenuItem> items = {{"upload.image", 0, 0}, {"upload.video", 0, 1},
+            {"upload.file", 0, 2, (int)ui_skin::Icon::File}, {settings.recording_shortcuts ? "upload.video_note_shortcut" : "upload.video_note", 0, 3},
+            {settings.recording_shortcuts ? "upload.voice_message_shortcut" : "upload.voice_message", 0, 4}};
+        if (tg.canPostCurrent()) {
+            items.push_back({"gif.menu", 0, 5, (int)ui_skin::Icon::Search});
+            items.push_back({"menu.stickers", 0, 6});
+        }
+        const auto& messages = tg.messages();
+        if (message_index >= 0 && message_index < (int)messages.size() && !messages[message_index].service_message)
+            items.push_back({"reaction.title", 0, 7});
+        return items;
+    };
+    constexpr int attach_menu_bottom = 486, attach_menu_row = 40;
     // Opens the discussion thread of the selected channel post; the reply (or an error notice) arrives asynchronously.
     auto open_comments = [&]() {
         const auto& list = tg.messages();
@@ -1517,11 +1899,62 @@ int main() {
             animation.seekTo(std::max<int64_t>(0, std::min<int64_t>(limit, animation.positionUs() + delta_us)));
         }
     };
+    auto seek_source_current = [&]() {
+        const auto& messages = tg.messages();
+        return tg.currentChatId() == seek_chat && message_index >= 0 && message_index < (int)messages.size() &&
+            messages[message_index].id == seek_message && !settings_open && !photo_open && post_open;
+    };
+    auto finish_seek = [&](bool apply) {
+        if (seek_source_current()) {
+            if (seek_audio) {
+                if (apply) voice.seekTo(seek_time.targetUs());
+                voice.setPlaying(seek_was_playing);
+            } else if (animation.canSeek()) {
+                if (apply) animation.seekTo(seek_time.targetUs());
+                if (animation.playing() != seek_was_playing) animation.toggle();
+            }
+        }
+        seek_open = false; seek_touching = false;
+    };
+    auto open_seek = [&]() {
+        const auto& messages = tg.messages();
+        if (message_index < 0 || message_index >= (int)messages.size()) return;
+        const auto& message = messages[message_index];
+        const bool audio = message.voice && !message.voice_path.empty() && message.voice_error.empty() && message.voice_duration > 0;
+        if (!audio && !(message.video && animation.canSeek() && message.video_duration > 0)) return;
+        seek_chat = tg.currentChatId(); seek_message = message.id; seek_audio = audio;
+        seek_was_playing = audio ? voice.playing() : animation.playing();
+        seek_time.begin(audio ? (int64_t)(voice.positionSeconds() * 1000000) : animation.positionUs(),
+            (int64_t)(audio ? message.voice_duration : message.video_duration) * 1000000, audio ? 300000 : 500000);
+        if (audio) voice.setPlaying(false);
+        else if (seek_was_playing) animation.toggle();
+        seek_open = true; seek_touching = false; touch_down = false; scrub_kind = 0;
+    };
     // Corner buttons exist on every chat screen except modal tools (recorder, scanner, file picker).
     auto chat_ui_visible = [&]() {
         return (tg.currentChatId() != 0 || tg.topicsOpen() || tg.canBrowse()) && !settings_open &&
-               !qr_scanner.active() && !kb.active() && !unsupported_video_prompt && !spoiler_prompt && pending_web_link.empty() &&
+               !qr_scanner.active() && !kb.active() && !seek_open && !unsupported_video_prompt && !spoiler_prompt && pending_web_link.empty() &&
                (upload_picker.stage == UploadPicker::Stage::Closed || upload_picker.stage == UploadPicker::Stage::Menu);
+    };
+    // Vault auto-lock. Wall-clock time keeps running while the console sleeps or the app sits behind the
+    // LiveArea, so a jump between two frames means the user left; ON_RESUME also catches short sleeps.
+    constexpr uint64_t kLeftAppUs = 10000000;
+    auto wall_us = []() -> uint64_t { SceRtcTick tick{}; sceRtcGetCurrentTick(&tick); return tick.tick; };
+    uint64_t lock_previous_frame = 0, lock_last_activity = wall_us();
+    int64_t next_video_power_tick = 0;
+    bool lock_pending = false; // left the app while the system keyboard was open: lock once it closes
+    auto lock_app = [&]() {
+        seek_open = false; seek_touching = false;
+        // Covering the screen is enough: TDLib, downloads and conversions keep running underneath.
+        if (animation.playing()) animation.toggle();
+        if (circle_playback && circle_playback->playing()) circle_playback->toggle();
+        if (voice.playing()) voice.toggle();
+        recorder.pausePreview();
+        vault_ui::relock(vault_ui::Env{font, settings.isDark(), settings.theme},
+                         [](void* client) { static_cast<decltype(&tg)>(client)->pump(false); cpu_scheduler::tick(); }, &tg);
+        SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons;
+        vita2d_set_clear_color(settings.isDark() ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+        lock_previous_frame = lock_last_activity = wall_us();
     };
     while (running) {
         performance::Scope frame_measurement(performance::Metric::Frame);
@@ -1529,6 +1962,31 @@ int main() {
         performance::SlowScope slow_ui(performance::SlowPhase::Ui,"frame_ui");
         performance::SlowScope pre_input(performance::SlowPhase::Ui,"pre_input");
         int64_t now = sceKernelGetSystemTimeWide();
+        if (language_pending) {
+            const std::string code = i18n::resolve(requested_language);
+            const char* path = language_font_path_for(code);
+            auto status = rich_text_prepare_language_font(path);
+            if (code == "ja" && status == LanguageFontStatus::Ready)
+                status = rich_text_japanese_font_status();
+            if (status == LanguageFontStatus::Failed) {
+                language_pending = false;
+                settings_error = i18n::text("settings.font_load_failed");
+            } else if (status == LanguageFontStatus::Ready) {
+                if (rich_text_set_language_font(path)) {
+                    i18n::select(requested_language);
+                    settings.language = requested_language;
+                    tg.refreshLanguage();
+                    net.refreshLanguage(); // Same device state, new label in this frame.
+                    for (auto* text : {&audio_error, &circle_error, &browser_error}) text->refresh();
+                    folder_picker.error.refresh();
+                    upload_picker.error.refresh(); upload_picker.info.refresh();
+                    for (auto& entry : upload_picker.entries) entry.label.refresh();
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                } else settings_error = i18n::text("settings.font_load_failed");
+                language_pending = false;
+                settings_label_marquee.key = settings_value_marquee.key = -1;
+            }
+        }
         if (!update_auto_checked && now >= update_check_due) {
             update_auto_checked = true;
             // The updater connects to GitHub directly, not through the Telegram proxy: with a proxy on,
@@ -1544,7 +2002,7 @@ int main() {
                 if (!update_installed_at) update_installed_at = now;
                 // Wait a moment so the result is visible, and never interrupt typing, recording or an open chat.
                 if (!restart_requested && now - update_installed_at > 3000000 && !kb.active() && !recorder.recording() &&
-                    !recorder.processing() && !circle_recorder.active() && !tg.currentChatId()) {
+                    !recorder.processing() && !circle_recorder.active() && !recorder.active() && !tg.currentChatId()) {
                     restart_requested = true;
                     tg.close();
                     running = false;
@@ -1566,6 +2024,33 @@ int main() {
             battery_charging = scePowerIsBatteryCharging() > 0;
             next_header_poll = now + 1000000;
         }
+        {
+            const uint64_t wall = wall_us();
+            bool left_app = lock_previous_frame && wall > lock_previous_frame + kLeftAppUs;
+            SceAppMgrSystemEvent system_event{};
+            // Drain queued notifications so a resume event is handled before drawing restored media.
+            for (int event = 0; event < 32; ++event) {
+                system_event = {};
+                if (sceAppMgrReceiveSystemEvent(&system_event) < 0 || !system_event.systemEvent) break;
+                if (system_event.systemEvent == SCE_APPMGR_SYSTEMEVENT_ON_RESUME) left_app = true;
+            }
+            if (left_app && settings.spoilerHideApp()) {
+                invalidate_spoiler_view(spoiler_visibility.appLeft(true), true);
+            }
+            lock_previous_frame = wall;
+            const uint64_t idle_limit = (uint64_t)AppSettings::lockMinutes(settings.auto_lock) * 60000000ULL;
+            // Recording, playback and typing in the system keyboard are activity without button presses.
+            const auto circle_state = circle_recorder.state();
+            const bool busy = recorder.recording() || recorder.processing() || recorder.previewPlaying() || animation.playing() || voice.playing() || kb.active() ||
+                (circle_playback && circle_playback->playing()) ||
+                circle_state == VideoNoteRecorder::State::Recording || circle_state == VideoNoteRecorder::State::Encoding;
+            if (busy) lock_last_activity = wall;
+            if (left_app && settings.lock_on_leave) lock_pending = true;
+            if (idle_limit && wall > lock_last_activity + idle_limit) lock_pending = true;
+            if (!vault::unlocked() || vault::disabling()) lock_pending = false;
+            // The system keyboard is a dialog on top of the app (closing it would lose the typed text).
+            if (lock_pending && !kb.active()) { lock_pending = false; lock_app(); }
+        }
         sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed = pad.buttons & ~old_buttons;
         const bool button_action = pressed != 0;
@@ -1573,11 +2058,12 @@ int main() {
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
         const bool interaction = button_action || touch.reportNum || touch_down || (old_buttons & ~pad.buttons);
         if (interaction) media_active_at = now;
+        if (interaction) lock_last_activity = wall_us();
         const int64_t input_sampled = interaction ? performance::now() : 0;
         if (interaction) tg.prioritizeInteraction(now);
         unsigned int released = old_buttons & ~pad.buttons;
         old_buttons = pad.buttons;
-        bool compose_context = !circle_recorder.active() && tg.currentChatId() && !tg.topicsOpen() && !post_open && !photo_open && !settings_open &&
+        bool compose_context = !circle_recorder.active() && !recorder.active() && tg.currentChatId() && !tg.topicsOpen() && !post_open && !photo_open && !settings_open &&
             !reactions_open && !stickers_open && !gifs_open && !upload_picker.active() && !kb.active() && !recorder.recording() && !recorder.processing() && tg.inputKind() == InputKind::None;
         if (compose_context) {
             if (pressed & SCE_CTRL_SQUARE) { square_since = now; square_long = false; }
@@ -1600,7 +2086,12 @@ int main() {
         bool was_ready = tg.ready();
         pre_input.finish();
         tg.pump(interaction);
+        observe_spoiler_chat();
         if (tg.takeLinkChatOpened()) {
+            if (about_chat_pending) {
+                settings_open = about_open = false; about_chat_pending = false;
+                settings_error.clear();
+            }
             post_open = photo_open = video_fullscreen = false;
             message_index = -1; photo_index = 0; post_text_scroll = 0;
             animation.setSource(""); voice.setSource("");
@@ -1633,6 +2124,10 @@ int main() {
         if (tg.takeChatTopRequest() && !tg.currentChatId()) { chat_index = 0; chat_scroll.reset(); }
         const int restored_message = history_selection.find(tg.messages());
         if (restored_message >= 0) message_index = restored_message;
+        else if (history_selection.message_id && post_open) {
+            post_open = photo_open = video_fullscreen = reactions_open = false;
+            animation.setSource(""); voice.setSource("");
+        }
         if (was_at_bottom && !post_open && !photo_open && !tg.messages().empty() &&
             tg.messages().back().outgoing && tg.messages().back().id != previous_last)
             message_index = (int)tg.messages().size() - 1;
@@ -1651,9 +2146,42 @@ int main() {
         const int chat_top = (folder_tabs ? 119 : 71) + kSearchBarShift;   // below the status strip, the search field and the tabs
         const int chat_row_height = (544-chat_top)/chat_rows;
         chat_scroll.configure((int)tg.chats().size(), chat_row_height, 544-chat_top);
-        settings_scroll.configure(kSettingsRows, kSettingsRowHeight, kSettingsViewport);
+        settings_scroll.configure(encryption_open ? kEncryptionRows : kSettingsRows, kSettingsRowHeight, kSettingsViewport);
         const int folder_max_scroll = std::max(0, (int)tg.folders().size() * 180 - 920);
         folder_scroll = std::max(0, std::min(folder_scroll, folder_max_scroll));
+        if (seek_open) {
+            bool apply = pressed & SCE_CTRL_CROSS;
+            bool cancel = pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_START);
+            if (!seek_source_current()) { apply = false; cancel = true; }
+            if (pressed & SCE_CTRL_LEFT) seek_time.select(-1);
+            if (pressed & SCE_CTRL_RIGHT) seek_time.select(1);
+            if (pressed & SCE_CTRL_UP) seek_time.adjust(1);
+            if (pressed & SCE_CTRL_DOWN) seek_time.adjust(-1);
+            if (touch.reportNum && !seek_touching) {
+                const int x = touch.report[0].x / 2, y = touch.report[0].y / 2;
+                for (int field = 0; field < 3; ++field) if (x >= 260 + field * 150 && x < 388 + field * 150) {
+                    seek_time.field = field;
+                    if (y >= 180 && y < 220) seek_time.adjust(1);
+                    else if (y >= 280 && y < 320) seek_time.adjust(-1);
+                }
+                if (y >= 382 && y < 426) {
+                    if (x >= 220 && x < 450) apply = true;
+                    else if (x >= 510 && x < 740) cancel = true;
+                }
+            }
+            seek_touching = touch.reportNum != 0;
+            if (apply || cancel) {
+                seek_touch_release = touch.reportNum != 0;
+                finish_seek(apply && !cancel);
+            }
+            pressed = released = 0; touch.reportNum = 0; touch_down = false; scrub_kind = 0;
+        }
+        else if (seek_touch_release) {
+            // Applying on touch-down must not turn its release into a tap on
+            // the video or on a control that used to be underneath the dialog.
+            seek_touch_release = touch.reportNum != 0;
+            touch.reportNum = 0; touch_down = false; scrub_kind = 0;
+        }
         photo_view.updateMotion(photo_open && settings.gyroscope_enabled, sceKernelGetProcessTimeWide(), touch.reportNum != 0);
         bool photo_gesture = photo_open && photo_view.touch(touch);
         bool touching = touch.reportNum > 0;
@@ -1665,10 +2193,13 @@ int main() {
                 touch_start_x = touch_x; touch_start_y = touch_step_y = touch_y;
                 touch_dragged = false;
                 scrub_kind = 0;
-                touch_blocked = kb.active() || (!circle_recorder.active() && !settings_open && tg.canBrowse() && tg.inputKind() != InputKind::None);
-                folder_drag = !search_open && pending_web_link.empty() && !circle_recorder.active() && !stickers_open && !gifs_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 69 + kSearchBarShift && touch_start_y < 113 + kSearchBarShift;
+                touch_blocked = kb.active() || (!circle_recorder.active() && !recorder.active() && !settings_open && tg.canBrowse() && tg.inputKind() != InputKind::None);
+                folder_drag = !search_open && pending_web_link.empty() && !circle_recorder.active() && !recorder.active() && !stickers_open && !gifs_open && !settings_open && folder_tabs && !tg.currentChatId() && touch_start_y >= 69 + kSearchBarShift && touch_start_y < 113 + kSearchBarShift;
                 folder_touch_x = touch_x;
-                if (!touch_blocked && reply_hit.contains(touch_x, touch_y)) scrub_kind = 5;
+                if (!touch_blocked && !chat_menu_open && !upload_picker.active() && delete_hit.contains(touch_x, touch_y)) {
+                    scrub_kind = 6; delete_touch_message = delete_hit_message; delete_touch_chat = tg.currentChatId();
+                }
+                else if (!touch_blocked && reply_hit.contains(touch_x, touch_y)) scrub_kind = 5;
                 else if (!touch_blocked && scrub_play.contains(touch_x, touch_y)) scrub_kind = 4;
                 else if (!touch_blocked && scrub_bar.contains(touch_x, touch_y)) scrub_kind = 2;
                 else if (!touch_blocked && scrub_voice.contains(touch_x, touch_y)) scrub_kind = 1;
@@ -1676,7 +2207,7 @@ int main() {
                     const float distance = std::hypot(touch_x - scrub_ring.x, touch_y - scrub_ring.y);
                     if (distance >= scrub_ring.w - 28 && distance <= scrub_ring.w + 24) scrub_kind = 3;
                 }
-                chat_drag = !search_open && pending_web_link.empty() && !circle_recorder.active() && !stickers_open && !gifs_open && !settings_open &&
+                chat_drag = !search_open && pending_web_link.empty() && !circle_recorder.active() && !recorder.active() && !stickers_open && !gifs_open && !settings_open &&
                     !reactions_open && !upload_picker.active() && !tg.currentChatId() && tg.canBrowse() &&
                     !touch_blocked && touch_start_y >= chat_top && touch_start_y < 544;
                 chat_touch_y = touch_y;
@@ -1717,7 +2248,13 @@ int main() {
             // Releasing a control commits: seek (clamped to the real duration) or toggle playback.
             const int control = scrub_kind;
             scrub_kind = 0;
-            if (control == 4) { if (!touch_dragged) pressed |= SCE_CTRL_CROSS; }
+            if (control == 6) {
+                if (!touch_dragged && tg.currentChatId() == delete_touch_chat && post_open &&
+                    message_index >= 0 && message_index < (int)tg.messages().size() &&
+                    tg.messages()[message_index].id == delete_touch_message)
+                    tg.deleteMessage(delete_touch_message);
+            }
+            else if (control == 4) { if (!touch_dragged) pressed |= SCE_CTRL_CROSS; }
             else if (control == 5) {   // tap on the quote: open the original through the existing jump navigation
                 if (!touch_dragged && message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].reply_to_id &&
                     (!tg.messages()[message_index].reply_chat_id || tg.messages()[message_index].reply_chat_id == tg.currentChatId()))
@@ -1744,7 +2281,7 @@ int main() {
         touch_down = touching;
         if (touching || pressed) decode_cooldown = 8;
         else if (decode_cooldown) --decode_cooldown;
-        textures.beginFrame(interaction || decode_cooldown != 0 || kb.active() || circle_recorder.active());
+        textures.beginFrame(interaction || decode_cooldown != 0 || kb.active() || circle_recorder.active() || recorder.active());
 
         post_pump.finish();
         performance::SlowScope input_actions(performance::SlowPhase::Ui,settings_open ? "input_settings" : photo_open ? "input_photo" : post_open ? "input_post" : "input_browser");
@@ -1753,8 +2290,8 @@ int main() {
         if (button_action || pressed || tap || touching) {
             browser_error.clear(); browser_notice.clear();
             tg.dismissStatusNotices();
-            if (!recorder.recording() && !recorder.processing()) {
-                recorder.setStatus(""); audio_notice.clear();
+            if (!recorder.active()) {
+                recorder.setStatus("");
             }
         }
 
@@ -1780,7 +2317,15 @@ int main() {
             const bool ui = chat_ui_visible();
             auto open_menu = [&]() {
                 if (upload_picker.stage == UploadPicker::Stage::Menu) upload_picker.close();
-                chat_menu_open = true; chat_menu_sel = 0; chat_menu_since = now;
+                chat_menu_chat = tg.currentChatId();
+                chat_menu_message = message_index >= 0 && message_index < (int)tg.messages().size() ? tg.messages()[message_index].id : 0;
+                const bool check_delete = chat_menu_message && !photo_open && !video_fullscreen && !stickers_open && !gifs_open && !reactions_open &&
+                    !circle_recorder.active() && !recorder.active() && !tg.topicsOpen();
+                if (check_delete) tg.canDeleteMessage(chat_menu_message);
+                chat_menu_waiting = check_delete && tg.deletePermissionPending(chat_menu_message);
+                chat_menu_wait_since = now;
+                chat_menu_open = !chat_menu_waiting; chat_menu_sel = 0; chat_menu_since = now;
+                if (chat_menu_open) chat_menu_snapshot = chat_menu_items();
             };
             auto run_item = [&](const ChatMenuItem& item) {
                 chat_menu_open = false;
@@ -1798,6 +2343,11 @@ int main() {
                 }
                 else if (item.special == 32) tg.pasteForward();
                 else if (item.special == 33) tg.cancelForward();
+                else if (item.special == 34) {
+                    if (message_index >= 0 && message_index < (int)tg.messages().size())
+                        tg.deleteMessage(tg.messages()[message_index].id);
+                }
+                else if (item.special == 40) open_seek();
                 else if (item.special >= 11 && item.special <= 13) {
                     confirm_leave = true; confirm_age = 0; confirm_action = item.special == 11 ? 0 : item.special == 13 ? 1 : 2;
                 }
@@ -1806,12 +2356,26 @@ int main() {
                 }
                 else pressed |= item.button;
             };
-            if (!ui) chat_menu_open = false;
+            const int64_t selected_menu_message = message_index >= 0 && message_index < (int)tg.messages().size() ? tg.messages()[message_index].id : 0;
+            if (!ui || tg.currentChatId() != chat_menu_chat || selected_menu_message != chat_menu_message) {
+                chat_menu_open = false; chat_menu_waiting = false;
+            }
+            if (chat_menu_waiting && ((pressed & SCE_CTRL_CIRCLE) ||
+                (pressed & (SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_SELECT |
+                    SCE_CTRL_CROSS | SCE_CTRL_SQUARE | SCE_CTRL_TRIANGLE | SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER)))) {
+                chat_menu_waiting = false;
+                pressed &= ~SCE_CTRL_CIRCLE;
+            }
+            if (chat_menu_waiting && tap && std::hypot(float(touch_x)-960.f, float(touch_y)-544.f) >= 66.f) chat_menu_waiting = false;
+            if (chat_menu_waiting && (!tg.deletePermissionPending(chat_menu_message) || now - chat_menu_wait_since >= 2000000)) {
+                chat_menu_waiting = false; chat_menu_open = true; chat_menu_sel = 0; chat_menu_since = now;
+                chat_menu_snapshot = chat_menu_items();
+            }
             if (ui && (tg.currentChatId() != 0 || tg.topicsOpen()) && (pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT)) {
-                if (chat_menu_open) chat_menu_open = false; else open_menu();
+                if (chat_menu_open || chat_menu_waiting) { chat_menu_open = false; chat_menu_waiting = false; } else open_menu();
                 pressed &= ~SCE_CTRL_START;
             } else if (ui && chat_menu_open) {
-                const auto items = chat_menu_items();
+                const auto& items = chat_menu_snapshot;
                 const int count = (int)items.size();
                 if (pressed & SCE_CTRL_UP) chat_menu_sel = (chat_menu_sel + count - 1) % count;
                 if (pressed & SCE_CTRL_DOWN) chat_menu_sel = (chat_menu_sel + 1) % count;
@@ -1825,23 +2389,33 @@ int main() {
                 const bool in_right = std::hypot((float)touch_x - 960.0f, (float)touch_y - 544.0f) < 66.0f;
                 const bool in_left = std::hypot((float)touch_x, (float)touch_y - 544.0f) < 66.0f;
                 if (in_right) {
-                    if (chat_menu_open) chat_menu_open = false; else open_menu();
+                    if (chat_menu_open || chat_menu_waiting) { chat_menu_open = false; chat_menu_waiting = false; } else open_menu();
                     tap = false;
-                } else if (in_left) {
-                    chat_menu_open = false;       // the attach button takes over (handled below)
+                } else if (in_left && tg.currentChatId() && tg.ready() && !photo_open && !tg.topicsOpen() && !circle_recorder.active() && !recorder.active()) {
+                    chat_menu_open = false;
+                    stickers_open = reactions_open = false;
+                    if (gifs_open) { gifs_open = false; tg.closeGifs(); }
+                    upload_picker.openMenu();
+                    tap = false;
                 } else if (chat_menu_open) {
-                    const auto items = chat_menu_items();
+                    const auto& items = chat_menu_snapshot;
                     const int first = menu_first((int)items.size(), chat_menu_sel);
-                    const int body_top = kMenuBottom - std::min(11, (int)items.size()) * kMenuRowHeight, top = body_top + kMenuPad;
+                    const int body_top = kMenuBottom - std::min(kMenuMaxRows, (int)items.size()) * kMenuRowHeight - 2 * kMenuPad, top = body_top + kMenuPad;
                     const bool inside = touch_x >= kMenuX && touch_x < kMenuX + kMenuWidth && touch_y >= body_top && touch_y < kMenuBottom;
-                    if (inside && touch_y >= top) run_item(items[std::min((int)items.size() - 1, first + (touch_y - top) / kMenuRowHeight)]);
+                    if (inside && touch_y >= top && touch_y < kMenuBottom - kMenuPad) run_item(items[std::min((int)items.size() - 1, first + (touch_y - top) / kMenuRowHeight)]);
                     else if (!inside) chat_menu_open = false;
                     tap = false;
                 }
             }
         }
-        if (tap && !kb.active() && (circle_recorder.active() || settings_open || !tg.canBrowse() || tg.inputKind() == InputKind::None)) {
-            if (circle_recorder.active()) {
+        if (tap && !kb.active() && (recorder.active() || circle_recorder.active() || settings_open || !tg.canBrowse() || tg.inputKind() == InputKind::None)) {
+            if (recorder.active()) {
+                if (touch_y >= 444 && touch_y < 486) {
+                    if (touch_x >= 50 && touch_x < 310 && recorder.state() != AudioRecordingState::Encoding) pressed |= SCE_CTRL_CROSS;
+                    else if (touch_x >= 350 && touch_x < 610 && recorder.state() == AudioRecordingState::Review) pressed |= SCE_CTRL_SQUARE;
+                    else if (touch_x >= 650 && touch_x < 910) pressed |= SCE_CTRL_CIRCLE;
+                }
+            } else if (circle_recorder.active()) {
                 // Recorder actions live in the corner menu now; the bottom strip is not a touch target.
             } else if (qr_scanner.active()) {
                 if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
@@ -1853,8 +2427,9 @@ int main() {
                 }
             } else if (upload_picker.active()) {
                 if (upload_picker.stage == UploadPicker::Stage::Menu) {
-                    if (touch_x >= 40 && touch_x < 270 && touch_y >= 286 && touch_y < 486) {
-                        upload_picker.selected = (touch_y - 286) / 40; pressed |= SCE_CTRL_CROSS;
+                    const int top = attach_menu_bottom - (int)attach_menu_items().size() * attach_menu_row - kMenuPad;
+                    if (touch_x >= 40 && touch_x < 340 && touch_y >= top && touch_y < attach_menu_bottom - kMenuPad) {
+                        upload_picker.selected = (touch_y - top) / attach_menu_row; pressed |= SCE_CTRL_CROSS;
                     } else pressed |= SCE_CTRL_CIRCLE;
                 } else if (upload_picker.stage == UploadPicker::Stage::Review && touch_x >= 540 && touch_y >= 109 && touch_y < 465) {
                     pressed |= SCE_CTRL_SQUARE;
@@ -1915,7 +2490,10 @@ int main() {
                         }
                     }
                 } else if (touch_y >= 500) pressed |= SCE_CTRL_CIRCLE;
-                else if (logs_open) {
+                else if (about_open) {
+                    const int link = about_layout(font).hit_link(touch_x, touch_y, about_offset);
+                    if (link >= 0) { about_link = link; pressed |= SCE_CTRL_CROSS; }
+                } else if (logs_open) {
                     if (touch_y >= 104 && touch_y < 104 + 36 * diag_log::kCount) {
                         settings_row = (touch_y - 104) / 36;
                         pressed |= SCE_CTRL_CROSS;
@@ -1945,12 +2523,23 @@ int main() {
                 pressed |= touch_x >= 650 ? SCE_CTRL_TRIANGLE : SCE_CTRL_CROSS;
             } else if (tg.currentChatId() && !post_open && !photo_open && touch_y >= 71 && touch_y < 544) {
                 bool voice_tapped = false;
-                for (const auto& button : voice_play_rects)
-                    if (button.second.contains(touch_x, touch_y)) {
-                        for (size_t k = 0; k < tg.messages().size(); ++k) if (tg.messages()[k].id == button.first) message_index = (int)k;
-                        history_voice_id = button.first; history_voice_toggle = true; voice_tapped = true;
+                for (const auto& quote : reply_rects)
+                    if (quote.second.contains(touch_x, touch_y)) {
+                        for (const auto& message : tg.messages()) if (message.id == quote.first) {
+                            if (!message.reply_chat_id || message.reply_chat_id == tg.currentChatId())
+                                tg.openPinnedMessage(message.reply_to_id);
+                            break;
+                        }
+                        voice_tapped = true;
                         break;
                     }
+                if (!voice_tapped)
+                    for (const auto& button : voice_play_rects)
+                        if (button.second.contains(touch_x, touch_y)) {
+                            for (size_t k = 0; k < tg.messages().size(); ++k) if (tg.messages()[k].id == button.first) message_index = (int)k;
+                            history_voice_id = button.first; history_voice_toggle = true; voice_tapped = true;
+                            break;
+                        }
                 if (!voice_tapped)
                     for (const auto& button : comments_rects)
                         if (button.second.contains(touch_x, touch_y)) {
@@ -2037,12 +2626,12 @@ int main() {
             }
             pressed = 0; tap = false;
         }
-        if (!circle_recorder.active() && !settings_open && !(pressed & SCE_CTRL_START) && tg.inputKind() != InputKind::None && (tg.inputKind() == InputKind::Message || (pressed & SCE_CTRL_CROSS)) && !kb.active() && !kb.submitted() && !kb.cancelled()) {
+        if (!circle_recorder.active() && !recorder.active() && !settings_open && !(pressed & SCE_CTRL_START) && tg.inputKind() != InputKind::None && (tg.inputKind() == InputKind::Message || (pressed & SCE_CTRL_CROSS)) && !kb.active() && !kb.submitted() && !kb.cancelled()) {
             kb.open(tg.inputPrompt(), tg.inputSecret());
         }
 
         // Sign-in: step back to the phone number, or ask Telegram for the code again.
-        if (!circle_recorder.active() && !settings_open && !kb.active() && !tg.canBrowse()) {
+        if (!circle_recorder.active() && !recorder.active() && !settings_open && !kb.active() && !tg.canBrowse()) {
             if ((pressed & SCE_CTRL_SQUARE) && tg.canRequestQr()) { tg.requestQr(); pressed &= ~SCE_CTRL_SQUARE; }
             else if ((pressed & SCE_CTRL_CIRCLE) && !tg.qrLink().empty()) {
                 // TDLib cannot return from the QR state to a phone number, so the sign-in data is
@@ -2071,9 +2660,10 @@ int main() {
             if (accept) {
                 reveal_spoiler(shown[message_index]);
                 spoiler_prompt = false;
-                tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
-                photo_open = true;
-                photo_view.begin();
+                if (!shown[message_index].photos.empty()) {
+                    tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
+                    photo_open = true; photo_view.begin();
+                } else if (shown[message_index].video) toggle_video = true;
             } else if (cancel) spoiler_prompt = false;
             pressed = 0; tap = false;
         }
@@ -2087,15 +2677,19 @@ int main() {
             } else if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_TRIANGLE)) unsupported_video_prompt = false;
             pressed = 0;
         }
-        if ((pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT) && !kb.active() && !qr_scanner.active() && !circle_recorder.active() && !tg.currentChatId()) {
+        if ((pressed & SCE_CTRL_START) && !(pad.buttons & SCE_CTRL_SELECT) && !kb.active() && !qr_scanner.active() && !circle_recorder.active() && !recorder.active() && !tg.currentChatId()) {
             bool auth_proxy = !settings_open && !tg.canBrowse();
             settings_open = !settings_open;
             proxy_open = auth_proxy;
             logs_open = false;
+            encryption_open = false;
+            about_open = false;
+            about_chat_pending = false;
             proxy_return_to_screen = auth_proxy;
             proxy_imported = false;
             if (auth_proxy) proxy_draft = settings;
             settings_error.clear();
+            settings_label_marquee.key = settings_value_marquee.key = -1;
             settings_row = 0; settings_scroll.reset(); confirm_logout = false; confirm_vault_off = false; pressed = 0;
         }
         if (kb.active()) {
@@ -2122,7 +2716,7 @@ int main() {
                     bool valid = !v.empty() && v.size() <= 5;
                     for (char c : v) { if (!valid || c < '0' || c > '9') { valid = false; break; } port = port * 10 + c - '0'; }
                     if (valid && port > 0 && port <= 65535) proxy_draft.proxy_port = port;
-                    else settings_error = tr("proxy.err.port_range");
+                    else settings_error = i18n::text("proxy.err.port_range");
                 }
                 proxy_input = -1;
             } else tg.submitInput(v);
@@ -2132,6 +2726,21 @@ int main() {
             else if (search_input) { search_input = false; if (tg.searchQuery().empty()) search_open = false; }
             else if (folder_name_input) folder_name_input = false;
             else if (proxy_input >= 0) proxy_input = -1; else tg.cancelInput();
+        } else if (recorder.active()) {
+            if (pressed & SCE_CTRL_CIRCLE) { recorder.cancel(); audio_error.clear(); }
+            else {
+                const auto state = recorder.state();
+                if ((pressed & SCE_CTRL_SQUARE) && state == AudioRecordingState::Review) recorder.togglePreview();
+                if (pressed & SCE_CTRL_CROSS) {
+                    audio_error.clear();
+                    if (state == AudioRecordingState::Preview) recorder.record();
+                    else if (state == AudioRecordingState::Recording) recorder.finish();
+                    else if (state == AudioRecordingState::Review) {
+                        if (tg.sendAudioFile(recorder.path(), recorder.seconds(), audio_chat, audio_topic)) recorder.releaseFile();
+                        else audio_error = i18n::text("rec.send_failed");
+                    } else if (state == AudioRecordingState::Error) open_audio();
+                }
+            }
         } else if (circle_recorder.active()) {
             using RecordingState = VideoNoteRecorder::State;
             auto state = circle_recorder.state();
@@ -2152,12 +2761,6 @@ int main() {
                     }
                 }
             }
-        } else if ((recorder.recording() || recorder.processing()) &&
-                   (pressed & (SCE_CTRL_SQUARE | SCE_CTRL_CIRCLE))) {
-            recorder.cancel();
-            recorder.setStatus(tr("common.cancelled"));
-            audio_chat = 0; audio_topic = 0;
-            pressed &= ~(SCE_CTRL_SQUARE | SCE_CTRL_CIRCLE);
         } else if (qr_scanner.active()) {
             if (pressed & SCE_CTRL_CIRCLE) { qr_scanner.stop(); settings_row = 5; }
         } else if (!settings_open && tg.topicsOpen()) {
@@ -2174,7 +2777,7 @@ int main() {
             }
         } else if (upload_picker.active()) {
             using Stage = UploadPicker::Stage;
-            const int rows = upload_picker.stage == Stage::Menu ? 5 : upload_picker.stage == Stage::Review ? upload_picker.reviewRows() : (int)upload_picker.entries.size();
+            const int rows = upload_picker.stage == Stage::Menu ? (int)attach_menu_items().size() : upload_picker.stage == Stage::Review ? upload_picker.reviewRows() : (int)upload_picker.entries.size();
             if (rows > 0) {
                 if (pressed & SCE_CTRL_UP) upload_picker.selected = (upload_picker.selected + rows - 1) % rows;
                 if (pressed & SCE_CTRL_DOWN) upload_picker.selected = (upload_picker.selected + 1) % rows;
@@ -2184,13 +2787,25 @@ int main() {
                 }
             }
             if (upload_picker.stage == Stage::Menu) {
-                if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SELECT)) upload_picker.close();
+                if (settings.recording_shortcuts && (pressed & (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER))) {
+                    upload_picker.close();
+                    if (pressed & SCE_CTRL_LTRIGGER) open_circle(); else open_audio();
+                }
+                else if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_SELECT)) upload_picker.close();
                 else if (pressed & SCE_CTRL_CROSS) {
-                    if (upload_picker.selected < 3) upload_picker.chooseKind((UploadPicker::Kind)upload_picker.selected);
-                    else {   // video note and voice message start from here instead of the right-hand menu
-                        const bool note = upload_picker.selected == 3;
+                    const auto items = attach_menu_items();
+                    const int action = items[std::min(upload_picker.selected, (int)items.size()-1)].special;
+                    if (action < 3) upload_picker.chooseKind((UploadPicker::Kind)action);
+                    else {
                         upload_picker.close();
-                        if (note) open_circle(); else record_toggle = true;
+                        if (action == 3) open_circle();
+                        else if (action == 4) record_toggle = true;
+                        else if (action == 5) { gifs_open = true; gif_index = 0; gif_next_page = -1; tg.searchGifs(); }
+                        else if (action == 6) { stickers_open = true; sticker_pack_menu = true; sticker_index = 0; sticker_pack = 1; tg.openStickers(); }
+                        else if (action == 7 && message_index >= 0 && message_index < (int)tg.messages().size()) {
+                            reactions_open = true; reaction_index = 0;
+                            tg.loadReactions(tg.messages()[message_index].id);
+                        }
                     }
                 }
             } else if (upload_picker.stage == Stage::Browse) {
@@ -2272,18 +2887,38 @@ int main() {
             if (pressed & SCE_CTRL_CROSS) folder_picker.enter();
             if ((pressed & SCE_CTRL_SQUARE) && !folder_picker.path.empty()) {
                 settings.download_dir = folder_picker.path;
-                settings_error = settings.save() ? "" : tr("settings.save_failed");
+                settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                 folder_picker.active = false;
             }
+        } else if (settings_open && about_open) {
+            const auto& layout = about_layout(font);
+            if (pressed & SCE_CTRL_UP) about_offset -= 28;
+            if (pressed & SCE_CTRL_DOWN) about_offset += 28;
+            if (pressed & SCE_CTRL_LTRIGGER) about_offset -= 386;
+            if (pressed & SCE_CTRL_RTRIGGER) about_offset += 386;
+            if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT)) {
+                about_link = about_link < 0 ? ((pressed & SCE_CTRL_LEFT) ? 1 : 0) : 1 - about_link;
+                const int y = layout.link_y(about_link);
+                if (y < about_offset) about_offset = y;
+                else if (y + 60 > about_offset + 414) about_offset = y + 60 - 414;
+            }
+            about_offset = std::clamp(about_offset, 0, layout.maximum());
+            if (pressed & SCE_CTRL_CIRCLE) {
+                about_open = false; about_chat_pending = false; settings_row = 17; settings_error.clear();
+            } else if ((pressed & SCE_CTRL_CROSS) && about_link >= 0 && layout.link_visible(about_link, about_offset)) {
+                if (about_link == 0) browser_error = open_link(kAboutProjectUrl);
+                else if (!tg.ready()) settings_error = i18n::text("about.telegram_unavailable");
+                else { about_chat_pending = true; browser_error = open_link(kAboutAuthorUrl); settings_error.clear(); }
+            }
         } else if (settings_open && logs_open) {
-            if (pressed & SCE_CTRL_CIRCLE) { logs_open = false; settings_row = 17; settings_error.clear(); }
+            if (pressed & SCE_CTRL_CIRCLE) { logs_open = false; settings_row = 16; settings_error.clear(); }
             else {
                 if (pressed & SCE_CTRL_UP) settings_row = (settings_row + diag_log::kCount - 1) % diag_log::kCount;
                 if (pressed & SCE_CTRL_DOWN) settings_row = (settings_row + 1) % diag_log::kCount;
                 if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                     settings.log_mask ^= 1u << settings_row;
                     diag_log::set_mask(settings.log_mask);
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                 }
             }
         } else if (settings_open && proxy_open) {
@@ -2321,8 +2956,8 @@ int main() {
                         tg.cancelProxyCheck();
                         if (!qr_scanner.start()) settings_error = qr_scanner.status();
                     } else if (proxy_draft.proxy_enabled && !proxy_draft.proxyConfig().complete()) {
-                        settings_error = tr("proxy.need_fields");
-                    } else if (!proxy_draft.save()) settings_error = tr("settings.save_failed");
+                        settings_error = i18n::text("proxy.need_fields");
+                    } else if (!proxy_draft.save()) settings_error = i18n::text("settings.save_failed");
                     else {
                         settings = proxy_draft;
                         proxy_imported = false;
@@ -2333,42 +2968,58 @@ int main() {
                 }
             }
         } else if (settings_open) {
-            if (pressed & SCE_CTRL_CIRCLE) { if (confirm_logout) confirm_logout = false; else settings_open = false; }
-            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+kSettingsRows-1)%kSettingsRows; confirm_logout = false; confirm_vault_off = false; }
-            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%kSettingsRows; confirm_logout = false; confirm_vault_off = false; }
+            if (pressed & SCE_CTRL_CIRCLE) {
+                if (confirm_logout || confirm_vault_off) confirm_logout = confirm_vault_off = false;
+                else if (encryption_open) {
+                    encryption_open = false; settings_row = kEncryptionRow; settings_error.clear();
+                    settings_scroll.configure(kSettingsRows, kSettingsRowHeight, kSettingsViewport);
+                    settings_scroll.reset(); settings_scroll.reveal(settings_row); pressed = 0;
+                } else settings_open = false;
+            }
+            const int count = encryption_open ? kEncryptionRows : kSettingsRows;
+            if (pressed & SCE_CTRL_UP) { settings_row = (settings_row+count-1)%count; confirm_logout = false; confirm_vault_off = false; }
+            if (pressed & SCE_CTRL_DOWN) { settings_row = (settings_row+1)%count; confirm_logout = false; confirm_vault_off = false; }
             settings_scroll.reveal(settings_row);
             if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_CROSS)) {
                 int direction = (pressed & SCE_CTRL_LEFT) ? -1 : 1;
                 // Row 0 is the language; the remaining rows keep their original order.
-                const int row = settings_row - 1;
-                if (settings_row == 0) {
+                const int source_row = encryption_open ? kEncryptionRow + settings_row :
+                    settings_row > kEncryptionRow ? settings_row + kEncryptionRows - 1 : settings_row;
+                const int row = source_row - 1;
+                if (!encryption_open && settings_row == kEncryptionRow) {
+                    if (pressed & SCE_CTRL_CROSS) {
+                        encryption_open = true; settings_row = 0; settings_scroll.reset();
+                        settings_error.clear(); confirm_logout = confirm_vault_off = false;
+                    }
+                } else if (!encryption_open && settings_row == 0) {
                     confirm_logout = false;
                     // Automatic first, then every language file found in app0:lang.
                     std::vector<std::string> choices{""};
                     for (const auto& language : i18n::languages()) choices.push_back(language.code);
-                    size_t at = std::find(choices.begin(), choices.end(), settings.language) - choices.begin();
+                    size_t at = std::find(choices.begin(), choices.end(), language_pending ? requested_language : settings.language) - choices.begin();
                     if (at >= choices.size()) at = 0;
-                    settings.language = choices[(at + choices.size() + direction) % choices.size()];
-                    i18n::select(settings.language);
-                    apply_language_font();
-                    tg.setShowArchive(settings.show_archive); // retitle the Archive tab
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                    requested_language = choices[(at + choices.size() + direction) % choices.size()];
+                    language_pending = true;
+                    // Invalidate an older read before the between-frame poll adopts it.
+                    rich_text_prepare_language_font(language_font_path_for(i18n::resolve(requested_language)));
+                    settings_error.clear();
                 } else if (row < 4) {
                     confirm_logout = false;
                     int* values[] = {&settings.retention, &settings.capacity, &settings.theme, &settings.font};
-                    const int counts[] = {5, 6, 2, 7};
+                    const int counts[] = {5, 6, AppSettings::kThemeChoices, 7};
                     *values[row] = (*values[row] + counts[row] + direction) % counts[row];
                     apply_font_scale(settings.fontScale());
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                    settings_label_marquee.key = settings_value_marquee.key = -1;
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                     next_cache_cleanup = now + 300000000;
                 } else if (row == 4) {
                     settings.show_threads = !settings.show_threads;
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                 } else if (row == 5) {
                     int index = (AppSettings::requestBatchIndex(settings.request_batch_size) + direction + 5) % 5;
                     settings.request_batch_size = AppSettings::requestBatchSize(index);
                     tg.setRequestBatchSize(settings.request_batch_size);
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                 } else if (row == 6) {
                     if (pressed & SCE_CTRL_CROSS) folder_picker.open(settings.download_dir);
                 } else if (row == 7) {
@@ -2376,7 +3027,7 @@ int main() {
                 } else if (row == 8) {
                     confirm_logout = false;
                     settings.check_updates = !settings.check_updates;
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                 } else if (row == 9) {
                     confirm_logout = false;
                     if (pressed & SCE_CTRL_CROSS) {
@@ -2384,10 +3035,10 @@ int main() {
                         settings_error.clear();
                         if (u.state == Updater::State::Available) updater.install();
                         else if (u.busy() && u.state != Updater::State::Installing) updater.cancel();
-                        else if (network_held) settings_error = tr("network.held");
+                        else if (network_held) settings_error = i18n::text("network.held");
                         else if (u.state == Updater::State::Idle || u.state == Updater::State::UpToDate || u.state == Updater::State::Failed) {
                             updater.check();
-                            if (settings.proxy_enabled) settings_error = tr("update.direct");
+                            if (settings.proxy_enabled) settings_error = i18n::text("update.direct");
                         }
                     }
                 } else if (row == 10) {
@@ -2395,18 +3046,19 @@ int main() {
                     // converted before TDLib starts (see vault_ui::run_migration).
                     confirm_logout = false;
                     if (pressed & SCE_CTRL_CROSS) {
-                        const vault_ui::Env vault_env{font, (settings.theme == 1)};
+                        const vault_ui::Env vault_env{font, settings.isDark(), settings.theme};
                         auto finish_vault_flow = [&](vault_ui::Outcome outcome, bool restart) {
                             // Buttons used in the dialog must not leak into the main screen.
                             SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons; pressed = 0;
-                            vita2d_set_clear_color((settings.theme == 1) ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
-                            if (outcome == vault_ui::Outcome::Failed) settings_error = tr("vault.error");
+                            lock_previous_frame = lock_last_activity = wall_us(); // a long modal flow is not "left the app"
+                            vita2d_set_clear_color((settings.isDark()) ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                            if (outcome == vault_ui::Outcome::Failed) settings_error = i18n::text("vault.error");
                             else if (outcome == vault_ui::Outcome::Done) {
-                                settings_error = settings.save() ? "" : tr("settings.save_failed");
+                                settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                                 if (restart) { restart_requested = true; tg.close(); settings_open = false; running = false; }
                             }
                         };
-                        if (vault::disabling()) settings_error = tr("vault.settings.pending");
+                        if (vault::disabling()) settings_error = i18n::text("vault.settings.pending");
                         else if (!vault::enabled()) { confirm_vault_off = false; finish_vault_flow(vault_ui::enable_flow(vault_env), true); }
                         else if (!confirm_vault_off) confirm_vault_off = true;
                         else { confirm_vault_off = false; finish_vault_flow(vault_ui::disable_flow(vault_env), true); }
@@ -2414,52 +3066,77 @@ int main() {
                 } else if (row == 11) {
                     confirm_logout = false; confirm_vault_off = false;
                     if (pressed & SCE_CTRL_CROSS) {
-                        if (!vault::enabled() || vault::disabling()) settings_error = tr("vault.settings.not_enabled");
+                        if (!vault::enabled() || vault::disabling()) settings_error = i18n::text("vault.settings.not_enabled");
                         else {
-                            const vault_ui::Env vault_env{font, (settings.theme == 1)};
+                            const vault_ui::Env vault_env{font, settings.isDark(), settings.theme};
                             auto outcome = vault_ui::change_flow(vault_env);
                             SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons; pressed = 0;
-                            vita2d_set_clear_color((settings.theme == 1) ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
-                            settings_error = outcome == vault_ui::Outcome::Done ? tr("vault.changed") :
-                                outcome == vault_ui::Outcome::Failed ? tr("vault.error") : "";
+                            lock_previous_frame = lock_last_activity = wall_us(); // a long modal flow is not "left the app"
+                            vita2d_set_clear_color((settings.isDark()) ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                            settings_error = outcome == vault_ui::Outcome::Done ? i18n::text("vault.changed") :
+                                outcome == vault_ui::Outcome::Failed ? i18n::text("vault.error") : "";
                         }
                     }
                 } else if (row == 12) {
                     confirm_logout = false; confirm_vault_off = false;
                     if (pressed & SCE_CTRL_CROSS) {
-                        if (!vault::enabled() || vault::disabling()) settings_error = tr("vault.settings.not_enabled");
+                        if (!vault::enabled() || vault::disabling()) settings_error = i18n::text("vault.settings.not_enabled");
                         else {
-                            vault_ui::check_flow(vault_ui::Env{font, settings.theme == 1});
+                            vault_ui::check_flow(vault_ui::Env{font, settings.isDark(), settings.theme});
                             SceCtrlData after{}; sceCtrlPeekBufferPositive(0, &after, 1); old_buttons = after.buttons; pressed = 0;
-                            vita2d_set_clear_color(settings.theme == 1 ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
+                            lock_previous_frame = lock_last_activity = wall_us(); // a long modal flow is not "left the app"
+                            vita2d_set_clear_color(settings.isDark() ? RGBA8(16,24,33,255) : RGBA8(238,243,248,255));
                             settings_error.clear();
                         }
                     }
                 } else if (row == 13) {
+                    // Auto-lock interval; only meaningful with the vault on, but kept either way.
+                    confirm_logout = false; confirm_vault_off = false;
+                    settings.auto_lock = (settings.auto_lock + AppSettings::kLockChoices + direction) % AppSettings::kLockChoices;
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                    if (!vault::enabled()) settings_error = i18n::text("vault.settings.not_enabled");
+                } else if (row == 14) {
+                    confirm_logout = false; confirm_vault_off = false;
+                    settings.lock_on_leave = !settings.lock_on_leave;
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                    if (!vault::enabled()) settings_error = i18n::text("vault.settings.not_enabled");
+                } else if (row == 15) {
                     confirm_logout = false;
                     settings.gyroscope_enabled = !settings.gyroscope_enabled;
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
-                } else if (row == 14) {
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                } else if (row == 16) {
                     confirm_logout = false;
                     const int next = settings.opacity + direction * AppSettings::kOpacityStep;
                     settings.opacity = next > AppSettings::kMaxOpacity ? AppSettings::kMinOpacity :
                         next < AppSettings::kMinOpacity ? AppSettings::kMaxOpacity : next;
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
-                } else if (row == 15) {
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                } else if (row == 17) {
                     confirm_logout = false;
                     settings.avatar_shape = 1 - settings.avatar_shape;
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
-                } else if (row == 16) {
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                } else if (row == 18) {
                     confirm_logout = false;
                     settings.show_archive = !settings.show_archive;
                     tg.setShowArchive(settings.show_archive);
                     if (!tg.currentChatId()) { chat_index = 0; chat_scroll.reset(); }
-                    settings_error = settings.save() ? "" : tr("settings.save_failed");
-                } else if (row == 17) {
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                } else if (row == 19) {
                     confirm_logout = false;
                     if (pressed & SCE_CTRL_CROSS) { logs_open = true; settings_row = 0; settings_error.clear(); }
+                } else if (row == 20) {
+                    confirm_logout = false;
+                    if (pressed & SCE_CTRL_CROSS) { about_open = true; about_offset = 0; about_link = -1; about_chat_pending = false; settings_error.clear(); }
+                } else if (row == 21) {
+                    confirm_logout = false;
+                    settings.recording_shortcuts = !settings.recording_shortcuts;
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
+                } else if (row == 22) {
+                    confirm_logout = false;
+                    settings.spoiler_reset = (settings.spoiler_reset + AppSettings::kSpoilerResetChoices + direction) % AppSettings::kSpoilerResetChoices;
+                    if (settings.spoiler_reset) invalidate_spoiler_view(spoiler_visibility.reset());
+                    settings_error = settings.save() ? "" : i18n::text("settings.save_failed");
                 } else if (pressed & SCE_CTRL_CROSS) {
-                    if (!tg.ready()) settings_error = tr("settings.logout_wait");
+                    if (!tg.ready()) settings_error = i18n::text("settings.logout_wait");
                     else if (confirm_logout) { tg.logout(); confirm_logout = false; settings_open = false; }
                     else confirm_logout = true;
                 }
@@ -2497,7 +3174,10 @@ int main() {
                     if (pressed & SCE_CTRL_LEFT) step_photo(-1);
                     if (pressed & SCE_CTRL_RIGHT) step_photo(1);
                     if (photo_index != previous_photo || message_index != previous_message) photo_view.reset();
-                    if (!messages[message_index].photos.empty()) tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
+                    if (spoiler_locked(messages[message_index])) {
+                        photo_open = false; spoiler_prompt = true;
+                        spoiler_prompt_chat = tg.currentChatId(); spoiler_prompt_message = messages[message_index].id;
+                    } else if (!messages[message_index].photos.empty()) tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
                 }
             } else if (post_open && message_index >= 0 && message_index < (int)messages.size() && messages[message_index].poll.id) {
                 const auto& m = messages[message_index]; const auto& poll = m.poll;
@@ -2556,6 +3236,12 @@ int main() {
                         if (pressed & SCE_CTRL_LTRIGGER) seek_by(messages[message_index], -10000000);
                         if (pressed & SCE_CTRL_RTRIGGER) seek_by(messages[message_index], 10000000);
                     }
+                    if (spoiler_locked(messages[message_index]) && messages[message_index].animation &&
+                        (pressed & (SCE_CTRL_CROSS | SCE_CTRL_TRIANGLE))) {
+                        spoiler_prompt = true; spoiler_prompt_chat = tg.currentChatId();
+                        spoiler_prompt_message = messages[message_index].id;
+                        pressed &= ~(SCE_CTRL_CROSS | SCE_CTRL_TRIANGLE); toggle_video = false;
+                    }
                     auto lines = post_lines(font, messages[message_index]);
                     if ((pressed & SCE_CTRL_CROSS) && messages[message_index].voice) toggle_voice = true;
                     if ((pressed & SCE_CTRL_CROSS) && messages[message_index].video) toggle_video = true;
@@ -2594,8 +3280,8 @@ int main() {
                 if (pressed & SCE_CTRL_CIRCLE) { if (tg.inComments()) tg.closeComments(); else if (tg.inTopic()) tg.backToTopics(); else tg.leaveChat(); pressed = 0; }
                 if (pressed & SCE_CTRL_SQUARE) tg.requestCompose();
                 if ((pressed & SCE_CTRL_SELECT) && !(pad.buttons & SCE_CTRL_START) && tg.ready()) { upload_picker.openMenu(); chat_menu_open = false; }
-                if (pressed & SCE_CTRL_LTRIGGER) open_circle();
-                else if (pressed & SCE_CTRL_RTRIGGER) record_toggle = true;
+                if (settings.recording_shortcuts && (pressed & SCE_CTRL_LTRIGGER)) open_circle();
+                else if (settings.recording_shortcuts && (pressed & SCE_CTRL_RTRIGGER)) record_toggle = true;
                 if (pressed & SCE_CTRL_TRIANGLE) tg.refreshHistory();
                 if (pressed & SCE_CTRL_UP) {
                     if (message_index > 0) message_index--;
@@ -2669,20 +3355,12 @@ int main() {
             if (pressed & SCE_CTRL_TRIANGLE) tg.refreshChats();
         }
 
-        if (record_toggle && !circle_recorder.active() && tg.currentChatId() && !kb.active() && !post_open && !photo_open) {
-            if (recorder.recording()) {
-                recorder.stop();
-            } else if (!recorder.processing()) {
-                audio_chat = tg.currentChatId(); audio_topic = tg.currentTopicId();
-                recorder.start("ux0:data/vitagram/voice-message-" + std::to_string(now) + ".ogg");
-            }
-        }
-        std::string completed_audio = recorder.takeCompleted();
-        if (!completed_audio.empty()) {
-            const bool sent = tg.sendAudioFile(completed_audio, recorder.seconds(), audio_chat, audio_topic);
-            // Upload tracking now owns the progress/result, not the recorder.
-            recorder.setStatus(sent ? "" : tr("rec.send_failed"));
-        }
+        if (record_toggle && !circle_recorder.active() && !recorder.active() && tg.currentChatId() && !kb.active() && !photo_open)
+            open_audio();
+        if (recorder.active() && (!tg.ready() || tg.currentChatId() != audio_chat || tg.currentTopicId() != audio_topic))
+            recorder.cancel();
+        recorder.pump(now);
+        observe_spoiler_chat(); // Input may have left/switched the chat after pump().
 
         std::vector<UploadPicker::Item> upload_batch;
         if (upload_picker.takeResult(upload_batch)) {
@@ -2690,7 +3368,7 @@ int main() {
             std::vector<std::pair<std::string, int>> files;
             for (const auto& item : upload_batch) files.emplace_back(item.path, (int)item.kind);
             if (!tg.sendLocalFiles(files, tg.currentChatId(), tg.currentTopicId()))
-                recorder.setStatus(tr("upload.send_failed"));
+                browser_error = i18n::text("upload.send_failed");
         }
 
         if (exit_gesture.update(pad.buttons & SCE_CTRL_START, pad.buttons & SCE_CTRL_SELECT,
@@ -2707,7 +3385,7 @@ int main() {
             else qr_scanner.upload();
         }
         if (!pending_proxy_link.empty()) {
-            ProxyLink proxy; std::string error;
+            ProxyLink proxy; i18n::Text error;
             auto parsed = parse_proxy_link(pending_proxy_link, proxy, error);
             pending_proxy_link.clear();
             if (parsed == ProxyLinkResult::Valid) {
@@ -2730,14 +3408,11 @@ int main() {
 
         if (status_chat != tg.currentChatId() || status_topic != tg.currentTopicId()) {
             status_chat = tg.currentChatId(); status_topic = tg.currentTopicId();
-            browser_error.clear(); browser_notice.clear(); audio_notice.clear();
+            browser_error.clear(); browser_notice.clear();
             tg.dismissStatusNotices();
-            if (!recorder.recording() && !recorder.processing()) recorder.setStatus("");
+            if (!recorder.active()) recorder.setStatus("");
         }
         const std::string browser_status = browser_notice.update(browser_error, now);
-        const bool audio_context = audio_chat == tg.currentChatId() && audio_topic == tg.currentTopicId();
-        const std::string recorder_status = audio_notice.update(
-            !recorder.recording() && !recorder.processing() && (audio_context || !audio_chat) ? recorder.status() : "", now);
 
         if (circle_recorder.active()) {
             circle_recorder.upload();
@@ -2752,9 +3427,9 @@ int main() {
 
         if (!settings_open && post_open && !photo_open && tg.currentChatId() && message_index>=0 && message_index<(int)tg.messages().size())
             tg.viewMessage(tg.messages()[message_index].id);
-        int animation_index = !circle_recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running &&
-            message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].animation ? message_index : -1;
-        tg.setAnimationTarget(animation_index);
+        int animation_index = !circle_recorder.active() && !recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running &&
+            message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].animation && !spoiler_locked(tg.messages()[message_index]) ? message_index : -1;
+        tg.setAnimationTarget(animation_index, animation_index >= 0);
         const MessageItem* animation_message = animation_index >= 0 ? &tg.messages()[animation_index] : nullptr;
         const bool unsupported_video = animation_message && animation_message->video && !animation_message->video_note &&
             animation_message->video_width > 0 && animation_message->video_height > 0 &&
@@ -2766,9 +3441,11 @@ int main() {
             animation_message->id != unsupported_video_message)) unsupported_video_prompt = false;
         const auto* picker_focus = upload_picker.stage == UploadPicker::Stage::Review ? upload_picker.focusedItem() : nullptr;
         const bool picker_video = picker_focus && picker_focus->kind == UploadPicker::Kind::Video;
+        auto animation_stream = animation_message && !unsupported_video && animation_message->animation_error.empty() &&
+            animation_message->animation_stream && animation_message->animation_stream->ready() ? animation_message->animation_stream : nullptr;
         if (picker_video) animation.setSource(picker_focus->path, true, false, false);
-        else animation.setSource(animation_message && animation_message->animation_error.empty() ? animation_message->animation_path : "",
-            animation_message && animation_message->video, animation_message && animation_message->video_note, unsupported_video, unsupported_video && !prepare_video);
+        else animation.setSource(animation_stream ? animation_stream->source : animation_message && animation_message->animation_error.empty() ? animation_message->animation_path : "",
+            animation_message && animation_message->video, animation_message && animation_message->video_note, unsupported_video, unsupported_video && !prepare_video, animation_stream);
         if (portrait_play_pending && (!animation_message || !unsupported_video ||
             tg.currentChatId() != portrait_play_chat || animation_message->id != portrait_play_message))
             portrait_play_pending = false;
@@ -2791,20 +3468,31 @@ int main() {
 
         if (toggle_video && (animation_message || picker_video)) animation.toggle();
         animation.upload();
-        int voice_index = !circle_recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running && tg.currentChatId() &&
+        int voice_index = !circle_recorder.active() && !recorder.active() && !settings_open && post_open && !photo_open && !kb.active() && running && tg.currentChatId() &&
             message_index >= 0 && message_index < (int)tg.messages().size() && tg.messages()[message_index].voice ? message_index : -1;
         if (!tg.currentChatId()) history_voice_id = 0;
-        if (voice_index < 0 && history_voice_id && !circle_recorder.active() && !settings_open && !kb.active() && running && !photo_open) {
+        if (voice_index < 0 && history_voice_id && !circle_recorder.active() && !recorder.active() && !settings_open && !kb.active() && running && !photo_open) {
             // Started from the chat list: keep that message as the playback source until another one takes over.
             for (size_t k = 0; k < tg.messages().size(); ++k) if (tg.messages()[k].id == history_voice_id) voice_index = (int)k;
             if (voice_index < 0 && !tg.messages().empty()) history_voice_id = 0;
         }
         tg.setVoiceTarget(voice_index);
         const MessageItem* voice_message = voice_index >= 0 ? &tg.messages()[voice_index] : nullptr;
-        voice.setSource(voice_message && voice_message->voice_error.empty() ? voice_message->voice_path : "", false,
-            voice_message && voice_message->audio);
+        auto voice_stream = voice_message && voice_message->voice_error.empty() && voice_message->voice_stream &&
+            voice_message->voice_stream->ready() ? voice_message->voice_stream : nullptr;
+        voice.setSource(voice_stream ? voice_stream->source : voice_message && voice_message->voice_error.empty() ? voice_message->voice_path : "", false,
+            voice_message && voice_message->audio, voice_stream);
         if ((toggle_voice || history_voice_toggle) && voice_message) voice.toggle();
         history_voice_toggle = false;
+
+        // Playback needs no touches: keep the system's dim/off/suspend timers
+        // alive as well as the vault idle timer. Pausing/ending restores normal idle behaviour.
+        const bool video_playing = animation.playing() || (circle_playback && circle_playback->playing());
+        if (!video_playing) next_video_power_tick = 0;
+        else if (now >= next_video_power_tick) {
+            sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT);
+            next_video_power_tick = now + 1000000;
+        }
 
         if (pressed || touching || tg.currentChatId() || settings_open || !tg.ready())
             next_cache_cleanup = now + 300000000;
@@ -2812,12 +3500,12 @@ int main() {
             tg.optimizeCache(AppSettings::days(settings.retention), AppSettings::megabytes(settings.capacity));
             next_cache_cleanup = now + 300000000;
         }
-        bool dark = settings.theme == 1;
+        bool dark = settings.isDark();
         ui_skin::set_opacity(settings.opacity);
         const unsigned int white = dark ? RGBA8(31,45,59,255) : RGBA8(255,255,255,255);
         const unsigned int ink = dark ? RGBA8(231,238,245,255) : RGBA8(39,51,66,255);
-        const unsigned int muted = dark ? RGBA8(163,183,200,255) : RGBA8(105,122,140,255);
-        const unsigned int accent = RGBA8(35,135,210,255);
+        const unsigned int muted = settings.theme == 2 ? RGBA8(194,207,237,255) : dark ? RGBA8(163,183,200,255) : RGBA8(105,122,140,255);
+        const unsigned int accent = settings.theme == 2 ? RGBA8(149,214,255,255) : RGBA8(35,135,210,255);
         const unsigned int selected = dark ? RGBA8(46,72,94,255) : RGBA8(207,232,249,255);
         const unsigned int outgoing = RGBA8(20,143,82,255);
         const unsigned int separator = dark ? RGBA8(53,70,86,255) : RGBA8(205,216,226,255);
@@ -2825,9 +3513,10 @@ int main() {
         // Textures are swapped here, between frames, only when the theme actually changed.
         // Fullscreen photo and video share one rule: the corner button hides after 1 s without presses or touches.
         const bool hide_media_ui = (photo_open || video_fullscreen) && !chat_menu_open && now - media_active_at > 1000000;
-        scrub_voice.on = scrub_bar.on = scrub_play.on = scrub_ring.on = reply_hit.on = false;
+        scrub_voice.on = scrub_bar.on = scrub_play.on = scrub_ring.on = reply_hit.on = delete_hit.on = false;
         voice_play_rects.clear();   // republished by this frame's controls
         comments_rects.clear();
+        reply_rects.clear();
         const bool scrub_active = touching && scrub_kind >= 1 && scrub_kind <= 3;
         struct VideoProgress { int64_t duration_us, position_us; float fraction; bool seekable, scrubbing; };
         auto video_progress = [&](const MessageItem& m) {
@@ -2859,10 +3548,10 @@ int main() {
             }
         }
         if (textures.avatarShape() != settings.avatar_shape) { vita2d_wait_rendering_done(); textures.setAvatarShape(settings.avatar_shape); }
-        if (skin_theme != (dark ? 1 : 0) || ui_skin::needs_retry()) {
-            skin_theme = dark ? 1 : 0;
-            ui_skin::load(dark);
-            ui_battery::load(dark);
+        if (skin_theme != settings.theme || ui_skin::needs_retry()) {
+            skin_theme = settings.theme;
+            ui_skin::load(settings.theme);
+            ui_battery::load(settings.theme);
             rich_text_skin_changed();
         }
 
@@ -2881,12 +3570,13 @@ int main() {
             if (!decode_cooldown) for (size_t i=0; i<tg.chats().size(); ++i)
                 if (tg.chats()[i].id == tg.currentChatId()) { tg.ensureChatMedia(i); break; }
             auto avatar = textures.get(tg.currentChatAvatar(), kMaskAvatar);
-            if (avatar) draw_texture_fit(avatar, 12, 4, 28, 28);
+            if (tg.currentChatIsDeleted()) draw_deleted_avatar(12, 4, 28, settings.avatar_shape);
+            else if (avatar) draw_texture_fit(avatar, 12, 4, 28, 28);
             else draw_avatar_placeholder(12, 4, 28, selected, settings.avatar_shape);
             title_x = 50;
         }
         const unsigned int header_text = RGBA8(240,247,255,255);
-        std::string heading = settings_open ? (proxy_open ? tr("proxy.title") : logs_open ? tr("logs.title") : tr("settings.title")) : tg.currentChatId() ? tg.currentChatTitle() : "VitaGram " VITAGRAM_VERSION;
+        std::string heading = settings_open ? (proxy_open ? tr("proxy.title") : logs_open ? tr("logs.title") : about_open ? tr("about.title") : encryption_open ? tr("vault.title") : tr("settings.title")) : tg.currentChatId() ? std::string(tg.currentChatTitle()) : "VitaGram " VITAGRAM_VERSION;
         std::string presence = settings_open ? "" : tg.currentUserStatus();
         // Separate title, centered presence/network status and right-aligned device status.
         constexpr float header_scale = 0.65f;
@@ -2927,15 +3617,65 @@ int main() {
                 draw_text(font, 42, 144, tr("picker.empty"), muted, 0.55f);
             if (!folder_picker.error.empty()) draw_text(font, 30, 484, folder_picker.error, ink, 0.55f);
             draw_text(font, 28, 528, tr("picker.footer"), ink, 0.6f);
+        } else if (settings_open && about_open) {
+            const auto& layout = about_layout(font);
+            about_offset = std::clamp(about_offset, 0, layout.maximum());
+            skin_frame(24, 71, 912, 424, separator, white);
+            vita2d_enable_clipping();
+            vita2d_set_clip_rectangle(32, 76, 928, 490);
+            for (const auto& line : layout.lines) {
+                const int y = 76 + line.y - about_offset;
+                if (y + 30 < 76 || y >= 490) continue;
+                const unsigned int color = line.heading ? accent : ink;
+                draw_text(font, 44, y + 24, line.text, color, line.scale);
+                if (line.bold) draw_text(font, 45, y + 24, line.text, color, line.scale);
+                if (line.heading && line.scale < 0.90f)
+                    vita2d_draw_rectangle(44, y + 33, 856, 1, separator);
+            }
+            for (int i = 0; i < 2; ++i) {
+                const int y = 76 + layout.link_y(i) - about_offset;
+                if (y + 160 < 76 || y >= 490) continue;
+                const std::string label = tr(i == 0 ? "about.project_link" : "about.author_link");
+                draw_about_link_icon(i, 44, y + 6, accent);
+                draw_text(font, 84, y + 27, label, accent, 0.68f);
+                const bool focused = about_link == i && layout.link_visible(i, about_offset);
+                if (focused) draw_text(font, 85, y + 27, label, accent, 0.68f);
+                const int width = rich_text_width(font, 0.68f, label.c_str());
+                vita2d_draw_rectangle(84, y + 32, width, focused ? 2 : 1, accent);
+                draw_text(font, 84, y + 54, i == 0 ? kAboutProjectUrl : kAboutAuthorUrl, muted, 0.50f);
+                if (i == 0) {
+                    const auto& qr = about_project_qr();
+                    if (qr.size) {
+                        const int module = 4, side = (qr.size + 8) * module;
+                        const int left = 900 - side, top = y;
+                        vita2d_draw_rectangle(left, top, side, side, RGBA8(255,255,255,255));
+                        for (int row = 0; row < qr.size; ++row)
+                            for (int col = 0; col < qr.size; ++col)
+                                if (qr.dark(col, row)) vita2d_draw_rectangle(left + (col + 4) * module, top + (row + 4) * module,
+                                                                         module, module, RGBA8(0,0,0,255));
+                    }
+                }
+            }
+            vita2d_disable_clipping();
+            if (layout.maximum() > 0) {
+                const float thumb = std::max(24.f, 414.f * 414.f / layout.height);
+                const float y = 76 + (414 - thumb) * about_offset / layout.maximum();
+                if (!ui_skin::nine(ui_skin::Slice::ScrollThumb, 928, y, 4, thumb))
+                    vita2d_draw_rectangle(928, y, 4, thumb, muted);
+            }
+            draw_text(font, 30, 511, fit_text(font, settings_error.empty() && about_chat_pending ? tg.updateNotice() : settings_error, 900, 0.45f), ink, 0.45f);
+            draw_text(font, 28, 536, fit_text(font, tr("about.footer"), 904, 0.48f), ink, 0.48f);
         } else if (settings_open && logs_open) {
             const char* names[diag_log::kCount] = {"logs.performance", "logs.gif", "logs.upload", "logs.video", "logs.audio", "logs.vault"};
             for (int i = 0; i < diag_log::kCount; ++i) {
                 skin_card(24, 104+i*36, 912, 32, i == settings_row, i == settings_row ? selected : white, true);
-                // The status hugs the right edge; the description is cut so it never runs into it.
+                // The status hugs the right edge; the description scrolls within its own column.
                 const std::string status = fit_text(font, (settings.log_mask >> i) & 1u ? tr("common.enabled") : tr("common.disabled"), 300, 0.58f);
                 const int status_width = rich_text_width(font, 0.58f, status.c_str());
                 draw_text(font, 920 - status_width, 128+i*36, status, ink, 0.58f);
-                draw_text(font, 40, 128+i*36, fit_text(font, tr(names[i]), 920 - status_width - 16 - 40, 0.62f), ink, 0.62f);
+                draw_settings_text(font, settings_label_marquee, 200 + i, i == settings_row,
+                    40, 104+i*36, 920 - status_width - 16 - 40, 32, 128+i*36,
+                    tr(names[i]), ink, 0.62f, now);
             }
             draw_text(font, 30, 462, fit_text(font, tr("logs.note"), 900, 0.5f), muted, 0.5f);
             draw_text(font, 30, 484, settings_error, ink, 0.5f);
@@ -2961,10 +3701,10 @@ int main() {
                     case PROXY_ROW_USE: return proxy_draft.proxy_enabled ? tr("common.yes") : tr("common.no");
                     case PROXY_ROW_TYPE: return tr(proxy_draft.proxy_type == 1 ? "proxy.type.socks5" :
                         proxy_draft.proxy_type == 2 ? "proxy.type.https" : "proxy.type.mtproto");
-                    case PROXY_ROW_SERVER: return clip(proxy_draft.proxy_server, 30);
+                    case PROXY_ROW_SERVER: return proxy_draft.proxy_server;
                     case PROXY_ROW_PORT: return std::to_string(proxy_draft.proxy_port);
                     case PROXY_ROW_SECRET: return proxy_draft.proxy_secret.empty() ? tr("common.not_set") : std::string("********");
-                    case PROXY_ROW_USER: return proxy_draft.proxy_username.empty() ? tr("common.not_set") : clip(proxy_draft.proxy_username, 30);
+                    case PROXY_ROW_USER: return proxy_draft.proxy_username.empty() ? tr("common.not_set") : proxy_draft.proxy_username;
                     case PROXY_ROW_PASS: return proxy_draft.proxy_password.empty() ? tr("common.not_set") : std::string("********");
                     case PROXY_ROW_SCAN: return tr("vnr.rear_camera");
                     default: return "";
@@ -2972,8 +3712,10 @@ int main() {
             };
             for (int i = 0; i < (int)rows.size(); ++i) {
                 skin_card(24, 104+i*36, 912, 32, i == settings_row, i == settings_row ? selected : white, true);
-                draw_text(font, 40, 128+i*36, label(rows[i]), ink, 0.62f);
-                draw_text(font, 520, 128+i*36, value(rows[i]), ink, 0.58f);
+                draw_settings_text(font, settings_label_marquee, 100 + rows[i], i == settings_row,
+                    40, 104+i*36, 460, 32, 128+i*36, label(rows[i]), ink, 0.62f, now);
+                draw_settings_text(font, settings_value_marquee, 100 + rows[i], i == settings_row,
+                    520, 104+i*36, 400, 32, 128+i*36, value(rows[i]), ink, 0.58f, now);
             }
             // SOCKS5 and HTTP CONNECT carry the proxy login in clear text (Telegram data stays MTProto-encrypted).
             const bool cleartext_login = proxy_draft.proxy_type != 0 &&
@@ -2986,12 +3728,13 @@ int main() {
             const std::string labels[] = {tr("settings.language"), tr("settings.retention"), tr("settings.cache_size"), tr("settings.theme"),
                 tr("settings.font_size"), tr("settings.show_threads"), tr("settings.batch"), tr("settings.download_dir"), tr("proxy.title"),
                 tr("settings.auto_update"), tr("settings.update"), tr("vault.settings.encryption"), tr("vault.settings.change_key"), tr("vault.settings.check"),
-                tr("settings.gyroscope"), tr("settings.opacity"), tr("settings.avatar_shape"), tr("settings.show_archive"), tr("settings.logs"), tr("settings.logout")};
+                tr("vault.settings.auto_lock"), tr("vault.settings.lock_on_leave"),
+                tr("settings.gyroscope"), tr("settings.opacity"), tr("settings.avatar_shape"), tr("settings.show_archive"), tr("settings.logs"), tr("about.title"), tr("settings.recording_shortcuts"), tr("settings.spoiler_reset"), tr("settings.logout")};
             std::string values[] = {
                 language_label(),
                 settings.retention == 4 ? tr("settings.always") : tr("settings.days", {std::to_string(AppSettings::days(settings.retention))}),
                 settings.capacity == 5 ? tr("settings.no_limit") : tr("unit.mb", {std::to_string(AppSettings::megabytes(settings.capacity))}),
-                dark ? tr("settings.theme_dark") : tr("settings.theme_light"), std::to_string(70+settings.font*10) + "%",
+                settings.theme == 2 ? tr("settings.theme_vhbb") : dark ? tr("settings.theme_dark") : tr("settings.theme_light"), std::to_string(70+settings.font*10) + "%",
                 settings.show_threads ? tr("common.yes") : tr("common.no"), std::to_string(settings.request_batch_size),
                 settings.download_dir, settings.proxy_enabled ? tr("common.enabled") : tr("common.disabled"),
                 !settings.check_updates ? tr("common.no") : settings.proxy_enabled ? tr("settings.auto_update_proxy") : tr("common.yes"),
@@ -3001,20 +3744,31 @@ int main() {
                     vault::enabled() ? tr("common.enabled") : tr("common.disabled"),
                 vault::enabled() && !vault::disabling() ? "" : "-",
                 vault::enabled() && !vault::disabling() ? "" : "-",
+                !vault::enabled() || vault::disabling() ? "-" : settings.auto_lock == 0 ? tr("common.no") :
+                    tr("unit.min", {std::to_string(AppSettings::lockMinutes(settings.auto_lock))}),
+                !vault::enabled() || vault::disabling() ? "-" : settings.lock_on_leave ? tr("common.yes") : tr("common.no"),
                 settings.gyroscope_enabled ? tr("common.enabled") : tr("common.disabled"),
                 std::to_string(settings.opacity) + "%", settings.avatar_shape == 1 ? tr("settings.avatar_round") : tr("settings.avatar_square"),
                 settings.show_archive ? tr("common.yes") : tr("common.no"),
                 settings.log_mask ? std::to_string(__builtin_popcount(settings.log_mask)) + "/" + std::to_string(diag_log::kCount) : tr("common.disabled"),
-                confirm_logout ? tr("settings.confirm_logout") : ""};
+                "", settings.recording_shortcuts ? tr("common.enabled") : tr("common.disabled"),
+                tr(settings.spoiler_reset == 1 ? "settings.spoiler_chat" : settings.spoiler_reset == 2 ? "settings.spoiler_app" :
+                    settings.spoiler_reset == 3 ? "settings.spoiler_both" : "common.disabled"), confirm_logout ? tr("settings.confirm_logout") : ""};
             {
+                settings_scroll.configure(encryption_open ? kEncryptionRows : kSettingsRows, kSettingsRowHeight, kSettingsViewport);
                 // Same card geometry, opacity, focus bar and scrolling as the chat list.
                 vita2d_enable_clipping();
                 vita2d_set_clip_rectangle(20, kSettingsTop, 940, kSettingsTop + kSettingsViewport);
                 int row_y = kSettingsTop + settings_scroll.first() * kSettingsRowHeight - settings_scroll.offset();
                 for (int row = settings_scroll.first(); row < settings_scroll.end(); ++row, row_y += kSettingsRowHeight) {
                     skin_card(20, row_y + 1, 920, kSettingsRowHeight - 2, row == settings_row, row == settings_row ? selected : white);
-                    draw_text(font, 38, row_y + 29, fit_text(font, labels[row], 460, 0.65f), ink, 0.65f);
-                    draw_text(font, 520, row_y + 29, fit_text(font, values[row], 400, 0.6f), ink, 0.6f);
+                    const int source_row = encryption_open ? kEncryptionRow + row :
+                        row > kEncryptionRow ? row + kEncryptionRows - 1 : row;
+                    const std::string label = !encryption_open && row == kEncryptionRow ? tr("vault.title") : labels[source_row];
+                    draw_settings_text(font, settings_label_marquee, source_row, row == settings_row,
+                        38, row_y + 1, 460, kSettingsRowHeight - 2, row_y + 29, label, ink, 0.65f, now);
+                    draw_settings_text(font, settings_value_marquee, source_row, row == settings_row,
+                        520, row_y + 1, 400, kSettingsRowHeight - 2, row_y + 29, values[source_row], ink, 0.6f, now);
                 }
                 vita2d_disable_clipping();
                 if (settings_scroll.maximum() > 0) {
@@ -3024,7 +3778,9 @@ int main() {
                 }
             }
             { const Updater::Snapshot u = updater.snapshot();
-              draw_text(font, 30, 484, fit_text(font, !settings_error.empty() ? settings_error : u.state == Updater::State::Failed ? u.detail : std::string(), 900, 0.5f), ink, 0.5f); }
+              draw_text(font, 30, 500, fit_text(font, !settings_error.empty() ? settings_error : u.state == Updater::State::Failed ?
+                  ((u.error == Updater::Error::Network || u.error == Updater::Error::NoRelease) ?
+                      tr("update.err.github_detail", {u.detail}) : u.detail) : std::string(), 900, 0.5f), ink, 0.5f); }
             draw_text(font, 28, 528, tr("settings.footer"), ink, 0.6f);
         } else if (!net_ok) {
             draw_text(font, 30, 115, tr("net.init_failed"), ink, 0.85f);
@@ -3037,7 +3793,7 @@ int main() {
         // Settings own the content area and footer; never draw a second screen over them.
         draw_header.finish();
         performance::SlowScope draw_chat(performance::SlowPhase::Ui,"draw_chat");
-        if (!settings_open && !stickers_open && !gifs_open && !tg.topicsOpen()) {
+        if (!settings_open && !recorder.active() && !stickers_open && !gifs_open && !tg.topicsOpen()) {
         if (tg.currentChatId() != 0) {
             const auto& msgs = tg.messages();
             if (video_fullscreen && message_index >= 0 && message_index < (int)msgs.size()) {
@@ -3048,9 +3804,17 @@ int main() {
                     float w = vita2d_texture_get_width(picture), h = vita2d_texture_get_height(picture);
                     float scale = std::min(960.0f/w, 544.0f/h);
                     draw_texture_fit(picture, (960-w*scale)/2, (544-h*scale)/2, 960, 544);
-                } else draw_text(font, 360, 275, tr("video.loading"), ink, 0.7f);
+                }
                 const MessageItem& fullscreen_message = msgs[message_index];
-                if (media_ui_alpha > 0.01f && fullscreen_message.video && !fullscreen_message.animation_path.empty()) {
+                const MediaLoadView load = video_load_view(fullscreen_message, animation.readyForPlayback());
+                if (fullscreen_message.animation_error.empty() && (load.downloading || (load.waiting && !animation.failedToOpen()))) {
+                    const float y = load.controls ? 400.f : 240.f;
+                    draw_media_loading(font, 180, y, 600, load, now, accent, ink, muted);
+                }
+                const std::string error = !fullscreen_message.animation_error.empty() ? fullscreen_message.animation_error :
+                    animation.failedToOpen() ? animation.status() : "";
+                if (!error.empty()) draw_text(font, 60, 336, fit_text(font, error, 840, 0.65f), ink, 0.65f);
+                if (media_ui_alpha > 0.01f && fullscreen_message.video && load.controls) {
                     const VideoProgress progress = video_progress(fullscreen_message);
                     const ControlBar bar = draw_control_bar(font, 60, 544 - 68, 840, 44, progress.position_us, progress.duration_us,
                         animation.playing(), progress.seekable, progress.scrubbing ? progress.fraction : -1.f, accent, ink, muted, media_ui_alpha);
@@ -3125,7 +3889,12 @@ int main() {
                         if (texture) {
                             float w = vita2d_texture_get_width(texture), h = vita2d_texture_get_height(texture);
                             float scale = std::min(tile.width/w, 170.0f/h);
-                            draw_texture_fit(texture, tile.x+(tile.width-w*scale)/2, photo_y+(170-h*scale)/2, tile.width, 170);
+                            const float px = tile.x+(tile.width-w*scale)/2, py = photo_y+(170-h*scale)/2;
+                            draw_texture_fit(texture, px, py, tile.width, 170);
+                            if (spoiler_locked(message)) draw_spoiler_particles(px, py, w*scale, h*scale, now, message.id+tile.index);
+                        } else if (spoiler_locked(message)) {
+                            vita2d_draw_rectangle(tile.x, photo_y, tile.width, 170, RGBA8(40,48,58,255));
+                            draw_spoiler_particles(tile.x, photo_y, tile.width, 170, now, message.id+tile.index);
                         } else draw_text(font, tile.x+12, photo_y+90, "…", muted, 0.65f);
                         if (tile.index == photo_index) ui_skin::nine(ui_skin::Slice::FocusRing, tile.x-2, photo_y-2, tile.width+4, 174);
                     }
@@ -3146,11 +3915,21 @@ int main() {
                     if (!decode_cooldown) tg.ensureMessageMedia((size_t)message_index);
                     int media_y = post_media_top-post_text_scroll;
                     const int media_h = post_media_height_for(message);
-                    const bool has_video_file = message.video && !message.animation_path.empty();
+                    const bool hidden_media = spoiler_locked(message);
+                    const MediaLoadView load = video_load_view(message, !hidden_media && animation.readyForPlayback());
+                    const bool has_video_file = !hidden_media && message.video && load.controls && message.animation_error.empty();
+                    const bool media_available = message.animation_file_id > 0 || !message.animation_path.empty();
+                    const bool load_card = !hidden_media && message.video && media_available && message.animation_error.empty() &&
+                        (load.downloading || (load.waiting && !animation.failedToOpen() && (!unsupported_video || prepare_video)));
                     const VideoProgress video_state = video_progress(message);
                     if (media_y+media_h > 38 && media_y < 544) {
-                        vita2d_texture* picture = message.animation ? animation.texture() : nullptr;
-                        if (!picture && !message.video_note) picture = textures.get(message.media_path);
+                        vita2d_texture* picture = message.animation && !hidden_media ? animation.texture() : nullptr;
+                        if (!picture && !message.video_note) picture = textures.get(message.media_path, hidden_media ? kMaskBlur : kMaskNone);
+                        if (!picture) picture = textures.get(message.media_fallback, hidden_media ? kMaskBlur : kMaskNone);
+                        if (!picture && hidden_media) {
+                            vita2d_draw_rectangle(180, media_y, 600, media_h, RGBA8(40,48,58,255));
+                            draw_spoiler_particles(180, media_y, 600, media_h, now, message.id);
+                        }
                         if (picture) {
                             float w = vita2d_texture_get_width(picture), h = vita2d_texture_get_height(picture);
                             float scale = std::min(900.0f/w, (float)media_h/h);
@@ -3176,13 +3955,23 @@ int main() {
                                 if (!message.sticker)
                                     ui_skin::nine(ui_skin::Slice::MediaFrame, picture_x-4, picture_y-4, w*scale+8, h*scale+8);
                                 draw_texture_fit(picture, picture_x, picture_y, 900, media_h);
+                                if (hidden_media) draw_spoiler_particles(picture_x, picture_y, w*scale, h*scale, now, message.id);
                                 // Video corners follow the frame's radius (frame radius 9 minus its 4 px padding).
                                 if (!message.sticker) ui_skin::corners(picture_x, picture_y, w*scale, h*scale, 6);
                             }
                         }
                     }
+                    if (load_card && media_y + media_h > 71 && media_y < 500) {
+                        const float y = load.controls ? media_y + media_h + 48 : media_y + (media_h - 64) / 2.f;
+                        draw_media_loading(font, load.controls ? 30 : 180, y, load.controls ? 900 : 600,
+                            load, now, accent, ink, muted, prepare_video ? animation.status() : "");
+                    }
                     std::string state = message.animation_error;
-                    if (state.empty() && message.animation_path.empty() && message.animation) {
+                    if (state.empty() && message.video) {
+                        if (!media_available) state = tr("media.unavailable");
+                        else if (unsupported_video && !prepare_video && animation.preparationRequired()) state = tr("video.unsupported_hint");
+                        else if (!load_card || animation.failedToOpen()) state = animation.status();
+                    } else if (state.empty() && message.animation_path.empty() && !animation_stream && message.animation) {
                         if (message.animation_file_id <= 0) state = tr("media.unavailable");
                         else if (message.animation_size > 0)
                             state = tr("media.loading", {std::to_string(std::min<int64_t>(99,
@@ -3192,7 +3981,8 @@ int main() {
                         message.video && !message.video_note && message.video_width > 0 && message.video_height > 0 &&
                         !VideoQuality::hardwareRasterSupported(message.video_width, message.video_height)
                         ? (animation.preparationRequired() ? tr("video.unsupported_hint") : animation.status()) : animation.status();
-                    const bool video_bar = message.video && !message.animation_path.empty();
+                    if (hidden_media) state = tr("spoiler.footer");
+                    const bool video_bar = has_video_file;
                     if (video_bar) {
                         // Controls are in the START menu; the player no longer prints its play/pause hint.
                         if (state == tr("anim.play_pause") || state == tr("anim.video_playing_hint") || state == tr("anim.play") || state == tr("anim.video_playing"))
@@ -3209,7 +3999,8 @@ int main() {
                             if (video_state.seekable) scrub_bar = bar.track;
                         }
                     }
-                    if (!state.empty()) draw_text(font, 30, media_y+media_h+(video_bar ? (message.video_note ? 22 + scaled_px(14) : 60) : 23),
+                    const int state_offset = video_bar ? (message.video_note ? 22 + scaled_px(14) : 60) : 23;
+                    if (!state.empty()) draw_text(font, 30, media_y + media_h + state_offset + (load_card && load.controls && !message.video_note ? 72 : 0),
                         fit_text(font, state, 900, 0.55f), muted, 0.55f);
                 }
                 int text_y = post_text_top(message)-post_text_scroll;
@@ -3262,18 +4053,23 @@ int main() {
                     float y = 90.0f + row * (cell_h + 8.0f);
                     vita2d_draw_rectangle(x - 4, y - 4, (float)cell_w + 8, (float)cell_h + 8,
                         i == photo_index ? accent : white);
-                    draw_texture_fit(textures.get(message.photos[i].thumbnail_path, spoiler_locked(message) ? kMaskBlur : kMaskNone), x, y, (float)cell_w, (float)cell_h);
+                    auto* image = textures.get(message.photos[i].thumbnail_path, spoiler_locked(message) ? kMaskBlur : kMaskNone);
+                    draw_texture_fit(image, x, y, (float)cell_w, (float)cell_h);
+                    if (image && spoiler_locked(message)) {
+                        const float scale = std::min(float(cell_w)/vita2d_texture_get_width(image), float(cell_h)/vita2d_texture_get_height(image));
+                        draw_spoiler_particles(x, y, vita2d_texture_get_width(image)*scale, vita2d_texture_get_height(image)*scale, now, message.id+i);
+                    }
                 }
                 int text_y = message.voice ? 346 + post_quote_extra(message) : (count == 0 ? 110 : (count > 2 ? 470 : 330));
                 if (message.voice) {
                     skin_box(ui_skin::Slice::Panel, 160, 90, 640, 210, selected);
                     std::string state = message.voice_error;
-                    if (state.empty() && message.voice_path.empty()) {
+                    if (state.empty() && message.voice_path.empty() && !voice_stream) {
                         if (!message.voice_file_id) state = tr("audio.unavailable");
                         else if (message.voice_size > 0) state = tr("audio.loading", {std::to_string(std::min<int64_t>(99, message.voice_downloaded * 100 / message.voice_size)) + "%"});
                         else state = tr("audio.loading", {tr("unit.kib", {std::to_string(message.voice_downloaded / 1024)})});
                     } else if (state.empty()) state = voice.status();
-                    draw_text(font, 184, 130, fit_text(font, message.audio ? message.audio_title : tr("audio.voice_message"), 590, 0.8f), ink, 0.8f);
+                    draw_text(font, 184, 130, fit_text(font, message.audio ? message.audio_title : i18n::Text(tr("audio.voice_message")), 590, 0.8f), ink, 0.8f);
                     if (message.audio) draw_text(font, 184, 157, fit_text(font, message.audio_performer, 590, 0.6f), muted, 0.6f);
                     draw_text(font, 184, 190, fit_text(font, state, 590, 0.7f), accent, 0.7f);
                     const int duration = message.voice_duration;
@@ -3352,9 +4148,9 @@ int main() {
                     std::string sender = show_sender ? fit_text(font, tg.senderName(m), 654, 0.55f) : "";
                     bool selected_message = i == message_index;
                     std::string preview_path = m.document ? "" : !m.photos.empty() ? m.photos.front().thumbnail_path : m.media_path;
-                    const bool spoiler_hidden = !m.photos.empty() && spoiler_locked(m);
-                    vita2d_texture* media = textures.get(preview_path, m.video_note ? kMaskRoundThumb : spoiler_hidden ? kMaskBlur : kMaskNone);
-                    if (!media) media = textures.get(m.media_fallback);
+                    const bool spoiler_hidden = spoiler_locked(m);
+                    vita2d_texture* media = textures.get(preview_path, spoiler_hidden ? kMaskBlur : m.video_note ? kMaskRoundThumb : kMaskNone);
+                    if (!media) media = textures.get(m.media_fallback, spoiler_hidden ? kMaskBlur : kMaskNone);
                     bool has_media = !m.photos.empty() || m.media_file_id > 0 || m.animation;
                     int media_width = has_media ? 108 : 0;
                     int max_text_width = 680 - media_width;
@@ -3400,7 +4196,8 @@ int main() {
                         unsigned int sender_color = colors[static_cast<uint64_t>(m.sender_id)%4];
                         if (dark) sender_color = (sender_color & 0xFF000000u) | ((sender_color & 0x00FEFEFEu) >> 1) | 0x00808080u;
                         vita2d_texture* sender_avatar = textures.get(tg.senderAvatar(m), kMaskAvatar);
-                        if (sender_avatar) draw_texture_fit(sender_avatar, bubble_x+14, y-3, 18, 18);
+                        if (tg.senderIsDeleted(m)) draw_deleted_avatar(bubble_x+14, y-3, 18, settings.avatar_shape);
+                        else if (sender_avatar) draw_texture_fit(sender_avatar, bubble_x+14, y-3, 18, 18);
                         else draw_avatar_placeholder(bubble_x+14, y-3, 18, sender_color, settings.avatar_shape);
                         draw_text(font, bubble_x+40, y+13, sender, sender_color, 0.55f);
                         y += std::max(20, scaled_px(20));
@@ -3411,6 +4208,7 @@ int main() {
                     }
                     if (m.reply_to_id) {   // between the name and the new text, spaced like the rest of the card
                         draw_reply_quote(font, (float)bubble_x + 10, (float)y - 2, (float)bubble_width - 20, m, dark, ink, accent);
+                        reply_rects.push_back({m.id, {true, (float)bubble_x + 10, (float)y - 2, (float)bubble_width - 20, (float)quote_height()}});
                         y += quote_height() + 4;
                     }
                     // Small tail points toward the sender's side.
@@ -3421,12 +4219,17 @@ int main() {
                         else {
                             draw_texture_fit(media, (float)bubble_x+10, (float)y+4, 96, 56);
                             if (spoiler_hidden) {
+                                draw_spoiler_particles(bubble_x+10, y+4, 96, 56, now, m.id);
                                 const std::string hidden = tr("spoiler.hidden");
                                 const int label_width = rich_text_width(font, 0.55f, hidden.c_str());
                                 draw_text(font, bubble_x + 58 - label_width / 2 + 1, y + 37, hidden, RGBA8(0, 0, 0, 160), 0.55f);
                                 draw_text(font, bubble_x + 58 - label_width / 2, y + 36, hidden, RGBA8(255, 255, 255, 255), 0.55f);
                             }
                         }
+                    }
+                    else if (spoiler_hidden && has_media) {
+                        vita2d_draw_rectangle(bubble_x+10, y+4, 96, 56, RGBA8(40,48,58,255));
+                        draw_spoiler_particles(bubble_x+10, y+4, 96, 56, now, m.id);
                     }
                     else if (has_media) draw_text(font, bubble_x+12, y+32, m.video_note ? tr("chat.thumb.round") : m.video ? tr("chat.thumb.video") : m.animation ? "GIF" : "...", muted, 0.68f);
                     if (m.voice && !m.audio) {
@@ -3489,9 +4292,10 @@ int main() {
                 const float y = (float)(kSearchTop + (i - search_first) * kSearchRow);
                 skin_row(20, y, 920, kSearchRow - 4, i == search_index, i == search_index ? selected : white);
                 vita2d_texture* avatar = textures.get(results[i].avatar_path, kMaskAvatar);
-                if (avatar) draw_texture_fit(avatar, 32, y + 4, 32, 32);
+                if (tg.chatIsDeleted(results[i])) draw_deleted_avatar(32, y + 4, 32, settings.avatar_shape);
+                else if (avatar) draw_texture_fit(avatar, 32, y + 4, 32, 32);
                 else draw_avatar_placeholder(32, y + 4, 32, RGBA8(126,176,211,255), settings.avatar_shape);
-                draw_text(font, 76, y + 27, fit_text(font, results[i].title, 640, 0.68f), ink, 0.68f);
+                draw_text(font, 76, y + 27, fit_text(font, tg.chatTitle(results[i]), 640, 0.68f), ink, 0.68f);
                 const char* kind = results[i].user_id ? "search.kind_user" : results[i].channel ? "search.kind_channel" :
                                    results[i].group ? "search.kind_group" : "search.kind_chat";
                 draw_text(font, 800, y + 26, fit_text(font, tr(kind), 126, 0.5f), muted, 0.5f);
@@ -3547,9 +4351,10 @@ int main() {
                 // The avatar and title are centred in the row, whatever height the layout gives it.
                 const float row_top = (float)(y - 23), row_inner = (float)(chat_row_height - 2);
                 const float avatar_size = std::min(42.f, row_inner - 6.f), avatar_x = 34 + (42.f - avatar_size) / 2, avatar_y = row_top + (row_inner - avatar_size) / 2;
-                if (avatar) draw_texture_fit(avatar, avatar_x, avatar_y, avatar_size, avatar_size);
+                if (tg.chatIsDeleted(chats[i])) draw_deleted_avatar(avatar_x, avatar_y, avatar_size, settings.avatar_shape);
+                else if (avatar) draw_texture_fit(avatar, avatar_x, avatar_y, avatar_size, avatar_size);
                 else draw_avatar_placeholder(avatar_x, avatar_y, avatar_size, RGBA8(126,176,211,255), settings.avatar_shape);
-                draw_text(font, 88, (int)(row_top + row_inner / 2) + 7, clip(chats[i].title, 70), ink, 0.72f);
+                draw_text(font, 88, (int)(row_top + row_inner / 2) + 7, clip(tg.chatTitle(chats[i]), 70), ink, 0.72f);
                 if (chats[i].unread_count > 0 || chats[i].marked_unread) {
                     // Equidistant from the top, bottom and right edges of the row.
                     const float radius = 6.0f, row_h = (float)(chat_row_height - 2);
@@ -3618,7 +4423,7 @@ int main() {
         draw_chat.finish();
 
         performance::SlowScope draw_overlays(performance::SlowPhase::Ui,"draw_overlays");
-        if (!settings_open && !stickers_open && !gifs_open && !tg.topicsOpen() && !photo_open && !video_fullscreen && tg.currentChatId()) {
+        if (!settings_open && !recorder.active() && !stickers_open && !gifs_open && !tg.topicsOpen() && !photo_open && !video_fullscreen && tg.currentChatId()) {
             // Status strip sits right under the header so it never covers media.
             skin_strip(selected);
             int progress = tg.historyPercent();
@@ -3626,26 +4431,13 @@ int main() {
             std::string thread_info = settings.show_threads ? " | " + cpu_scheduler::threadStatus() : "";
             const std::string loading = tr(tg.historyLoading() ? "history.block_loading" : "history.block_ready",
                 {std::to_string(progress)}) + thread_info;
-            std::string audio_status;
-            if (recorder.processing() && audio_context) {
-                audio_status = tr("audio.status", {recorder.status()});
-            } else if (recorder.recording() && audio_context) {
-                audio_status = recorder.peak() ? tr("audio.mic_active") : tr("audio.no_signal");
-            } else if (!tg.uploadStatus().empty()) {
-                audio_status = tg.uploadStatus();
-            } else if (!recorder_status.empty() && recorder_status != tr("rec.recording")) {
-                audio_status = tr("audio.status", {recorder_status});
-            }
-            std::string info = !tg.documentStatus().empty() ? tg.documentStatus() : !tg.transcriptionStatus().empty() ? tg.transcriptionStatus() :
+            const std::string audio_status = tg.uploadStatus();
+            std::string info = !update_notice.empty() ? update_notice : !tg.documentStatus().empty() ? tg.documentStatus() : !tg.transcriptionStatus().empty() ? tg.transcriptionStatus() :
                 !browser_status.empty() ? browser_status :
                 (!audio_status.empty() ? audio_status :
                 (tg.historyError().empty() ? loading : tr("history.error", {tg.historyError()})));
-            draw_text(font, 30, 58, fit_text(font, info, recorder.recording() ? 650 : 904, 0.48f), ink, 0.48f);
-            if (recorder.recording()) {
-                skin_bar(690, 45, 235, 8, recorder.peak() / 100.f, separator, accent);
-                vita2d_draw_rectangle(690, 54, 235, 3, muted);
-                vita2d_draw_rectangle(690, 54, 2.35f * recorder.level(), 3, accent);
-            }
+            draw_text(font, 30, 58, fit_text(font, info, 904, 0.48f), ink, 0.48f);
+
         }
         if (!settings_open && !tg.currentChatId() && !tg.uploadStatus().empty()) {
             skin_strip(selected);
@@ -3701,7 +4493,7 @@ int main() {
                     draw_text(font, 82, y+31, fit_text(font, packs[i].title, 820, 0.65f), ink, 0.65f);
                 }
             } else {
-                std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : tr("sticker.title");
+                std::string title = sticker_pack < (int)packs.size() ? packs[sticker_pack].title : i18n::Text(tr("sticker.title"));
                 draw_text(font, 30, 76, fit_text(font, title, 900, 0.8f), ink, 0.8f);
                 draw_text(font, 30, 112, fit_text(font, tg.stickerStatus(), 900, 0.6f), muted, 0.6f);
                 const auto& items = tg.stickers();
@@ -3760,7 +4552,39 @@ int main() {
             draw_text(font, 30, 528, fit_text(font, tr("gif.footer"), 860, 0.5f), ink, 0.5f);
         }
         draw_overlays.finish();
-        if (circle_recorder.active()) {
+        if (recorder.active()) {
+            const auto state = recorder.state();
+            skin_backdrop(0, 544, white);
+            draw_text(font, 28, 34, tr("upload.voice_message"), ink, 0.85f);
+            skin_frame(160, 110, 640, 280, separator, white);
+            const auto& levels = recorder.levels();
+            for (size_t i = 0; i < levels.size(); ++i) {
+                const float height = 4.f + levels[i] * 1.8f;
+                const float x = 197.f + i * 9.f, y = 250.f - height / 2;
+                const float radius = std::min(3.f, height / 2);
+                const unsigned int color = state == AudioRecordingState::Error ? muted : accent;
+                if (height > 2 * radius) vita2d_draw_rectangle(x - radius, y + radius, 2 * radius, height - 2 * radius, color);
+                vita2d_draw_fill_circle(x, y + radius, radius, color);
+                vita2d_draw_fill_circle(x, y + height - radius, radius, color);
+            }
+            const std::string timer = clock_text((int64_t)recorder.seconds() * 1000000);
+            draw_text(font, 480 - rich_text_width(font, 0.8f, timer.c_str()) / 2, 422, timer,
+                state == AudioRecordingState::Recording ? RGBA8(210,45,45,255) : ink, 0.8f);
+            if (state == AudioRecordingState::Encoding) skin_bar(240, 365, 480, 8, recorder.conversionPercent() / 100.f, separator, accent);
+            if (state == AudioRecordingState::Review && recorder.seconds() > 0)
+                skin_bar(240, 365, 480, 6, (float)recorder.previewSeconds() / recorder.seconds(), separator, accent);
+            const char* action = state == AudioRecordingState::Recording ? "vnr.action.stop" :
+                state == AudioRecordingState::Review ? "vnr.action.send" : state == AudioRecordingState::Error ? "vnr.action.retry" : "vnr.action.record";
+            skin_row(50, 444, 260, 42, state != AudioRecordingState::Encoding, selected);
+            skin_row(350, 444, 260, 42, false, white);
+            skin_row(650, 444, 260, 42, false, white);
+            draw_text(font, 66, 472, fit_text(font, tr(action), 228, 0.6f), state == AudioRecordingState::Encoding ? muted : ink, 0.6f);
+            draw_text(font, 366, 472, fit_text(font, tr("menu.rec_preview"), 228, 0.6f), state == AudioRecordingState::Review ? ink : muted, 0.6f);
+            draw_text(font, 666, 472, fit_text(font, tr("vnr.cancel"), 228, 0.6f), ink, 0.6f);
+            std::string status = audio_error.empty() ? recorder.status() : audio_error;
+            if (state == AudioRecordingState::Review && audio_error.empty() && !recorder.previewError().empty()) status = recorder.previewError();
+            draw_text(font, 28, 528, fit_text(font, status, 850, 0.55f), ink, 0.55f);
+        } else if (circle_recorder.active()) {
             using RecordingState = VideoNoteRecorder::State;
             auto state = circle_recorder.state();
             skin_backdrop(0, 544, white);
@@ -3780,10 +4604,10 @@ int main() {
             float t = chat_menu_open ? std::min(1.f, (float)(now - chat_menu_since) / 140000.f) : 0.f;
             const float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
             if (chat_menu_open) {
-                const auto items = chat_menu_items();
+                const auto& items = chat_menu_snapshot;
                 const int first = menu_first((int)items.size(), chat_menu_sel);
-                const int visible = std::min(11, (int)items.size());
-                const float h = (float)visible * kMenuRowHeight;
+                const int visible = std::min(kMenuMaxRows, (int)items.size());
+                const float h = (float)visible * kMenuRowHeight + 2 * kMenuPad;
                 const float dx = (1.f - e) * 36.f, dy = (1.f - e) * 30.f, y0 = kMenuBottom - h + dy;
                 const float rows_top = y0 + kMenuPad;
                 // The menu PNG has a 4 px transparent margin around its body; fade it with the same easing.
@@ -3795,9 +4619,9 @@ int main() {
                 }
                 chat_menu_sel = std::max(0, std::min(chat_menu_sel, (int)items.size() - 1));
                 for (int i = first; i < first + visible; ++i) {
-                    if (i == chat_menu_sel && !(menu_skin && ui_skin::nine(ui_skin::Slice::MenuItemFocus, kMenuX + 4 + dx,
-                            rows_top + (i - first) * kMenuRowHeight, kMenuWidth - 8, kMenuFocusHeight, fade)))
-                        glass_panel(kMenuX + 4 + dx, rows_top + (i - first) * kMenuRowHeight, kMenuWidth - 8, kMenuFocusHeight,
+                    if (i == chat_menu_sel && !(menu_skin && ui_skin::nine(ui_skin::Slice::MenuItemFocus, kMenuX + kMenuPad + dx,
+                            rows_top + (i - first) * kMenuRowHeight + 2, kMenuWidth - 2 * kMenuPad, kMenuFocusHeight, fade)))
+                        glass_panel(kMenuX + kMenuPad + dx, rows_top + (i - first) * kMenuRowHeight + 2, kMenuWidth - 2 * kMenuPad, kMenuFocusHeight,
                             scale_alpha(RGBA8(255, 255, 255, 62), e), scale_alpha(RGBA8(255, 255, 255, 26), e), 7);
                     if (i && !menu_skin) vita2d_draw_rectangle(kMenuX + 8 + dx, rows_top + (i - first) * kMenuRowHeight - kMenuPad, kMenuWidth - 16, 1, scale_alpha(RGBA8(255, 255, 255, 36), e));
                     const std::string label = tr(items[i].label);
@@ -3824,6 +4648,18 @@ int main() {
             if (upload_picker.stage == UploadPicker::Stage::Menu && previous_stage != UploadPicker::Stage::Menu) attach_menu_since = now;
             previous_stage = upload_picker.stage;
         }
+        if (chat_ui_visible() && tg.currentChatId() && post_open && !photo_open && !circle_recorder.active() && !recorder.active())
+            draw_attach_button(dark);
+        if (chat_ui_visible() && tg.ready() && post_open && !photo_open && !video_fullscreen &&
+            !stickers_open && !gifs_open && !reactions_open && !upload_picker.active() && !chat_menu_open && !chat_menu_waiting &&
+            !circle_recorder.active() && !recorder.active() && message_index >= 0 && message_index < (int)tg.messages().size() &&
+            tg.canDeleteMessage(tg.messages()[message_index].id)) {
+            skin_box(ui_skin::Slice::DateChip, 766, 68, 168, 28, selected, true);
+            ui_skin::icon(ui_skin::Icon::Trash, 773, 72, 20);
+            draw_text(font, 799, 87, fit_text(font, tr("menu.delete_message"), 128, 0.46f), ink, 0.46f);
+            delete_hit = {true, 766, 68, 168, 28};
+            delete_hit_message = tg.messages()[message_index].id;
+        }
         if (upload_picker.active()) {
             using Stage = UploadPicker::Stage;
             const char* kind_key[] = {"upload.image", "upload.video", "upload.file", "upload.video_note", "upload.voice_message"};
@@ -3833,16 +4669,24 @@ int main() {
                 const float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
                 const float dy = (1.f - e) * 30.f, dx = -(1.f - e) * 36.f; // grows out of the circle
                 const unsigned int fade = RGBA8(255, 255, 255, (unsigned int)(255.f * e));
-                const bool menu_skin = ui_skin::nine(ui_skin::Slice::Menu, 36 + dx, 282 + dy, 238, 208, fade);
+                const auto items = attach_menu_items();
+                const int panel_height = (int)items.size() * attach_menu_row + 2 * kMenuPad;
+                const int panel_top = attach_menu_bottom - panel_height, top = panel_top + kMenuPad;
+                upload_picker.selected = std::max(0, std::min(upload_picker.selected, (int)items.size()-1));
+                const bool menu_skin = ui_skin::nine(ui_skin::Slice::Menu, 36 + dx, panel_top - 4 + dy, 308, panel_height + 8, fade);
                 if (!menu_skin) {
-                    glass_panel(40 + dx, 286 + dy, 230, 200, scale_alpha(RGBA8(52, 58, 68, 232), e), scale_alpha(RGBA8(20, 25, 33, 238), e));
-                    vita2d_draw_rectangle(50 + dx, 286 + dy, 210, 1, scale_alpha(RGBA8(255, 255, 255, 90), e));
+                    glass_panel(40 + dx, panel_top + dy, 300, panel_height, scale_alpha(RGBA8(52, 58, 68, 232), e), scale_alpha(RGBA8(20, 25, 33, 238), e));
+                    vita2d_draw_rectangle(50 + dx, panel_top + dy, 280, 1, scale_alpha(RGBA8(255, 255, 255, 90), e));
                 }
-                for (int i = 0; i < 5; ++i) {
-                    if (i == upload_picker.selected && !(menu_skin && ui_skin::nine(ui_skin::Slice::MenuItemFocus, 44 + dx, 290 + i * 40 + dy, 222, 36, fade)))
-                        glass_panel(44 + dx, 290 + i * 40 + dy, 222, 36, scale_alpha(RGBA8(255, 255, 255, 62), e), scale_alpha(RGBA8(255, 255, 255, 26), e), 7);
-                    if (i && !menu_skin) vita2d_draw_rectangle(48 + dx, 286 + i * 40 + dy, 214, 1, scale_alpha(RGBA8(255, 255, 255, 36), e));
-                    draw_text(font, 60 + dx, 316 + i * 40 + dy, tr(kind_key[i]), scale_alpha(menu_skin ? ink : RGBA8(240, 244, 249, 255), e), 0.7f);
+                for (int i = 0; i < (int)items.size(); ++i) {
+                    if (i == upload_picker.selected && !(menu_skin && ui_skin::nine(ui_skin::Slice::MenuItemFocus, 48 + dx, top + 2 + i * 40 + dy, 284, 36, fade)))
+                        glass_panel(48 + dx, top + 2 + i * 40 + dy, 284, 36, scale_alpha(RGBA8(255, 255, 255, 62), e), scale_alpha(RGBA8(255, 255, 255, 26), e), 7);
+                    if (i && !menu_skin) vita2d_draw_rectangle(48 + dx, top + i * 40 + dy, 284, 1, scale_alpha(RGBA8(255, 255, 255, 36), e));
+                    const bool icon = items[i].icon >= 0 && ui_skin::icon((ui_skin::Icon)items[i].icon,
+                        54 + dx, top + 10 + i * 40 + dy, 22, fade);
+                    draw_text(font, 60 + dx + (icon ? 28 : 0), top + 30 + i * 40 + dy,
+                        fit_text(font, tr(items[i].label), icon ? 246 : 274, 0.62f),
+                        scale_alpha(menu_skin ? ink : RGBA8(240, 244, 249, 255), e), 0.62f);
                 }
                 draw_attach_button(dark, e);
             } else if (upload_picker.stage == Stage::Browse) {
@@ -3852,21 +4696,27 @@ int main() {
                 draw_text(font, 30, 68, fit_text(font, upload_picker.path.empty() ? tr("picker.drives") : upload_picker.path == UploadPicker::LatestView ? tr("upload.latest") : upload_picker.path, 900, 0.64f), ink, 0.64f);
                 draw_text(font, 32, 97, fit_text(font, tr(kind_key[(int)upload_picker.kind]) + "  |  " +
                     tr(upload_picker.show_hidden ? "upload.hidden_on" : "upload.hidden_off"), 900, 0.48f), muted, 0.48f);
-                skin_frame(24, 109, preview ? 616 : 912, 356, separator, white);
+                skin_frame(24, 109, list_w + 16, 356, separator, white);
                 const int first = (upload_picker.selected / 8) * 8;
                 for (int row = 0; row < 8 && first + row < (int)upload_picker.entries.size(); ++row) {
                     const auto& entry = upload_picker.entries[first + row];
                     if (first + row == upload_picker.selected) skin_row(32, 117 + row * 43, list_w, 40, true, selected, true);
-                    draw_text(font, 42, 144 + row * 43, fit_text(font, !entry.label.empty() ? entry.label : entry.dir ? entry.name + "/" : entry.name, list_w - (entry.date.empty() ? 30 : 220), 0.65f), ink, 0.65f);
-                    if (!entry.date.empty()) draw_text(font, 32 + list_w - 190, 143 + row * 43, entry.date, muted, 0.45f);
-                    if (!entry.dir) draw_text(font, 32 + list_w - 72, 143 + row * 43, UploadPicker::formatSize(entry.size), muted, 0.45f);
+                    const std::string size = entry.dir ? "" : UploadPicker::formatSize(entry.size);
+                    const int size_width = rich_text_width(font, 0.45f, size.c_str());
+                    const int date_width = rich_text_width(font, 0.45f, entry.date.c_str());
+                    const int size_x = (int)(32 + list_w - 12) - size_width;
+                    const int date_x = size_x - (size.empty() ? 0 : 12) - date_width;
+                    const int name_right = !entry.date.empty() ? date_x - 12 : !size.empty() ? size_x - 12 : (int)(32 + list_w - 12);
+                    draw_text(font, 42, 144 + row * 43, fit_text(font, !entry.label.empty() ? entry.label : entry.dir ? entry.name + "/" : entry.name, std::max(0, name_right - 42), 0.65f), ink, 0.65f);
+                    if (!entry.date.empty()) draw_text(font, date_x, 143 + row * 43, entry.date, muted, 0.45f);
+                    if (!size.empty()) draw_text(font, size_x, 143 + row * 43, size, muted, 0.45f);
                 }
                 if (preview) {
-                    skin_frame(646, 109, 290, 356, separator, white);
+                    skin_frame(52 + list_w, 109, 884 - list_w, 356, separator, white);
                     if (upload_picker.selected >= 0 && upload_picker.selected < (int)upload_picker.entries.size() &&
                         !upload_picker.entries[upload_picker.selected].dir) {
                         const std::string full = upload_picker.fullPath(upload_picker.entries[upload_picker.selected]);
-                        draw_texture_fit(textures.get(full), 556, 117, 372, 340);
+                        draw_texture_fit(textures.get(full), 60 + list_w, 117, 868 - list_w, 340);
                     }
                 }
                 if (upload_picker.entries.empty() && upload_picker.error.empty())
@@ -3957,6 +4807,30 @@ int main() {
             draw_text(font, 125, 368, tr("unsupported.footer"), muted, 0.6f);
         }
 
+        if (seek_open) {
+            vita2d_draw_rectangle(0, 0, 960, 544, RGBA8(0,0,0,150));
+            skin_box(ui_skin::Slice::Dialog, 180, 92, 600, 360, white, true);
+            draw_text(font, 206, 130, fit_text(font, tr("menu.seek_time"), 548, 0.8f), ink, 0.8f);
+            const auto& message = tg.messages()[message_index];
+            draw_text(font, 206, 158, clock_text(seek_time.targetUs()) + " / " +
+                clock_text((int64_t)(seek_audio ? message.voice_duration : message.video_duration) * 1000000), muted, 0.6f);
+            const int64_t values[] = {seek_time.seconds / 3600, seek_time.seconds / 60 % 60, seek_time.seconds % 60};
+            for (int field = 0; field < 3; ++field) {
+                const int x = 260 + field * 150;
+                skin_row(x, 180, 128, 140, seek_time.field == field, seek_time.field == field ? selected : separator, true);
+                draw_text(font, x + 53, 212, "+", ink, 0.8f);
+                char number[24]; std::snprintf(number, sizeof(number), "%02lld", (long long)values[field]);
+                const int width = rich_text_width(font, 1.2f, number);
+                draw_text(font, x + (128 - width) / 2, 266, number, ink, 1.2f);
+                draw_text(font, x + 53, 308, "-", ink, 0.8f);
+                if (field) draw_text(font, x - 16, 266, ":", muted, 1.f);
+            }
+            draw_text(font, 206, 354, fit_text(font, tr("media.seek_hint"), 548, 0.52f), muted, 0.52f);
+            skin_row(220, 382, 230, 44, false, separator, true);
+            skin_row(510, 382, 230, 44, false, separator, true);
+            draw_text(font, 236, 411, fit_text(font, tr("media.seek_apply"), 198, 0.65f), ink, 0.65f);
+            draw_text(font, 526, 411, fit_text(font, tr("hint.back"), 198, 0.65f), ink, 0.65f);
+        }
         performance::SlowScope draw_end(performance::SlowPhase::Ui,"draw_end");
         vita2d_end_drawing();
         draw_end.finish();
@@ -3969,7 +4843,7 @@ int main() {
         { performance::Scope measurement(performance::Metric::GpuWait); vita2d_wait_rendering_done(); }
         if (kb.active()) vita2d_common_dialog_update();
         { performance::Scope measurement(performance::Metric::Swap); vita2d_swap_buffers(); }
-        if (!settings_open && !stickers_open && !gifs_open && !reactions_open && !tg.topicsOpen() && !circle_recorder.active() && !photo_open && !kb.active())
+        if (!settings_open && !stickers_open && !gifs_open && !reactions_open && !tg.topicsOpen() && !circle_recorder.active() && !recorder.active() && !photo_open && !kb.active())
             tg.messagesPresented();
         // CommonDialog submits through its own context; waiting only for the
         // vita2d context doesn't cover the keyboard's GPU work.
@@ -3984,6 +4858,7 @@ int main() {
     qr_scanner.stop();
     circle_playback.reset();
     circle_recorder.cancel();
+    recorder.cancel();
     animation.shutdown();
     voice.shutdown();
     textures.stop();

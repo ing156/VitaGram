@@ -118,7 +118,7 @@ void UploadPicker::addShortcuts() {
     // The screenshot folder is a system-managed directory that can be missing from the parent listing
     // and may fail the existence probe at times, so it is always offered; the others only if present.
     // Flat list of the newest screenshots from every game sub-folder.
-    entries.push_back({LatestView, true, 0, 0, "", tr("upload.latest")});
+    entries.push_back({LatestView, true, 0, 0, "", i18n::text("upload.latest")});
     entries.push_back({"ux0:picture/SCREENSHOT", true, 0});
     for (const char* dir : {"ux0:picture", "ux0:video", "ux0:music", "ux0:data", "ux0:downloads"})
         if (exists(dir)) entries.push_back({dir, true, 0});
@@ -189,7 +189,7 @@ void UploadPicker::reload() {
         for (const char* root : {"ux0:picture/SCREENSHOT", "uma0:picture/SCREENSHOT"}) scanLatest(root, root, 0);
         std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.modified > b.modified; });
         if (entries.size() > 300) entries.resize(300);
-        if (entries.empty()) info = tr("upload.dir_empty");
+        if (entries.empty()) info = i18n::text("upload.dir_empty");
         std::string first;
         for (size_t i = 0; i < entries.size() && i < 3; ++i) first += entries[i].full + " [" + entries[i].date + "] ";
         log("latest: " + std::to_string(entries.size()) + " files; newest: " + first);
@@ -199,7 +199,7 @@ void UploadPicker::reload() {
     SceUID dir = open_directory(path, trace);
     if (dir < 0) {
         char code[16]; std::snprintf(code, sizeof(code), " (0x%08X)", (unsigned)dir);
-        error = tr("picker.open_failed") + code;
+        error = i18n::text("picker.open_failed") + code;
         log("open failed: " + trace);
         return;
     }
@@ -227,7 +227,7 @@ void UploadPicker::reload() {
     }
     sceIoDclose(dir);
     if (entries.empty())
-        info = raw == 0 ? tr("upload.dir_empty") : tr("upload.filtered", {std::to_string(skipped_count), skipped});
+        info = raw == 0 ? i18n::text("upload.dir_empty") : i18n::text("upload.filtered", {std::to_string(skipped_count), skipped});
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
         // Newest first, folders and files mixed.
         if (a.modified != b.modified) return a.modified > b.modified;

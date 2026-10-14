@@ -219,7 +219,7 @@ void MediaCache::enqueueFiles(json_t* root, unsigned depth, std::vector<int32_t>
                 json_object_set(copy, field, json_object_get(root, field));
             auto* local_copy = json_object();
             json_object_set_new(local_copy, "path", json_string(str(local, "path")));
-            for (const char* field : {"is_downloading_completed", "is_downloading_active", "downloaded_size", "downloaded_prefix_size"})
+            for (const char* field : {"is_downloading_completed", "is_downloading_active", "download_offset", "downloaded_size", "downloaded_prefix_size"})
                 json_object_set(local_copy, field, json_object_get(local, field));
             json_object_set_new(copy, "local", local_copy);
             json_object_set_new(copy, "remote", json_pack("{s:s}", "unique_id", key));

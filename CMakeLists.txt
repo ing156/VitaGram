@@ -16,8 +16,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
-set(VITA_VERSION  "36.79")
-set(VITAGRAM_VERSION "0.36.79")
+# VitaSDK requires ##.##; the package version matches the final two source components.
+set(VITA_VERSION  "37.24")
+set(VITAGRAM_VERSION "0.37.24")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 option(VITAGRAM_PICKER_LOG "Write browsed folders and file names to ux0:data/vitagram/picker.log (plain text)" OFF)
@@ -161,12 +162,12 @@ endforeach()
 # Themed L/R glyphs use sprite rectangles from the UI pack manifest.
 set(PHOTO_UI_ROOT "${CMAKE_SOURCE_DIR}/assets/VitaGram_UI_Assets_v1")
 set(PHOTO_UI_VPK_FILES) # The shared manifest is packaged once by UI_VPK_FILES below.
-foreach(PHOTO_UI_THEME dark light)
+foreach(PHOTO_UI_THEME dark light vhbb)
   list(APPEND PHOTO_UI_VPK_FILES FILE "${PHOTO_UI_ROOT}/themes/${PHOTO_UI_THEME}/ps_buttons_atlas.png"
     ui/themes/${PHOTO_UI_THEME}/ps_buttons_atlas.png)
 endforeach()
 
-# PNG UI skin: ship both themes, but keep only the selected theme in RAM.
+# PNG UI skin: ship all themes, but keep only the selected theme in RAM.
 # PNG UI skin (assets/VitaGram_UI_Assets_v1): the manifest and only the textures src/ui_skin.cpp loads,
 # packaged as app0:ui/. The optional stronger wave wallpaper replaces the default one with
 # -DVITAGRAM_UI_ALT_BACKGROUND=ON.
@@ -180,8 +181,10 @@ if(VITAGRAM_UI_ALT_BACKGROUND)
 endif()
 set(UI_VPK_FILES)
 list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/manifest.json" ui/manifest.json)
+list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/themes/vhbb/NOTICE.txt" ui/themes/vhbb/NOTICE.txt
+    FILE "${UI_ASSET_ROOT}/themes/vhbb/LICENSE.txt" ui/themes/vhbb/LICENSE.txt)
 list(APPEND UI_VPK_FILES FILE "${CMAKE_SOURCE_DIR}/assets/ui_extra/corner_buttons.png" ui/corner_buttons.png)
-foreach(UI_THEME dark light)
+foreach(UI_THEME dark light vhbb)
   set(UI_THEME_DIR "${UI_ASSET_ROOT}/themes/${UI_THEME}")
   foreach(UI_SLICE ${UI_SLICES})
     list(APPEND UI_VPK_FILES FILE "${UI_THEME_DIR}/9slice/${UI_SLICE}.png" ui/themes/${UI_THEME}/9slice/${UI_SLICE}.png)
@@ -241,6 +244,7 @@ add_executable(${PROJECT_NAME}
   src/update_core.cpp
   src/https_client.cpp
   src/updater.cpp
+  src/package_promote.cpp
   src/vita_compat/vita_posix_stubs.cpp
 )
 # Decryption runs while video plays: keep the ChaCha20/Poly1305 loops fully optimized.
@@ -337,6 +341,18 @@ target_link_libraries(${PROJECT_NAME}
   ScePromoterUtil_stub
 )
 
+# VitaGram Updater: a separate tiny application that installs a staged update while VitaGram is not
+# running (the console cannot replace a running application); the scheme PSVitaAlive's self-updater uses.
+# Its own directory keeps vita_create_vpk()'s accumulated flags apart from the main package.
+add_subdirectory(src/updater_app)
+# head.bin of the updater app as the console's installer wrote it (ux0:app/VGUPDATE1/sce_sys/package/head.bin
+# after installing vitagram-updater.vpk once with VitaShell). Without it the installer falls back to
+# VitaGram's own head.bin, whose content id does not match the updater's title id.
+set(UPDATER_HEAD_FILES)
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/updater-head.bin")
+  list(APPEND UPDATER_HEAD_FILES FILE "${CMAKE_SOURCE_DIR}/assets/updater-head.bin" updater/head.bin)
+endif()
+
 vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
@@ -344,6 +360,8 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE external/minih264/LICENSE assets/minih264-LICENSE.txt
   FILE external/quirc/LICENSE assets/quirc-LICENSE.txt
   FILE assets/icon0.png sce_sys/icon0.png
+  FILE ${CMAKE_BINARY_DIR}/src/updater_app/vitagram-updater.vpk updater/vitagram-updater.vpk
+  ${UPDATER_HEAD_FILES}
   FILE assets/cacert.pem certs/cacert.pem
   FILE assets/controller-icons/triangle.png assets/controller-icons/triangle.png
   FILE assets/controller-icons/square.png assets/controller-icons/square.png
@@ -368,6 +386,11 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE assets/NotoSansSymbols2-Regular.ttf assets/NotoSansSymbols2-Regular.ttf
   FILE assets/NotoSansSymbols2-LICENSE.txt assets/NotoSansSymbols2-LICENSE.txt
   FILE ${ANIMATION_FFMPEG_ROOT}/share/COPYING.LGPLv2.1 assets/FFmpeg-LICENSE.txt
+  FILE LICENSE assets/VitaGram-LICENSE.txt
+  FILE external/tdlib-upstream/LICENSE_1_0.txt assets/TDLib-LICENSE.txt
+  FILE external/jansson/LICENSE assets/Jansson-LICENSE.txt
+  FILE ${VITAGRAM_OPENSSL_ROOT}/share/OpenSSL-LICENSE.txt assets/OpenSSL-LICENSE.txt
+  FILE assets/vita2d-LICENSE.txt assets/vita2d-LICENSE.txt
   FILE assets/VitaGram_UI_Assets_v1/themes/dark/buttons/L.png ui/themes/dark/buttons/L.png
   FILE assets/VitaGram_UI_Assets_v1/themes/dark/buttons/R.png ui/themes/dark/buttons/R.png
   ${PHOTO_UI_VPK_FILES}
@@ -375,3 +398,4 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   ${UI_VPK_FILES}
   ${RLOTTIE_VPK_FILES}
 )
+add_dependencies(${PROJECT_NAME}.vpk-vpk vitagram-updater.vpk-vpk) # the updater's VPK is packaged inside

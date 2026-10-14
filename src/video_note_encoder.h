@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -7,3 +8,7 @@
 bool encode_video_note(const std::string& frames, const std::string& pcm, const std::string& output,
                        uint32_t samples, const std::atomic<bool>& cancel, std::atomic<int>& progress,
                        std::string& error);
+
+bool encode_video_note(const std::string& frames, const std::string& pcm, const std::string& output,
+                       uint32_t samples, const std::atomic<bool>& cancel, std::atomic<int>& progress,
+                       i18n::Text& error);

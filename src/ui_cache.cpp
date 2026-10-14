@@ -121,7 +121,7 @@ json_t* startup_copy(json_t* source) {
     }
     json_object_foreach(json_object_get(source, "users"), key, value) {
         auto* user = json_object();
-        for (const char* field : {"id", "first_name", "last_name"}) set_copy(user, field, json_object_get(value, field));
+        for (const char* field : {"id", "first_name", "last_name", "type"}) set_copy(user, field, json_object_get(value, field));
         json_object_set_new(json_object_get(result, "users"), key, user);
     }
     set_copy(result, "folders", json_object_get(source, "folders"));
@@ -434,7 +434,7 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
         json_t* users = json_object_get(data_, "users");
         if (!users) { users = json_object(); json_object_set_new(data_, "users", users); }
         json_t* name = json_object();
-        for (const char* field : {"id", "first_name", "last_name", "profile_photo"})
+        for (const char* field : {"id", "first_name", "last_name", "profile_photo", "type"})
             set_copy(name, field, json_object_get(user, field));
         json_object_set_new(users, std::to_string(number(user, "id")).c_str(), name);
         retain(users, 1024, 16); changed = true;

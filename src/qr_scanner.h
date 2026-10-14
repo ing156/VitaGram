@@ -1,4 +1,5 @@
 #pragma once
+#include "i18n.h"
 #include <atomic>
 #include <cstdint>
 #include <pthread.h>
@@ -20,11 +21,11 @@ public:
     void upload(); // Before vita2d_start_drawing only.
     vita2d_texture* preview() const { return texture_; }
     std::string takeLink();
-    std::string status();
+    i18n::Text status();
 private:
     static void* entry(void* self);
     void run();
-    bool fail(const std::string& operation, int code);
+    bool fail(const i18n::Text& operation, int code);
     bool started_ = false, camera_open_ = false, camera_started_ = false, thread_started_ = false;
     int memory_ = -1;
     unsigned char* camera_buffer_ = nullptr;
@@ -35,5 +36,6 @@ private:
     std::atomic<bool> stopping_{false};
     std::vector<uint32_t> preview_pixels_;
     bool preview_ready_ = false;
-    std::string link_, status_;
+    std::string link_;
+    i18n::Text status_;
 };
