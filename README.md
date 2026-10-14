@@ -426,6 +426,8 @@ theme is loaded. `-DVITAGRAM_UI_ALT_BACKGROUND=ON` selects the stronger wave bac
 <details>
 <summary>Encryption and media implementation / Реализация шифрования и медиа</summary>
 
+**English**
+
 - The vault derives keys with scrypt (N=2¹⁴, r=8, p=2), binds them to OpenPSID with
   HKDF-SHA256, wraps a random 256-bit master key and seals files with
   ChaCha20-Poly1305 in authenticated 64 KiB chunks. TDLib uses a separate database
@@ -441,6 +443,8 @@ theme is loaded. `-DVITAGRAM_UI_ALT_BACKGROUND=ON` selects the stronger wave bac
 - Video notes target 240×240 at 30 FPS, H.264 + mono AAC in MP4. Encoding follows
   recording; one minute can require about 157 MB of temporary camera/audio data.
   These targets and performance need physical-device testing.
+
+**Русский**
 
 - Хранилище использует scrypt (N=2¹⁴, r=8, p=2), привязку к OpenPSID через
   HKDF-SHA256, случайный мастер-ключ 256 бит и ChaCha20-Poly1305 с аутентифицированными
