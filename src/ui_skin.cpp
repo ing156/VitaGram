@@ -229,7 +229,8 @@ bool load(int theme_id) {
 
     json_t* textures = json_object_get(root, "textures");
     const std::string image_paths[] = {base + "fixed/" + kBackgroundFile, base + "fixed/header_960x40.png",
-                                       base + "fixed/active_indicator_128x4.png"};
+                                       base + "fixed/active_indicator_128x4.png",
+                                       "themes/" + std::string(theme_id == 0 ? "light" : "dark") + "/fixed/focus_edge_glow_16x128.png"};
     for (size_t i = 0; i < g.images.size(); ++i) {
         json_t* entry = json_object_get(textures, image_paths[i].c_str());
         json_t* size = json_object_get(entry, "size");
@@ -351,6 +352,33 @@ bool corner_button(bool right, float glow, float opacity) {
     else vita2d_draw_texture_part(g.corner_buttons, x, y, tx, 0, 72, 72);
     const int alpha = (int)(255.f * std::max(0.f, std::min(1.f, glow)) * opacity);
     if (alpha > 0) vita2d_draw_texture_tint_part_scale(g.corner_buttons, x, y, tx, 72, 72, 72, 1.f, 1.f, RGBA8(255, 255, 255, alpha));
+    return true;
+}
+
+bool edge_glow(bool right, float edge, float y, float height) {
+    if (height <= 0) return false;
+    const vita2d_texture* texture = g.ready ? g.images[(size_t)Image::EdgeGlow] : nullptr;
+    // The asset already fades from alpha 150 to 1. Draw it whole: shrinking
+    // all 16 columns into each pixel averaged away the bright edge.
+    constexpr float width = 32.f;
+    const float outer = right ? edge + 4.f : edge - 4.f;
+    if (texture)
+        vita2d_draw_texture_tint_part_scale(texture, outer, y - 3, 0, 0, 16, 128,
+            (right ? -width : width) / 16.f, (height + 6.f) / 128.f, kWhite);
+    else {
+        for (int column = 0; column < (int)width; ++column) {
+            const float fade = 1.f - column / width;
+            vita2d_draw_rectangle(right ? outer - column - 1 : outer + column,
+                y - 3, 1, height + 6, RGBA8(30, 160, 255, (int)(150.f * fade * fade)));
+        }
+    }
+    // A pale core stays visible against the blue active tab. Taper its ends
+    // and keep it on the border, clear of the folder label.
+    for (int band = 0; band < 16; ++band) {
+        const float vertical = std::sin((band + 0.5f) * 3.14159265f / 16.f);
+        vita2d_draw_rectangle(edge - 1, y + height * band / 16.f, 2, height / 16.f,
+            RGBA8(160, 235, 255, (int)(220.f * vertical)));
+    }
     return true;
 }
 

@@ -102,6 +102,7 @@ chats.none = В этом списке нет чатов
 chats.retry = Повтор: {0}
 chats.state_loading = Загрузка
 chats.state_ready = Готово
+chats.last_updated = Последнее обновление: {0}
 chats.status = {0}  |  Загружено чатов: {1}{2}
 chats.tap_more = "  |  Нажмите здесь, чтобы загрузить ещё"
 
@@ -694,6 +695,15 @@ auth.qr_waiting = Ожидание подтверждения на телефо�
 auth.qr_requesting = Запрос QR-кода...
 auth.qr_steps = На телефоне откройте Telegram > Настройки > Устройства > Подключить устройство и отсканируйте этот код. Код обновляется сам.\n\nЕсли включена двухэтапная проверка, дальше будет запрошен пароль.
 auth.qr_footer = {circle} Отмена (приложение перезапустится)
+input.email = Email для входа:
+input.email_code = Код из письма:
+auth.prompt.email = Telegram запрашивает email для входа с этим номером
+auth.prompt.email_code = Введите код, отправленный на ваш email
+auth.email_code_sent = Код отправлен на {0}
+auth.premium_required = Telegram требует Premium для входа с этим номером
+auth.premium_hint = Войдите по QR-коду с телефона или введите другой номер
+auth.unknown_step = Неподдерживаемый шаг входа ({0}). Попробуйте QR-код.
+auth.via.fragment = на fragment.com
 vault.method.title = Способ разблокировки
 vault.method.buttons = {cross}  Кнопки консоли\nБыстро вводить: D-pad, {cross} {circle} {triangle} {square}. Не менее 12 нажатий. Из-за ограниченного набора кнопок этот способ менее надёжен, чем кодовая фраза, но удобен. Для лучшей защиты используйте длинную последовательность.
 vault.method.text = {square}  Текстовая фраза\nНадёжнее: набранная фраза от 10 символов, вводится на экранной клавиатуре приложения, поэтому системная клавиатура её не запоминает. Лучший выбор для долгой защиты. Используйте обычные буквы, цифры и символы: буквы с диакритикой можно ввести по-разному, и они потом могут не совпасть.
@@ -739,7 +749,7 @@ upload.menu_footer = {dpad} Выбор    {cross} Далее    {circle} Отм�
 upload.hidden_on = скрытые файлы: показаны
 upload.hidden_off = скрытые файлы: не показаны
 upload.empty = Здесь нечего отправлять
-upload.browse_footer = {cross} Открыть / выбрать    {square} Скрытые    {triangle} Обновить    {circle} Назад
+upload.browse_footer = {cross} Выбрать    {square} Готово    {triangle} Скрытые    {circle} Назад
 upload.send_failed = Не удалось передать файл Telegram
 upload.review_title = Вложения: {0} / {1}
 upload.add_image = + Добавить изображение
@@ -747,8 +757,8 @@ upload.add_video = + Добавить видео
 upload.add_file = + Добавить файл
 upload.send = Отправить ({0})
 upload.file_info = {0} ({1}), уйдёт как файл
-upload.review_footer = {cross} Выбрать   {triangle} Убрать   {circle} Отмена
-upload.review_footer_video = {cross} Выбрать   {square} Пуск/Пауза   {triangle} Убрать   {circle} Отмена
+upload.review_footer = {cross} Выбрать   {square} Отправить   {triangle} Убрать   {circle} Отмена
+upload.review_footer_video = {cross} Пуск/Пауза   {square} Отправить   {triangle} Убрать   {circle} Отмена
 upload.dir_empty = Система вернула пустую папку
 upload.filtered = Нет подходящих файлов. Пропущено {0}: {1}
 upload.latest = Свежие скриншоты (все папки)
@@ -969,3 +979,18 @@ settings.spoiler_both = При обоих событиях
 
 settings.language_loading = Загрузка языка…
 settings.font_load_failed = Не удалось загрузить шрифт. Предыдущий язык сохранён.
+
+# --- List scroll speed ---
+settings.scroll_speed = Скорость прокрутки
+settings.scroll_normal = Норма
+settings.scroll_fast = Быстрая
+settings.scroll_very_fast = Очень быстрая
+
+# Attachment sorting
+upload.sort_hint = {dpad} Сортировка: {0}
+upload.sort_newest = Сначала новые
+upload.sort_oldest = Сначала старые
+upload.sort_name_asc = Имя А-Я
+upload.sort_name_desc = Имя Я-А
+upload.sort_size_asc = Сначала малые
+upload.sort_size_desc = Сначала большие

@@ -18,3 +18,4 @@ done
 "$build_dir/qr_scanner_test" "$root/tests/fixtures/mtproxy-qr.txt"
 "$build_dir/qr_scanner_test" "$root/tests/fixtures/unrelated-qr.txt" reject
 "$build_dir/qr_scanner_test" "$root/tests/fixtures/invalid-proxy-qr.txt" reject
+"$build_dir/qr_scanner_test" "$root/tests/fixtures/mtproxy-qr.txt" styled

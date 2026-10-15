@@ -194,6 +194,49 @@ void AnimationPlayer::releaseYuvTexture() {
     yuv_pitch_ = yuv_height_ = 0;
 }
 
+bool AnimationPlayer::allocateYuvTexture(int pitch, int aligned_height) {
+    const unsigned bytes = pitch * aligned_height * 3 / 2;
+    const unsigned allocation = (bytes + 0x3ffffu) & ~0x3ffffu;
+    SceKernelAllocMemBlockOpt opt{};
+    opt.size = sizeof(opt);
+    opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
+    opt.alignment = 256 * 1024;
+    yuv_memblock_ = sceKernelAllocMemBlock("vitagram_yuv", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, allocation, &opt);
+    if (yuv_memblock_ >= 0) { yuv_memblock_size_ = allocation; performance::cdram_video += allocation; }
+    if (yuv_memblock_ >= 0 && sceKernelGetMemBlockBase(yuv_memblock_, &yuv_pixels_) >= 0 && yuv_pixels_) {
+        yuv_mapped_ = sceGxmMapMemory(yuv_pixels_, allocation,
+            static_cast<SceGxmMemoryAttribFlags>(SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE)) >= 0;
+    }
+    if (yuv_mapped_) {
+        std::memset(yuv_pixels_, 0, allocation);
+        int rc = sceGxmTextureInitLinear(&yuv_texture_.gxm_tex, yuv_pixels_,
+            SCE_GXM_TEXTURE_FORMAT_YVU420P2_CSC1, pitch, aligned_height, 0);
+        if (rc >= 0) { yuv_valid_ = true; yuv_pitch_ = pitch; yuv_height_ = aligned_height; }
+    }
+    if (!yuv_valid_) releaseYuvTexture();
+    return yuv_valid_;
+}
+
+void AnimationPlayer::copyNv12(const AVFrame* yuv) {
+    auto* dest = static_cast<unsigned char*>(yuv_pixels_);
+    for (int row = 0; row < yuv->height; ++row)
+        std::memcpy(dest + row * yuv_pitch_, yuv->data[0] + row * yuv->linesize[0], yuv->width);
+    unsigned char* uv = dest + yuv_pitch_ * yuv_height_;
+    for (int row = 0; row < yuv->height / 2; ++row)
+        std::memcpy(uv + row * yuv_pitch_, yuv->data[1] + row * yuv->linesize[1], yuv->width);
+    vita2d_texture_set_filters(&yuv_texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+}
+
+void AnimationPlayer::detachDisplayedFrame() {
+    if (!yuv_valid_ || !yuv_direct_) return;   // an own copy (or nothing) is shown: the pool is already free
+    AVFrame* shown = displayed_yuv_frame_;
+    displayed_yuv_frame_ = nullptr;
+    const int pitch = yuv_pitch_, aligned_height = yuv_height_;
+    releaseYuvTexture();   // only forgets the pool surface: direct pictures own no memblock
+    if (shown && allocateYuvTexture(pitch, aligned_height)) copyNv12(shown);
+    av_frame_free(&shown);   // returns the surface to the decoder pool
+}
+
 void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare, bool cache_only, download_stream::Shared stream) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_setSource");
     pthread_mutex_lock(&mutex_);
@@ -202,7 +245,8 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
     video_ = video; round_ = round; prepare_ = prepare; cache_only_ = cache_only;
     preparation_required_ = false;
     preparation_checked_ = !prepare || !cache_only;
-    paused_ = video; finished_ = false; position_us_ = 0; start_us_ = 0;
+    paused_ = video; finished_ = false; position_us_ = 0; start_us_ = 0; duration_us_ = 0; duration_hint_us_ = 0;
+    awaiting_frame_ = video; last_frame_us_ = 0;
     playback_ready_ = false;
     ++generation_;
     ready_ = false;
@@ -226,11 +270,24 @@ void AnimationPlayer::setSource(const std::string& path, bool video, bool round,
     }
 }
 
+int64_t AnimationPlayer::seekLimitUs() const {
+    const int64_t duration = knownDurationUs();
+    if (!stream_) return duration > 0 ? duration : INT64_MAX / 4;
+    const auto state = stream_->snapshot();
+    if (state.complete) return duration > 0 ? duration : INT64_MAX / 4;
+    if (duration <= 0 || state.size <= 0) return 0;
+    // MP4 interleaves audio and video by time, so the readable byte share approximates the readable time.
+    // Keep a margin for the keyframe search and the audio track, which may sit slightly further in the file.
+    const double share = std::min(1.0, static_cast<double>(state.prefix) / static_cast<double>(state.size));
+    return std::max<int64_t>(0, static_cast<int64_t>(duration * share) - 5000000);
+}
+
 void AnimationPlayer::seekTo(int64_t us) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_seek");
     if (!canSeek()) return;
+    const int64_t limit = seekLimitUs();
     pthread_mutex_lock(&mutex_);
-    const int64_t target = std::max<int64_t>(0, us);
+    const int64_t target = std::max<int64_t>(0, std::min(us, limit));
     const bool play = finished_ ? true : !paused_.load();   // seeking a finished clip resumes it, like Telegram
     start_us_ = target; position_us_ = target;
     ++generation_; finished_ = false; status_.clear();
@@ -240,8 +297,10 @@ void AnimationPlayer::seekTo(int64_t us) {
     av_frame_free(&pending_yuv_frame_);
     pending_direct_ = false;
     ready_ = false;   // the dropped frame must not fall through to the RGBA upload with an empty buffer
+    awaiting_frame_ = true;
     pthread_mutex_unlock(&mutex_);
-    if (yuv_valid_) { vita2d_wait_rendering_done(); releaseYuvTexture(); }
+    // Keep the last picture on screen (as an own copy) under the loading indicator until the new one is decoded.
+    if (yuv_valid_) { vita2d_wait_rendering_done(); detachDisplayedFrame(); }
     // Audio restarts at the same point; both clocks then run from the target.
     // Audio starts from the decoder thread once the first picture after the IDR is known, so both begin at the same point
     // (the hardware decoder needs about a second before its first picture, which used to leave the picture behind).
@@ -257,10 +316,11 @@ void AnimationPlayer::toggle() {
     if (!video_ || source_.empty() || !started_) return;
     pthread_mutex_lock(&mutex_);
     bool replay = finished_;
-    if (replay) { ++generation_; finished_ = false; ready_ = false; position_us_ = 0; start_us_ = 0; status_.clear(); }
+    if (replay) { ++generation_; finished_ = false; ready_ = false; position_us_ = 0; start_us_ = 0; status_.clear(); awaiting_frame_ = true; }
     if (replay) { audio_.setSource(""); if (!prepare_) audio_.setSource(source_, true, false, stream_); }
     paused_ = replay ? false : !paused_.load();
     bool play = !paused_;
+    if (play) last_frame_us_ = sceKernelGetSystemTimeWide();   // a pause is not a stall
     pthread_mutex_unlock(&mutex_);
     audio_.setPlaying(play);
 }
@@ -304,35 +364,9 @@ void AnimationPlayer::upload() {
             const int aligned_height = (yuv->height + 15) & ~15;
             if (yuv_valid_ && (pitch != yuv_pitch_ || aligned_height != yuv_height_))
                 releaseYuvTexture();
-            if (!yuv_valid_) {
-                const unsigned bytes = pitch * aligned_height * 3 / 2;
-                const unsigned allocation = (bytes + 0x3ffffu) & ~0x3ffffu;
-                SceKernelAllocMemBlockOpt opt{};
-                opt.size = sizeof(opt);
-                opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
-                opt.alignment = 256 * 1024;
-                yuv_memblock_ = sceKernelAllocMemBlock("vitagram_yuv", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, allocation, &opt);
-                if (yuv_memblock_ >= 0) { yuv_memblock_size_ = allocation; performance::cdram_video += allocation; }
-                if (yuv_memblock_ >= 0 && sceKernelGetMemBlockBase(yuv_memblock_, &yuv_pixels_) >= 0 && yuv_pixels_) {
-                    yuv_mapped_ = sceGxmMapMemory(yuv_pixels_, allocation,
-                        static_cast<SceGxmMemoryAttribFlags>(SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE)) >= 0;
-                }
-                if (yuv_mapped_) {
-                    std::memset(yuv_pixels_, 0, allocation);
-                    int rc = sceGxmTextureInitLinear(&yuv_texture_.gxm_tex, yuv_pixels_,
-                        SCE_GXM_TEXTURE_FORMAT_YVU420P2_CSC1, pitch, aligned_height, 0);
-                    if (rc >= 0) { yuv_valid_ = true; yuv_pitch_ = pitch; yuv_height_ = aligned_height; }
-                }
-                if (!yuv_valid_) { releaseYuvTexture(); status_ = i18n::text("anim.gpu_video"); }
-            }
+            if (!yuv_valid_ && !allocateYuvTexture(pitch, aligned_height)) status_ = i18n::text("anim.gpu_video");
             if (yuv_valid_) {
-                auto* dest = static_cast<unsigned char*>(yuv_pixels_);
-                for (int row = 0; row < yuv->height; ++row)
-                    std::memcpy(dest + row * pitch, yuv->data[0] + row * yuv->linesize[0], yuv->width);
-                unsigned char* uv = dest + pitch * aligned_height;
-                for (int row = 0; row < yuv->height / 2; ++row)
-                    std::memcpy(uv + row * pitch, yuv->data[1] + row * yuv->linesize[1], yuv->width);
-                vita2d_texture_set_filters(&yuv_texture_, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+                copyNv12(yuv);
                 ++uploaded_frames_;
             }
             av_frame_free(&pending_yuv_frame_);
@@ -361,6 +395,16 @@ void AnimationPlayer::upload() {
         ready_ = false;
     }
     pthread_mutex_unlock(&mutex_);
+}
+
+bool AnimationPlayer::buffering() const {
+    if (!video_ || source_.empty() || !playback_ready_ || finished_) return false;
+    // A paused clip only decodes the preview picture of a seek; at the very start it waits for Play.
+    if (awaiting_frame_) return !paused_ || start_us_.load() > 0;
+    if (paused_) return false;
+    const int64_t last = last_frame_us_.load();
+    const int64_t threshold = std::max<int64_t>(700000, 3 * frame_step_us_.load());
+    return last > 0 && sceKernelGetSystemTimeWide() - last > threshold;
 }
 
 i18n::Text AnimationPlayer::status() {
@@ -649,12 +693,29 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     int stream_index = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (stream_index < 0) { fail(decoder_error("Video stream", stream_index)); return; }
     AVStream* stream = format->streams[stream_index];
+    // Without avformat_find_stream_info only the header durations exist; fragmented MP4 has none at file level.
+    if (video && format->duration > 0) duration_us_ = format->duration;
+    else if (video && stream->duration > 0) duration_us_ = av_rescale_q(stream->duration, stream->time_base, AV_TIME_BASE_Q);
     auto* parameters = stream->codecpar;
     if (!media_decode::video_codec(parameters->codec_id, video)) {
         fail(video ? i18n::text("anim.supported_video") : i18n::text("anim.supported_anim")); return;
     }
     auto dimensions_ok = [](int w, int h) { return w > 0 && h > 0 && w <= 1280 && h <= 1280 && (int64_t)w * h <= 1280 * 720; };
     if (!dimensions_ok(parameters->width, parameters->height)) { fail(i18n::text("anim.limit_720p")); return; }
+    // The hardware AVC decoder rejects rasters taller than 1088 (e.g. 720x1280 portrait).
+    // Telegram metadata can disagree with the stream, so check the real stream here.
+    if (parameters->codec_id == AV_CODEC_ID_H264 && parameters->height > 1088) {
+        if (video && !round && !prepare) {
+            pthread_mutex_lock(&mutex_);
+            if (generation == generation_) { preparation_required_ = true; preparation_checked_ = true; }
+            pthread_mutex_unlock(&mutex_);
+            early_error(i18n::text("video.unsupported_hint"));
+        } else {
+            early_error(i18n::text("anim.limit_720p"));
+        }
+        cleanup();
+        return;
+    }
     if (parameters->codec_id == AV_CODEC_ID_H264) {
         int module_rc = sceSysmoduleLoadModule(SCE_SYSMODULE_AVCDEC);
         // Some retail Vitas report INVALID_VALUE while the codec engine is
@@ -665,8 +726,6 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             std::fprintf(hardware_log, "VitaGram %s\nbackend=h264_vita\nmodule_load=0x%08x\nprofile=%d level=%d size=%dx%d\nfile_size=%lld head_crc=%08lx tail_crc=%08lx\n",
                 VITAGRAM_VERSION, (unsigned)module_rc, parameters->profile, parameters->level,
                 parameters->width, parameters->height, (long long)file_size, (unsigned long)head_crc, (unsigned long)tail_crc);
-            if (parameters->height > 1088)
-                std::fprintf(hardware_log, "portrait_hardware_probe=1 coded_height=%d\n", parameters->height);
             std::fclose(hardware_log);
             hardware_log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-hardware.log", "a");
         }
@@ -702,6 +761,11 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     AVRational rate = av_guess_frame_rate(format, stream, nullptr);
     int64_t fallback_delay = rate.num > 0 && rate.den > 0 ? av_rescale_q(1, av_inv_q(rate), AVRational{1,1000000}) : 100000;
     fallback_delay = std::max<int64_t>(10000, std::min<int64_t>(1000000, fallback_delay));
+    // Without avformat_find_stream_info a progressive MP4 often has no frame
+    // rate; the 100 ms default would then pace seeked video at 10 fps while
+    // audio runs in real time. Take the real step from the first packet.
+    bool frame_step_known = rate.num > 0 && rate.den > 0;
+    frame_step_us_ = fallback_delay;
     std::vector<unsigned char> rgba;
     CircleMask circle_mask;
     int64_t origin_pts = AV_NOPTS_VALUE, origin_wall = 0, next_wall = 0, last_output = 0;
@@ -712,7 +776,14 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     bool wall_fallback = false;
     bool seek_audio_started = false;
     int64_t seek_key_us = 0;   // timeline position of the IDR picture a seek landed on
+    const int64_t timeline_origin_us = format->start_time != AV_NOPTS_VALUE ? format->start_time : 0;
+    // After a seek SceVideodec's picture timestamps are not the stream's, and counting pictures at a fixed step
+    // drifts on variable-frame-rate clips (phone recordings). Pictures leave the decoder in presentation order,
+    // so each one takes the smallest timestamp among the packets sent and not yet presented.
     const int64_t seek_base = video ? start_us_.load() : 0;   // silent clips and audio fallback continue from the seek target
+    const bool seek_pts_queue = video && seek_base > 0 && !round && parameters->codec_id == AV_CODEC_ID_H264;
+    std::vector<int64_t> seek_pts;
+    int64_t last_seek_due = -1;
     // Audio is the master clock. Silent clips use the monotonic wall clock;
     // after a shorter audio track ends, continue its timeline without freezing.
     auto video_time = [&]() -> int64_t {
@@ -797,7 +868,14 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                     video_due = std::max<int64_t>(0, av_rescale_q(presentation_pts, stream->time_base, AVRational{1,1000000}) - format->start_time);
                 // The hardware decoder restarts its picture timestamps after a seek, so count pictures from the IDR instead.
                 if (seek_base > 0) {
-                    if (!round) video_due = seek_key_us + (int64_t)(frames_decoded - 1) * fallback_delay;
+                    if (seek_pts_queue) {
+                        if (!seek_pts.empty()) {
+                            video_due = std::max<int64_t>(0, av_rescale_q(seek_pts.front(), stream->time_base, AV_TIME_BASE_Q) - timeline_origin_us);
+                            seek_pts.erase(seek_pts.begin());
+                        } else video_due = last_seek_due >= 0 ? last_seek_due + fallback_delay : seek_key_us;
+                        last_seek_due = video_due;
+                    }
+                    // Software decoders keep the stream timestamps: the absolute position computed above stays.
                     else if (origin_pts != AV_NOPTS_VALUE && presentation_pts != AV_NOPTS_VALUE)   // notes: pictures restart at 0 too
                         video_due = seek_key_us + std::max<int64_t>(0, av_rescale_q(presentation_pts - origin_pts, stream->time_base, AVRational{1,1000000}));
                 }
@@ -817,7 +895,11 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 now = sceKernelGetSystemTimeWide();
                 if (seek_base > 0 && (frames_decoded <= 3 || frames_decoded % 20 == 0) && frames_decoded <= 140) {
                     if (FILE* fl = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-seek.log", "a")) {
-                        std::fprintf(fl, "  frame=%u due=%lld clock=%lld packets=%u\n", frames_decoded, (long long)video_due, (long long)clock, packets_read);
+                        const int64_t decoder_us = presentation_pts != AV_NOPTS_VALUE
+                            ? av_rescale_q(presentation_pts, stream->time_base, AV_TIME_BASE_Q) - timeline_origin_us : -1;
+                        std::fprintf(fl, "  frame=%u due=%lld clock=%lld lag=%lld decoder=%lld queued=%u packets=%u\n", frames_decoded,
+                            (long long)video_due, (long long)clock, (long long)(clock - video_due), (long long)decoder_us,
+                            static_cast<unsigned>(seek_pts.size()), packets_read);
                         std::fclose(fl);
                     }
                 }
@@ -867,6 +949,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                         width_ = frame->width; height_ = frame->height;
                         pending_direct_ = direct_video;
                         ready_ = true; status_ = i18n::text("anim.video_playing");
+                        awaiting_frame_ = false; last_frame_us_ = now;
                     }
                     pthread_mutex_unlock(&mutex_);
                     last_output = now;
@@ -903,6 +986,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 pthread_mutex_lock(&mutex_);
                 if (generation == generation_) {
                     pixels_.swap(rgba); width_ = w; height_ = h; ready_ = true; status_ = i18n::text(video ? "anim.video_playing" : "anim.play_pause");
+                    awaiting_frame_ = false; last_frame_us_ = now;
                 }
                 pthread_mutex_unlock(&mutex_);
                 last_output = now;
@@ -968,13 +1052,14 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             }
             return false;
         };
-        const int64_t first_ts = format->start_time != AV_NOPTS_VALUE ? format->start_time : 0;
+        const int64_t first_ts = timeline_origin_us;
         int64_t target = av_rescale_q(seek_base + first_ts, AV_TIME_BASE_Q, stream->time_base);
         const int64_t floor_ts = av_rescale_q(first_ts, AV_TIME_BASE_Q, stream->time_base);
         AVPacket* probe = av_packet_alloc();
         bool landed = false;
         FILE* seek_log = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-seek.log", "a");
-        if (seek_log) std::fprintf(seek_log, "seek target_us=%lld h264=%d\n", (long long)seek_base, h264 ? 1 : 0);
+        if (seek_log) std::fprintf(seek_log, "VitaGram %s seek target_us=%lld h264=%d streaming=%d tb=%d/%d\n", VITAGRAM_VERSION,
+            (long long)seek_base, h264 ? 1 : 0, growing ? 1 : 0, stream->time_base.num, stream->time_base.den);
         for (int attempt = 0; probe && attempt < 16 && !interrupted(&job); ++attempt) {
             if (av_seek_frame(format, stream_index, target, AVSEEK_FLAG_BACKWARD) < 0) break;
             bool got = false;
@@ -997,7 +1082,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             target = key - 1;
         }
         av_packet_free(&probe);
-        if (seek_log) { std::fprintf(seek_log, " landed=%d\n", landed ? 1 : 0); std::fclose(seek_log); }
+        if (seek_log) { std::fprintf(seek_log, " landed=%d key_us=%lld\n", landed ? 1 : 0, (long long)seek_key_us); std::fclose(seek_log); }
         if (!landed && !interrupted(&job)) { fail("Seek: no IDR picture before the target"); return; }
     }
     // Only now are the headers, codec and seek position usable. A partial
@@ -1052,6 +1137,16 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         if (rc < 0) { fail(decoder_error("Read packet", rc)); return; }
         if (packet->stream_index == stream_index) {
             ++packets_read;
+            if (!frame_step_known && packet->duration > 0) {
+                frame_step_known = true;
+                fallback_delay = std::max<int64_t>(10000, std::min<int64_t>(1000000,
+                    av_rescale_q(packet->duration, stream->time_base, AVRational{1,1000000})));
+                frame_step_us_ = fallback_delay;
+                if (hardware_log) {
+                    std::fprintf(hardware_log, "frame_step_us=%lld source=packet\n", (long long)fallback_delay);
+                    std::fflush(hardware_log);
+                }
+            }
             rc = avcodec_send_packet(codec, packet);
             if (rc < 0) {
                 // A failed access unit can leave SceVideodec's state unusable.
@@ -1073,6 +1168,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                     if (seek_result >= 0) {
                         for (AVFrame* queued : reordered_frames) av_frame_free(&queued);
                         reordered_frames.clear();
+                        seek_pts.clear();
                         av_frame_unref(frame);
                         avcodec_free_context(&codec);
                         codec = avcodec_alloc_context3(decoder);
@@ -1098,6 +1194,8 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 }
                 fail(decoder_error("Send packet", rc)); return;
             }
+            if (seek_pts_queue && packet->pts != AV_NOPTS_VALUE && seek_pts.size() < 1024)
+                seek_pts.insert(std::upper_bound(seek_pts.begin(), seek_pts.end(), packet->pts), packet->pts);
             if (!receive()) { fail(frame_error); return; }
             av_packet_unref(packet);
         } else av_packet_unref(packet);

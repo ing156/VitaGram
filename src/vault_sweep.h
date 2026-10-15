@@ -16,7 +16,7 @@
 // encrypts those itself with the vault-derived key).
 namespace vault_sweep {
 bool is_user_file(const std::string& path);
-// A JSON cache directly in the database directory (ui-cache.json and the like).
+// A JSON cache directly in the database directory (ui-cache.json and the like) or in ui-history/.
 bool is_db_cache(const std::string& path);
 // Absolute list of user files; stale ".vgs" conversion leftovers are deleted on the way. Links are
 // not followed. `listing_errors` (optional) receives how many directories or entries could not be read.

@@ -8,7 +8,7 @@ namespace ui_skin {
 
 enum class Slice { Panel, Row, RowFocused, TabNormal, TabActive, Menu, MenuItemFocus, DateChip,
                    MediaFrame, FocusRing, ProgressTrack, ProgressFill, ScrollThumb, Dialog, Count };
-enum class Image { Background, Header, ActiveIndicator, Count };
+enum class Image { Background, Header, ActiveIndicator, EdgeGlow, Count };
 enum class Icon { File, Back, Next, Play, Pause, Search, Check, Close, Download, Send, Trash, Leave, Reply, Forward, ClearHistory, Count };
 
 // Region of an atlas sprite plus the bounds of its visible (non-transparent) pixels.
@@ -47,6 +47,8 @@ bool corners(float x, float y, float w, float h, float radius);
 // Bottom-corner buttons (attach left, menu right) from assets/ui_extra/corner_buttons.png; `glow` 0..1 fades
 // in the sparkle overlay. Theme independent.
 bool corner_button(bool right, float glow, float opacity = 1.f);
+// Subtle inward-fading scroll hint at a vertical edge; right mirrors the left edge.
+bool edge_glow(bool right, float edge, float y, float height);
 bool indicator(float x, float y, float w, float h);
 bool icon(Icon icon, float x, float y, float size, unsigned int tint = kWhite);
 // Controller button 0..8 in the order triangle, square, cross, circle, dpad, start, select, L, R.

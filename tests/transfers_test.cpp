@@ -1243,13 +1243,14 @@ int main() {
         TelegramClient list;
         list.restoreCache();
         assert(list.chats_.size()==2 && list.chats_[0].id==1);
+        // Live metadata is shown in place; the cached order stays until the window is confirmed.
         list.process(parse(R"({"@type":"updateNewChat","chat":{"id":1,"title":"Live A","positions":[]}})"));
         list.publishChats();
-        assert(list.chats_.size()==2 && list.chats_[0].title=="Cached A");
+        assert(list.chats_.size()==2 && list.chats_[0].id==1 && list.chats_[0].title=="Live A");
         list.process(parse(R"({"@type":"updateChatPosition","chat_id":1,"position":{"list":{"@type":"chatListMain"},"order":150}})"));
         list.process(parse(R"({"@type":"ok","@extra":{"kind":"load_main_chats","list_generation":0}})"));
         list.publishChats();
-        assert(list.chats_.size()==2 && list.chats_[0].title=="Cached A");
+        assert(list.chats_.size()==2 && list.chats_[0].id==1 && list.chats_[1].id==2);
         assert(list.startup_chat_snapshots_.count(0)); // A short first page is not ready.
         list.process(parse(R"({"@type":"updateNewChat","chat":{"id":4,"title":"New top","positions":[{"list":{"@type":"chatListMain"},"order":300}]}})"));
         list.publishChats();
@@ -1301,11 +1302,14 @@ int main() {
         sliced.beginCacheApply(snapshot); sliced.pump(true);
         assert(sliced.known_chats_.empty()); // Input frame does no cache work.
         sliced.pump(false);
-        assert(sliced.applying_snapshot_ && !sliced.known_chats_.empty() && sliced.known_chats_.size() <= 8);
+        // Chats are installed in one step (the list never grows row by row); users stay sliced.
+        assert(sliced.applying_snapshot_ && sliced.known_chats_.size() == 100 && sliced.chats_.size() == 15);
         sliced.process(parse(R"({"@type":"updateNewChat","chat":{"id":1,"title":"Live wins","positions":[{"list":{"@type":"chatListMain"},"order":2000}]}})"));
         sliced.process(parse(R"({"@type":"updateUser","user":{"id":7,"first_name":"Live name"}})"));
         for (int i = 0; sliced.applying_snapshot_ && i < 200; ++i) sliced.pump(false);
-        assert(!sliced.applying_snapshot_ && sliced.chats_.size() == 1 && sliced.chats_[0].title == "Live wins");
+        // An early live chat does not discard the startup rows; it updates its own row.
+        assert(!sliced.applying_snapshot_ && sliced.chats_.size() == 15 && sliced.chats_[0].title == "Live wins" &&
+               sliced.chats_[1].id == 2 && sliced.startup_chat_snapshots_.count(0));
         assert(sliced.user_names_[7] == "Live name");
         sliced.beginCacheApply(parse(R"({"chats":{"2":{"id":2,"title":"Late"}}})"));
         sliced.clearAccountMemory(); sliced.pump(false);
@@ -1401,6 +1405,13 @@ int main() {
         late.process(parse(R"({"@type":"updateUser","user":{"id":7,"first_name":"Live user"}})"));
         late.process(parse(R"({"@type":"updateChatFolders","chat_folders":[]})"));
         late.applyRestoredCache(parse(R"({"chats":{"1":{"id":1,"title":"Old","positions":[{"list":{"@type":"chatListMain"},"order":900}]}},"users":{"7":{"id":7,"first_name":"Old user"}},"folders":{"chat_folders":[{"id":5,"title":"Old folder"}]}})"));
+        // Chats TDLib announced before loadChats are not a list yet: the startup rows stay
+        // until Telegram confirms the window, then the live list replaces them.
+        assert(late.chats_.size() == 1 && late.chats_[0].title == "Old");
+        late.process(parse(R"({"@type":"ok","@extra":{"kind":"load_main_chats","list_generation":0}})"));
+        assert(late.chats_.size() == 1 && late.chats_[0].title == "Live");
+        // A list confirmed in this session is never replaced by a late index.
+        late.applyRestoredCache(parse(R"({"chats":{"2":{"id":2,"title":"Older","positions":[{"list":{"@type":"chatListMain"},"order":950}]}},"users":{}})"));
         assert(late.chats_.size() == 1 && late.chats_[0].title == "Live");
         // Live data wins over the restored cache: the cached folder (id 5) does not come back. Only the
         // built-in "All chats" and "Archive" tabs, which the client always adds, may be listed.
@@ -1411,6 +1422,47 @@ int main() {
         assert(late.known_chats_.empty());
     }
     std::puts("Async cache: offline startup, single worker, UI adoption, live data priority and logout rejection passed");
+    {
+        // The list Telegram confirmed is what the next launch shows first: unread state is kept
+        // and each list keeps only its top rows.
+        TelegramClient saved;
+        saved.ui_cache_.clear(); saved.full_cache_loaded_ = true;
+        for (int i = 1; i <= 130; ++i) {
+            ChatItem chat; chat.id = i; chat.title = "Chat " + std::to_string(i); chat.user_id = 1000 + i;
+            chat.list_orders[0] = 10000 - i;
+            if (i == 130) chat.list_orders[7] = 50; // Folder rows survive the main-list cut.
+            chat.unread_count = i == 2 ? 3 : 0; chat.marked_unread = i == 3; chat.last_message_id = 500 + i;
+            saved.known_chats_.push_back(chat);
+        }
+        saved.queueStartupList(); assert(!saved.pending_startup_list_); // Not confirmed by Telegram yet.
+        saved.chats_last_updated_[0] = 1; saved.startup_list_dirty_ = true;
+        saved.queueStartupList(); assert(saved.pending_startup_list_ && !saved.startup_list_dirty_);
+        saved.writeStartupList(true); assert(!saved.pending_startup_list_);
+        UiCache reader; auto* index = reader.loadStartup(); assert(index);
+        auto* chats = json_object_get(index, "chats");
+        assert(json_object_size(chats) == 101 && json_object_get(chats, "130") && !json_object_get(chats, "120"));
+        TelegramClient next; next.applyRestoredCache(index);
+        assert(next.chats_.size() == 15 && next.chats_[0].id == 1 && next.chats_[1].unread_count == 3 && next.chats_[2].marked_unread);
+        assert(next.chats_[0].user_id == 1001 && next.startup_chat_snapshots_[7].size() == 1);
+        assert(!std::remove(VITAGRAM_DB_DIR "/ui-startup.json"));
+    }
+    std::puts("Startup index: confirmed list saved with unread state, per-list limit and folder rows passed");
+    {
+        // Avatars: drawn from the index at once and kept while TDLib re-reports or re-downloads them.
+        TelegramClient avatars;
+        avatars.applyRestoredCache(parse(R"({"chats":{"5":{"id":5,"title":"A","@avatar_path":"ux0:old.jpg","positions":[{"list":{"@type":"chatListMain"},"order":10}]}},"users":{}})"));
+        assert(avatars.chats_.size() == 1 && avatars.chats_[0].avatar_path == "ux0:old.jpg");
+        avatars.process(parse(R"({"@type":"updateNewChat","chat":{"id":5,"title":"A","positions":[],"photo":{"small":{"@type":"file","id":91,"local":{"path":"","is_downloading_completed":false}}}}})"));
+        avatars.publishChats();
+        assert(avatars.chats_[0].avatar_path == "ux0:old.jpg" && avatars.chats_[0].avatar_stale && avatars.chats_[0].avatar_file_id == 91);
+        avatars.process(parse(R"({"@type":"updateFile","file":{"id":91,"size":10,"local":{"path":"","is_downloading_completed":false}}})"));
+        avatars.publishChats(); assert(avatars.chats_[0].avatar_path == "ux0:old.jpg");
+        avatars.process(parse(R"({"@type":"updateFile","file":{"id":91,"size":10,"local":{"path":"ux0:new.jpg","is_downloading_completed":true}}})"));
+        avatars.publishChats(); assert(avatars.chats_[0].avatar_path == "ux0:new.jpg" && !avatars.chats_[0].avatar_stale);
+        avatars.process(parse(R"({"@type":"updateNewChat","chat":{"id":5,"title":"A","positions":[]}})"));
+        avatars.publishChats(); assert(avatars.chats_[0].avatar_path.empty()); // Removed photo.
+    }
+    std::puts("Startup avatars: shown from the index, kept through live metadata and downloads, cleared on removal passed");
 
     // GIF requests through the real client handler, not just the catalog parser.
     {

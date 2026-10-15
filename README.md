@@ -4,6 +4,8 @@
 
 **Telegram for PS Vita · Telegram для PS Vita**
 
+Current version / Текущая версия: **0.37.53**.
+
 [English](#english) · [Русский](#russian) · [Build / Сборка](#building) · [Licenses / Лицензии](#licenses)
 
 <a id="english"></a>
@@ -14,7 +16,7 @@ VitaGram is an unofficial homebrew Telegram client for PS Vita, built with
 VitaSDK, vita2d and TDLib. Use the console's buttons and touchscreen to read chats,
 send messages and attachments, and record voice messages and video notes.
 
-**VitaGram is an AI-assisted project.** AI tools are used in development,
+**VitaGram is an AI-Vibecoded project.** AI tools are used in development,
 documentation and image localization, with human direction and release decisions.
 
 The project is under active development. See [Limitations](#limitations) for
@@ -39,13 +41,21 @@ supported media and features that are not yet available.
 - **Messages:** text, replies, forwarding, permission-aware deletion, standard emoji
   reactions and voting in polls, including quizzes and multiple-choice polls.
 - **Photos and files:** albums, attachment batches of up to 10 items, fullscreen
-  photos with rotation and touch zoom up to 6×, and saving files to a download folder.
+  photos with rotation and 1–5× zoom (touch or right stick up/down), left-stick panning
+  while zoomed, and saving files to a download folder.
 - **Stickers and GIFs:** static and animated stickers, recent/favorite/installed
   sticker sets, saved GIFs and GIF search.
 - **Audio and video:** supported media playback, progressive playback while downloading,
   voice-message recording and video notes from the front or rear camera.
+  Fullscreen video: Left/Right selects 10-second seek steps; holding repeats faster
+  after two and four seconds. The time and cursor update while held, and releasing
+  applies the target and restores the prior play/pause state. Tap or drag the
+  progress track to seek, including while the controls are hidden.
 - **Interface:** native Vita keyboard, Cyrillic and color emoji, Light/Dark/VHBB
-  themes, font size and interface language settings. Dark is the initial theme.
+  themes, font size and interface language settings. Hold D-pad up/down or the left
+  stick to scroll lists with acceleration. Settings → Scroll speed selects Normal,
+  Fast or Very fast: up to 1, 2 or 3 pages per 0.5 seconds. Normal is the default.
+  Dark is the initial theme.
 - **Connection and privacy:** MTProxy, SOCKS5 and HTTP CONNECT proxies, proxy-link
   and QR import, optional data encryption and automatic screen locking.
 - **Updates:** signed VPK packages from GitHub Releases, with manual and automatic
@@ -60,7 +70,11 @@ free space for the package and cached media.
 2. Install the VPK through VitaShell and launch **VitaGram** from LiveArea.
 3. Choose whether to encrypt local data. Keep the chosen unlock key safe.
 4. Sign in with your phone number, Telegram login code and, if enabled, your
-   two-step verification password.
+   two-step verification password. Or tap **Sign in with a QR code** (or press
+   **Square**) and scan the Vita screen from Telegram on your phone:
+   **Settings → Devices → Link Desktop Device**. If enabled, two-step verification
+   still requires your password. The login QR uses rounded modules and a central
+   paper-plane badge with High error correction.
 
 If a proxy is needed for login, press **Start** on the authorization screen to
 configure it. Select the proxy type and enter its details, then choose
@@ -129,8 +143,9 @@ or account files. **Settings → About** contains project links and privacy note
   smallest compatible Telegram variant when available; fallback video limits are
   720p by pixel area and 128 MiB.
 - Progressive audio/video can start after a readable 256 KiB prefix, but some MP4
-  files need a complete download. Seeking and portrait-video preparation require
-  the completed file; prepared portrait copies have additional seek restrictions.
+  files need a complete download. While a video streams, seeking is limited to the
+  already downloaded part; portrait-video preparation requires the completed file,
+  and prepared portrait copies have additional seek restrictions.
 - Calls, secret chats, group administration, paid/custom reactions, creating polls
   or editing forum topics, and searching for/installing sticker sets are not implemented.
 - Presence follows Telegram privacy settings. Sticker-set and topic lists still
@@ -146,7 +161,7 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 и TDLib. Кнопки консоли и сенсорный экран позволяют читать чаты, отправлять
 сообщения и вложения, записывать голосовые сообщения и видеокружки.
 
-**VitaGram — AI-проект.** Инструменты искусственного интеллекта используются
+**VitaGram — AI-Вайбкод.** Инструменты искусственного интеллекта используются
 при разработке, подготовке документации и переводе изображений; направление
 работы и решения о выпуске задаёт человек.
 
@@ -170,13 +185,17 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 - **Сообщения:** текст, ответы, пересылка, удаление с проверкой прав, обычные
   emoji-реакции и голосование в опросах, включая викторины и множественный выбор.
 - **Фото и файлы:** альбомы, отправка до 10 вложений за раз, полноэкранные фото
-  с поворотом и сенсорным увеличением до 6×, сохранение файлов в папку загрузок.
+  с поворотом и масштабом 100–500% (жестом или правым стиком вверх/вниз), перемещением
+  левым стиком при увеличении, сохранение файлов в папку загрузок.
 - **Стикеры и GIF:** статичные и анимированные стикеры, недавние, избранные
   и установленные наборы, сохранённые GIF и поиск анимаций.
 - **Аудио и видео:** воспроизведение поддерживаемых медиа, просмотр во время
   загрузки, запись голоса и видеокружков с фронтальной или задней камеры.
 - **Интерфейс:** системная клавиатура Vita, кириллица и цветные emoji, темы
-  Светлая/Тёмная/VHBB, настройка размера шрифта и языка. По умолчанию тема тёмная.
+  Светлая/Тёмная/VHBB, настройка размера шрифта и языка. Удержание стрелок вверх/вниз
+  или левого стика прокручивает списки с ускорением. «Настройки → Скорость прокрутки»:
+  «Норма», «Быстрая» и «Очень быстрая» — до 1, 2 и 3 страниц за 0,5 секунды.
+  По умолчанию выбрана «Норма», тема тёмная.
 - **Подключение и приватность:** MTProxy, SOCKS5 и HTTP CONNECT, импорт прокси
   по ссылке и QR-коду, необязательное шифрование данных и автоблокировка экрана.
 - **Обновления:** подписанные VPK из GitHub Releases, ручная и автоматическая проверка.
@@ -190,7 +209,11 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 2. Установите VPK через VitaShell и запустите **VitaGram** из LiveArea.
 3. Выберите, шифровать ли локальные данные. Сохраните выбранный ключ разблокировки.
 4. Войдите по номеру телефона, коду Telegram и, если включён, паролю двухэтапной
-   аутентификации.
+   аутентификации. Или нажмите **«Войти по QR-коду»** на экране (либо кнопку
+   **□**) и отсканируйте экран Vita с телефона в Telegram:
+   **Настройки → Устройства → Подключить устройство**. Если включена двухэтапная
+   проверка, затем потребуется её пароль. QR для входа имеет скруглённый узор
+   и значок самолётика в центре; используется высокий уровень коррекции ошибок.
 
 Если для входа нужен прокси, нажмите **Start** на экране авторизации.
 Выберите тип, заполните данные и нажмите **«Сохранить и применить»**.
@@ -262,8 +285,13 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
   вариант Telegram; при его отсутствии действуют лимиты исходника: 720p по площади
   кадра и 128 МиБ.
 - Просмотр видео/аудио может начаться после непрерывных 256 КиБ от начала файла,
-  но некоторым MP4 нужна полная загрузка. Перемотка и подготовка вертикального видео
-  требуют докачки; у подготовленных вертикальных копий есть дополнительные ограничения перемотки.
+  но некоторым MP4 нужна полная загрузка. Во время потокового просмотра перемотка
+  доступна в пределах уже загруженной части; подготовка вертикального видео требует
+  докачки, у подготовленных вертикальных копий есть дополнительные ограничения перемотки.
+- В полноэкранном видео влево/вправо выбирает позицию с шагом 10 секунд. Удержание
+  ускоряет повтор через 2 и 4 секунды. Отметка и время обновляются при удержании,
+  переход выполняется после отпускания с сохранением прежнего режима воспроизведения.
+  Касание или перетаскивание по шкале тоже перематывает, даже если панель скрыта.
 - Не реализованы звонки, секретные чаты, управление группами, платные/пользовательские
   реакции, создание опросов, редактирование тем форума, поиск и установка наборов стикеров.
 - Статусы присутствия зависят от приватности Telegram. Списки наборов стикеров

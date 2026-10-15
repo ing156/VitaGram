@@ -1,5 +1,6 @@
 #include "vault_ui.h"
 #include "keyboard_hold.h"
+#include "scroll_repeat.h"
 #include "account_cleanup.h"
 #include "i18n.h"
 #include "media_render.h"
@@ -49,12 +50,14 @@ constexpr unsigned kAllSymbolButtons = SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LE
 // Edge-detected controller state shared by all screens.
 struct Pad {
     unsigned old = 0;
-    Pad() { SceCtrlData d{}; sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG); sceCtrlPeekBufferPositive(0, &d, 1); old = d.buttons; }
+    unsigned char left_y = 128;
+    Pad() { SceCtrlData d{}; sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG); sceCtrlPeekBufferPositive(0, &d, 1); old = d.buttons; left_y = d.ly; }
     unsigned poll() {
         SceCtrlData d{};
         sceCtrlPeekBufferPositive(0, &d, 1);
         unsigned pressed = d.buttons & ~old;
         old = d.buttons;
+        left_y = d.ly;
         return pressed;
     }
 };
@@ -705,22 +708,23 @@ Answer ask_screen(const Env& env, Pad& pad) {
     const int max_scroll = std::max(0, height - (bottom - top));
     int scroll = 0, touch_y = 0;
     bool dragging = false;
-    unsigned repeat_button = 0;
-    int64_t repeat_at = 0;
+    ScrollRepeat scroll_repeat;
+    ScrollInput scroll_input;
+    scroll_input.sample(pad.old & SCE_CTRL_UP, pad.old & SCE_CTRL_DOWN, pad.left_y);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
     for (;;) {
         unsigned pressed = pad.poll();
         if (pressed & SCE_CTRL_CROSS) return Answer::Encrypt;
         if (pressed & SCE_CTRL_CIRCLE) return Answer::Decline;
         const int64_t now = sceKernelGetSystemTimeWide();
-        unsigned direction = pad.old & (SCE_CTRL_UP | SCE_CTRL_DOWN);
-        if (direction != repeat_button) {
-            repeat_button = direction;
-            repeat_at = now + 350000;
-        } else if (direction && now >= repeat_at) {
-            pressed |= direction;
-            repeat_at = now + 70000;
-        }
+        scroll_repeat.beginFrame();
+        const unsigned held = pad.old & (SCE_CTRL_UP | SCE_CTRL_DOWN);
+        const auto direction = scroll_input.sample(held & SCE_CTRL_UP, held & SCE_CTRL_DOWN, pad.left_y);
+        if (held == (SCE_CTRL_UP | SCE_CTRL_DOWN)) pressed &= ~held;
+        const int repeated = scroll_repeat.update(direction.direction, direction.fresh, 1,
+                                                   (double)(bottom - top) / step, now, env.scroll_speed);
+        const int navigation = direction.fresh ? direction.direction : repeated;
+        if (navigation) pressed |= navigation < 0 ? SCE_CTRL_UP : SCE_CTRL_DOWN;
         if (pressed & SCE_CTRL_UP) scroll -= step;
         if (pressed & SCE_CTRL_DOWN) scroll += step;
         SceTouchData touch{};

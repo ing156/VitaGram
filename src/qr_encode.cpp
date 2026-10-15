@@ -2,8 +2,15 @@
 #include <algorithm>
 
 namespace {
-const int kEccPerBlock[11] = {-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26};  // level M
-const int kBlocks[11] = {-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5};
+// Rows: Medium, High. ISO QR block parameters, versions 1-10.
+const int kEccPerBlock[2][11] = {
+    {-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26},
+    {-1, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28}
+};
+const int kBlocks[2][11] = {
+    {-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5},
+    {-1, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8}
+};
 
 int raw_modules(int v) {
     int result = (16 * v + 128) * v + 64;
@@ -14,7 +21,7 @@ int raw_modules(int v) {
     }
     return result;
 }
-int data_codewords(int v) { return raw_modules(v) / 8 - kEccPerBlock[v] * kBlocks[v]; }
+int data_codewords(int v, int level) { return raw_modules(v) / 8 - kEccPerBlock[level][v] * kBlocks[level][v]; }
 
 uint8_t gf_mul(uint8_t x, uint8_t y) {
     int z = 0;
@@ -64,8 +71,8 @@ void draw_alignment(Grid& g, int cx, int cy) {
         for (int dx = -2; dx <= 2; ++dx) g.set(cx + dx, cy + dy, std::max(std::abs(dx), std::abs(dy)) != 1);
 }
 
-void draw_format(Grid& g, int mask) {
-    int data = (0 << 3) | mask;  // level M = 0
+void draw_format(Grid& g, int mask, int level) {
+    int data = ((level ? 2 : 0) << 3) | mask;  // M = 0, H = 2
     int rem = data;
     for (int i = 0; i < 10; ++i) rem = (rem << 1) ^ ((rem >> 9) * 0x537);
     int bits = ((data << 10) | rem) ^ 0x5412;
@@ -134,14 +141,18 @@ int penalty(const Grid& g) {
 }
 }  // namespace
 
-bool qr_encode(const std::string& text, QrCode& out) {
+bool qr_encode(const std::string& text, QrCode& out, QrEcc ecc_level) {
+    out = QrCode();
+    // Bound length before converting to int or calculating bit counts.
+    if (text.size() > 213) return false;
+    const int level = ecc_level == QrEcc::High ? 1 : 0;
     int version = 0;
     for (int v = 1; v <= 10; ++v) {
         int needed = 4 + (v <= 9 ? 8 : 16) + 8 * (int)text.size();
-        if (needed <= data_codewords(v) * 8) { version = v; break; }
+        if (needed <= data_codewords(v, level) * 8) { version = v; break; }
     }
     if (!version) return false;
-    const int capacity = data_codewords(version);
+    const int capacity = data_codewords(version, level);
 
     std::vector<uint8_t> bitstream;
     int bit_count = 0;
@@ -161,7 +172,7 @@ bool qr_encode(const std::string& text, QrCode& out) {
     for (uint8_t pad = 0xEC; (int)bitstream.size() < capacity; pad ^= 0xEC ^ 0x11) bitstream.push_back(pad);
 
     // Split into blocks, add error correction, interleave.
-    const int blocks = kBlocks[version], ecc = kEccPerBlock[version], raw = raw_modules(version) / 8;
+    const int blocks = kBlocks[level][version], ecc = kEccPerBlock[level][version], raw = raw_modules(version) / 8;
     const int short_blocks = blocks - raw % blocks, short_len = raw / blocks;
     std::vector<std::vector<uint8_t>> parts;
     for (int i = 0, k = 0; i < blocks; ++i) {
@@ -193,7 +204,7 @@ bool qr_encode(const std::string& text, QrCode& out) {
                 if (!((i == 0 && j == 0) || (i == 0 && j == count - 1) || (i == count - 1 && j == 0)))
                     draw_alignment(g, positions[i], positions[j]);
     }
-    draw_format(g, 0);  // reserves the format area
+    draw_format(g, 0, level);  // reserves the format area
     draw_version(g, version);
 
     // Zig-zag placement of the data.
@@ -219,7 +230,7 @@ bool qr_encode(const std::string& text, QrCode& out) {
         for (int y = 0; y < size; ++y)
             for (int x = 0; x < size; ++x)
                 if (!trial.fixed[(size_t)y * size + x] && mask_bit(mask, x, y)) trial.dark[(size_t)y * size + x] ^= 1;
-        draw_format(trial, mask);
+        draw_format(trial, mask, level);
         int p = penalty(trial);
         if (p < best_penalty) { best_penalty = p; best_mask = mask; best = trial; }
     }

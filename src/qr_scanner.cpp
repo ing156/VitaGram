@@ -94,14 +94,18 @@ void QrScanner::run() {
     cpu_scheduler::Thread role(cpu_scheduler::Role::Video);
     cpu_scheduler::Media workload(cpu_scheduler::Role::Video);
     uint64_t last_frame = UINT64_MAX;
+    // Keep both identification attempts on one captured frame even if camera
+    // DMA updates its buffer while the decoder is working.
+    std::vector<uint8_t> frame(Width * Height);
     while (!stopping_) {
         SceCameraRead read{};
         read.size = sizeof(read); read.mode = 1; // Nonblocking latest-frame read.
         int rc = sceCameraRead(Device, &read);
         if (rc >= 0 && read.frame != last_frame) {
             last_frame = read.frame;
+            std::memcpy(frame.data(), camera_buffer_, frame.size());
             uint8_t* gray = quirc_begin(decoder_, nullptr, nullptr);
-            std::memcpy(gray, camera_buffer_, Width * Height);
+            std::memcpy(gray, frame.data(), frame.size());
             pthread_mutex_lock(&mutex_);
             for (int y = 0; y < PreviewHeight; ++y)
                 for (int x = 0; x < PreviewWidth; ++x) {
@@ -110,21 +114,30 @@ void QrScanner::run() {
                 }
             preview_ready_ = true;
             pthread_mutex_unlock(&mutex_);
-            quirc_end(decoder_);
-            for (int i = 0; i < quirc_count(decoder_); ++i) {
-                quirc_code code{}; quirc_data data{};
-                quirc_extract(decoder_, i, &code);
-                auto error = quirc_decode(&code, &data);
-                if (error == QUIRC_ERROR_DATA_ECC) { quirc_flip(&code); error = quirc_decode(&code, &data); }
-                if (error != QUIRC_SUCCESS) continue;
-                std::string payload(reinterpret_cast<char*>(data.payload), data.payload_len);
-                ProxyLink proxy; i18n::Text message;
-                auto parsed = parse_proxy_link(payload, proxy, message);
-                pthread_mutex_lock(&mutex_);
-                if (parsed == ProxyLinkResult::Valid) link_ = payload;
-                else status_ = parsed == ProxyLinkResult::Invalid ? message : i18n::text("qr.no_link");
-                pthread_mutex_unlock(&mutex_);
-                if (parsed == ProxyLinkResult::Valid) return;
+            // Retry the same frame with straight-side finder fitting for the
+            // rounded rings used by Telegram's shared QR codes.
+            for (int attempt = 0; attempt < 2 && !stopping_; ++attempt) {
+                if (attempt) {
+                    gray = quirc_begin(decoder_, nullptr, nullptr);
+                    std::memcpy(gray, frame.data(), frame.size());
+                }
+                quirc_set_rounded_finders(decoder_, attempt);
+                quirc_end(decoder_);
+                for (int i = 0; i < quirc_count(decoder_); ++i) {
+                    quirc_code code{}; quirc_data data{};
+                    quirc_extract(decoder_, i, &code);
+                    auto error = quirc_decode(&code, &data);
+                    if (error == QUIRC_ERROR_DATA_ECC) { quirc_flip(&code); error = quirc_decode(&code, &data); }
+                    if (error != QUIRC_SUCCESS) continue;
+                    std::string payload(reinterpret_cast<char*>(data.payload), data.payload_len);
+                    ProxyLink proxy; i18n::Text message;
+                    auto parsed = parse_proxy_link(payload, proxy, message);
+                    pthread_mutex_lock(&mutex_);
+                    if (parsed == ProxyLinkResult::Valid) link_ = payload;
+                    else status_ = parsed == ProxyLinkResult::Invalid ? message : i18n::text("qr.no_link");
+                    pthread_mutex_unlock(&mutex_);
+                    if (parsed == ProxyLinkResult::Valid) return;
+                }
             }
         } else if (rc < 0 && rc != (int)SCE_CAMERA_ERROR_ALREADY_READ && rc != (int)SCE_CAMERA_ERROR_NOT_ACTIVE &&
                    rc != (int)SCE_CAMERA_ERROR_TIMEOUT) {

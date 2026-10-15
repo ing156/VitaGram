@@ -101,6 +101,7 @@ struct quirc_flood_fill_vars {
 };
 
 struct quirc {
+	int rounded_finders;
 	uint8_t			*image;
 	quirc_pixel_t		*pixels;
 	int			w;

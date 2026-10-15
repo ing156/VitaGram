@@ -1,5 +1,13 @@
 # Native checks
 
+`bash tests/run-scroll-tests.sh` checks held-arrow acceleration, direction and menu
+changes, release and resume cancellation, frame stalls, and the limit of one page
+per 0.5 seconds in Normal mode across different viewport sizes and frame rates.
+All three speed presets are checked against their selected limits of 2, 4 and 6
+pages per second. Vault checks verify saved scroll speeds and default fallback.
+It also checks left-stick dead-zone hysteresis, D-pad priority, source changes,
+and matching acceleration for stick and button holds.
+
 Cache regressions for 0.33.7 block an actual cache read and apply live chat/user
 updates and message deletion before it resumes. They also clear the account during
 the read and require the late result to be discarded. Old startup indices and
@@ -42,6 +50,10 @@ English fallback, the `.lang` file format, and that all `tr("key")` keys used in
 select it explicitly through `tests/test_language.h`.
 
 `bash tests/run-proxy-tests.sh` checks proxy URLs, real QR decoding and mocked Vita camera lifecycle.
+It includes Telegram-style rounded finder rings and data modules with a central
+logo, mirrored frames, rotation, perspective and reduced contrast. The styled
+renderer follows the radii in Telegram Android's `TelegramQRCodeWriter`;
+it is a synthetic regression, not a physical-camera test.
 
 `bash tests/run-video-tests.sh` checks circular YUV cropping, the current TDLib
 `inputMessageVideoNote` payload, camera switching, microphone failure, cancellation,
@@ -161,7 +173,9 @@ Sticker-pack icon tests exercise production selection of PNG/JPEG/WebP thumbnail
 
 `bash tests/run-chat-scroll-tests.sh` checks pixel dragging in both chat-list layouts,
 partial-row hit testing, viewport edges, button selection visibility, page append,
-list shrink and folder reset. Touch sampling and rendering require a PS Vita check.
+list shrink and folder reset, plus row motion when the list is replaced (a moved chat
+slides from its previous row, mid-slide changes, one-screen limit, no motion after a
+folder change). Touch sampling and rendering require a PS Vita check.
 
 `bash tests/run-font-tests.sh` also exercises the production text raster cache
 with real FreeType and an in-memory Vita texture stub: exact glyph pixels at
@@ -171,7 +185,9 @@ It does not validate Vita GPU output.
 
 `bash tests/run-photo-tests.sh` checks fullscreen photo rotation: gyro restricted to
 0° and ±90°, debounce, flat/touch behavior, manual L/R rotation including 180°,
-disabled sampling, sampling failure, and reopening the viewer. Vita motion and GPU
+disabled sampling, sampling failure, and reopening the viewer. It also checks stick
+zoom from 100% to 500%, pan direction and bounds, dead zones, frame-independent speed,
+stall protection, touch priority and pinch limits. Vita motion and GPU
 calls are stubbed; physical orientation and themed button rendering require a device.
 
 `bash tests/run-audio-recording-dialog-tests.sh` checks preview/record/encode/review
@@ -206,3 +222,26 @@ video tests also check retained scanner failures and recorder status across
 language changes. Rapid switching and glyph appearance still need Vita testing.
 
 Transfer tests cover cached deletion permission reads beyond the refresh interval, preserving rights during refresh, deletion without a second properties request, permission denial and waiting for all loaded album members.
+
+`bash tests/run-upload-picker-tests.sh` checks attachment marking/unmarking for
+photos, videos and files, the 10-item limit, path identity across folders and the
+latest view, retained selections during refresh/navigation, and explicit review
+before sending. Review checks cover Send as the first row, sending from any row,
+empty/duplicate-send rejection, file preview/removal offsets and the three Add rows.
+It also covers all six sort modes, cycling both ways, preserving
+the focused file and marks, equal filenames, and returning to the right folder
+after changing sort order in a child directory. The photo root shortcut for
+latest screenshots must remain first through every sort, refresh and return. Requires VitaSDK headers; filesystem and clock calls are stubbed.
+Visual highlighting and physical/touch controls require a PS Vita check.
+
+`bash tests/run-qr-encode-tests.sh` checks QR byte encoding at levels M and H
+through version 10, and decodes the actual antialiased login raster with its
+rounded patterns and paper-plane badge across different tokens and lengths.
+The four-module quiet zone and reduced-size rendering are covered. These are
+host checks; phone scanning of the Vita display requires a device check.
+
+`bash tests/run-media-seek-tests.sh` checks fullscreen 10-second seek steps,
+hold acceleration, one commit on release, bounds, direction conflicts, stale
+message/menu/sleep cancellation and touch-track mapping. The FFmpeg download-stream
+suite also checks actual H.264 keyframe pre-roll. These host checks do not validate
+controller/touch behavior or decoder startup time on Vita hardware.

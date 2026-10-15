@@ -7,14 +7,40 @@
 
 // UI-thread only; zoom never allocates a second image or resamples on the CPU.
 struct PhotoView {
+    static constexpr float kMinZoom = 1.0f, kMaxZoom = 5.0f;
     float zoom = 1, pan_x = 0, pan_y = 0;
     float last_x = 0, last_y = 0, distance = 0;
     int fingers = 0, first_id = -1, second_id = -1;
     int rotation = 0, candidate = 0;
     unsigned long long candidate_since = 0;
+    unsigned long long sticks_since = 0;
     bool captured = false, sampling = false, manual_rotation = false;
 
-    void reset() { zoom = 1; pan_x = pan_y = 0; fingers = 0; distance = 0; captured = false; }
+    void reset() { zoom = 1; pan_x = pan_y = 0; fingers = 0; distance = 0; captured = false; sticks_since = 0; }
+    static float stickAxis(int value) {
+        // Vita sticks report 0..255, with neutral near 128.
+        const int offset = value - 128;
+        const int magnitude = std::abs(offset);
+        if (magnitude <= 24) return 0;
+        const float amount = float(magnitude - 24) / (offset < 0 ? 104.0f : 103.0f);
+        return offset < 0 ? -amount : amount;
+    }
+    void sticks(int lx, int ly, int ry, unsigned long long now) {
+        // Cap elapsed time after stalls/resume; speed otherwise follows real time.
+        const float dt = sticks_since && now > sticks_since ?
+            std::min(0.05f, float(now - sticks_since) / 1000000.0f) : 0.0f;
+        sticks_since = now;
+        if (fingers) return; // Touch gestures own the image until release.
+        const float next = std::clamp(zoom - stickAxis(ry) * 2.5f * dt, kMinZoom, kMaxZoom);
+        const float ratio = next / zoom;
+        pan_x *= ratio;
+        pan_y *= ratio;
+        zoom = next;
+        if (zoom <= kMinZoom) { pan_x = pan_y = 0; return; }
+        // Move the viewport in the stick direction, in screen coordinates even when rotated.
+        pan_x -= stickAxis(lx) * 600.0f * dt;
+        pan_y -= stickAxis(ly) * 600.0f * dt;
+    }
     void begin() { rotation = candidate = 0; candidate_since = 0; manual_rotation = false; reset(); }
     void rotate(int direction) {
         rotation = (rotation + direction + 4) % 4;
@@ -62,7 +88,7 @@ struct PhotoView {
         if (zoom > 1.01f) captured = true;
         if (n == fingers && id0 == first_id && id1 == second_id) {
             if (n == 2 && distance > 8 && d > 8) {
-                float next = std::max(1.0f, std::min(6.0f, zoom*d/distance));
+                float next = std::clamp(zoom*d/distance, kMinZoom, kMaxZoom);
                 float ratio = next/zoom;
                 pan_x = x-480-(last_x-480-pan_x)*ratio;
                 pan_y = y-272-(last_y-272-pan_y)*ratio;

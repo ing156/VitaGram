@@ -190,6 +190,11 @@ int main(int argc, char** argv) {
     // The open chat waits for history: background downloads stay queued.
     assert(!td_request_allowed(1,true,false,false,true));
     assert(td_request_allowed(9,false,false,false,true));
+    // ...but not indefinitely: an open video must not starve thumbnails and avatars.
+    assert(!td_request_allowed(1,false,false,false,true,kTdHoldMaxUs-1));
+    assert(td_request_allowed(1,false,false,false,true,kTdHoldMaxUs));
+    assert(td_request_allowed(1,false,false,true,false,kTdHoldMaxUs));
+    assert(!td_request_allowed(1,false,true,false,true,kTdHoldMaxUs)); // Congestion still applies.
     assert(td_request_allowed(5,false,false,true));
     auto* classified=json_pack("{s:s,s:i,s:{s:s,s:I,s:i},s:i}","@type","messages","@wire_bytes",123,"@extra","kind","history","chat",(json_int_t)42,"generation",7,"@received_at",1000);
     queue.push_back(classified);TdEventMetadata selected;

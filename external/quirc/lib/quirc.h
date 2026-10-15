@@ -56,6 +56,10 @@ int quirc_resize(struct quirc *q, int w, int h);
 uint8_t *quirc_begin(struct quirc *q, int *w, int *h);
 void quirc_end(struct quirc *q);
 
+/* VitaGram extension: fit straight sides of rounded finder rings. Set before
+ * quirc_end(); ordinary square-corner identification remains the default. */
+void quirc_set_rounded_finders(struct quirc *q, int enabled);
+
 /* This structure describes a location in the input image buffer. */
 struct quirc_point {
 	int	x;

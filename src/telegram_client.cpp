@@ -34,6 +34,11 @@
 #include <psp2/kernel/cpu.h>
 #include <psp2/rtc.h>
 #include <ctime>
+#include "priority_ceiling.h"
+
+// The UI waits on the event queue: background holders run at the UI priority meanwhile.
+static void lock_queue(pthread_mutex_t* mutex) { priority_ceiling::enter(); performance::lock(mutex, performance::Metric::QueueLock); }
+static void unlock_queue(pthread_mutex_t* mutex) { pthread_mutex_unlock(mutex); priority_ceiling::leave(); }
 
 static int64_t json_i53(json_t* o, const char* key) {
     json_t* v = json_object_get(o, key);
@@ -104,9 +109,33 @@ static void clear_cached_file_ids(json_t* root) {
     }
 }
 
+// Storage only: the local path of a completed small avatar whose file is still intact.
+static std::string valid_avatar_path(json_t* file) {
+    auto* local = json_object_get(file, "local");
+    std::string path = json_is_true(json_object_get(local, "is_downloading_completed")) ? json_str(local, "path") : "";
+    struct stat info{};
+    const auto expected=json_i53(file,"size");
+    if (path.empty() || stat(path.c_str(),&info) || !S_ISREG(info.st_mode) ||
+        info.st_size<=0 || (expected>0 && info.st_size!=expected && info.st_size!=vault::sealed_size(expected))) path.clear();
+    return path;
+}
+// The first rows are drawn with their avatars instead of placeholders that fill in one by one.
+static void attach_startup_avatars(json_t* startup, bool (*proceed)(void*), void* context) {
+    auto* avatars = json_object_get(startup, "avatars");
+    const char* key; json_t* chat; size_t checked = 0;
+    json_object_foreach(json_object_get(startup, "chats"), key, chat) {
+        if (checked >= 40 || (proceed && !proceed(context))) break;
+        auto* file = json_object_get(avatars, key);
+        if (!file) continue;
+        ++checked;
+        const auto path = valid_avatar_path(file);
+        if (!path.empty()) json_object_set_new(chat, "@avatar_path", json_string(path.c_str()));
+    }
+}
 void* TelegramClient::prepareCache() {
     performance::Scope measurement(performance::Metric::CacheRestore);
-    if (auto* startup = ui_cache_.loadStartup()) return startup;
+    auto proceed_startup = [](void* opaque) -> bool { return !static_cast<TelegramClient*>(opaque)->stopping_; };
+    if (auto* startup = ui_cache_.loadStartup()) { attach_startup_avatars(startup, proceed_startup, this); return startup; }
     // One-time migration from the monolithic cache. Subsequent starts read only
     // the small index before showing chats; full histories remain on Storage.
     ui_cache_.load(cacheLoadProceed, this); full_cache_loaded_ = true;
@@ -134,14 +163,15 @@ void TelegramClient::restoreCache() {
 bool TelegramClient::restoreCacheAsync() {
     if (cache_worker_started_ || logging_out_ || account_cleanup::pending() || stopping_) return false;
     restore_on_cache_worker_ = true;
-    return startCacheWorker();
+    startup_list_hold_ = startCacheWorker();
+    return startup_list_hold_;
 }
 void TelegramClient::beginCacheApply(void* opaque) {
     if (applying_snapshot_) json_decref(static_cast<json_t*>(applying_snapshot_));
     applying_snapshot_ = opaque;
     cache_apply_stage_ = 0;
-    cache_restore_chats_ = known_chats_.empty();
-
+    // Once Telegram has confirmed a list in this session, the index is older than what is shown.
+    cache_restore_chats_ = chats_last_updated_.empty();
 }
 void TelegramClient::applyRestoredCache(void* opaque) {
     // Synchronous compatibility path for offline tools/tests; production pump
@@ -159,22 +189,12 @@ void TelegramClient::applyCacheSlice() {
     const auto started = sceKernelGetSystemTimeWide();
     bool changed = false;
 
-    // Never let a partially installed cache replace live chats arriving between
-    // slices. Once the complete cached list is installed, normal list handover
-    // preserves its existing stable-window behavior.
-    if (cache_apply_stage_ <= 1 && cache_restore_chats_ &&
-        std::any_of(known_chats_.begin(), known_chats_.end(), [](const ChatItem& c) { return !c.cached_metadata; })) {
-        cache_restore_chats_ = false; startup_chat_snapshots_.clear();
-        known_chats_.erase(std::remove_if(known_chats_.begin(), known_chats_.end(),
-            [](const ChatItem& c) { return c.cached_metadata; }), known_chats_.end());
-        changed = true;
-    }
-
-    // Limit processing per slice to prevent UI blocking
+    // The index holds only the top of each list: install all its chats in one step so the
+    // list appears whole instead of growing row by row. Users and folders stay incremental.
     unsigned count = 0;
-    const unsigned max_count = 4; // Reduced from 8 to improve responsiveness
+    const unsigned max_count = 4;
 
-    for (; count < max_count; ++count) {
+    for (; count < max_count || cache_apply_stage_ == 1; ++count) {
         if (cache_apply_stage_ == 0) {
             auto* folders = json_object_get(snapshot, "folders");
             if (folders && !live_folders_received_) parseFolders(folders);
@@ -182,20 +202,24 @@ void TelegramClient::applyCacheSlice() {
         } else if (cache_apply_stage_ <= 2) {
             auto* collection = json_object_get(snapshot, cache_apply_stage_ == 1 ? "chats" : "users");
             auto* iter = json_object_iter(collection);
-            if (!iter) { ++cache_apply_stage_; continue; }
+            if (!iter) { changed = changed || cache_apply_stage_ == 1; ++cache_apply_stage_; continue; }
             auto* value = json_object_iter_value(iter);
             const auto id = json_i53(value, "id");
             if (cache_apply_stage_ == 1 && cache_restore_chats_ && id) {
+                // Live chats announced before loadChats keep their data; the startup rows
+                // keep the previous order until Telegram confirms the visible window.
+                auto known = std::find_if(known_chats_.begin(), known_chats_.end(), [&](const ChatItem& c) { return c.id == id; });
                 // A malformed snapshot may repeat an ID under different keys.
-                const bool duplicate = std::any_of(known_chats_.begin(), known_chats_.end(),
-                    [&](const ChatItem& c) { return c.id == id; });
-                if (duplicate) {
-                    std::string key = json_object_iter_key(iter); json_object_del(collection, key.c_str());
-                    if (sceKernelGetSystemTimeWide() - started >= 500) break; // Reduced timeout
-                    continue;
+                const bool duplicate = known != known_chats_.end() && known->cached_metadata;
+                ChatItem chat = duplicate ? ChatItem{} : chatFromJson(value);
+                chat.cached_metadata = true;
+                if (!duplicate) chat.avatar_path = json_str(value, "@avatar_path");
+                if (!duplicate && known != known_chats_.end() && known->avatar_path.empty() && known->avatar_file_id)
+                    { known->avatar_path = chat.avatar_path; known->avatar_stale = !known->avatar_path.empty(); } // Until TDLib's download.
+                if (!duplicate && known == known_chats_.end()) {
+                    updateReadOutbox(id, json_i53(value, "last_read_outbox_message_id"));
+                    known_chats_.push_back(chat);
                 }
-                parseChat(value);
-                auto& chat = known_chats_.back(); chat.cached_metadata = true;
                 for (const auto& entry : chat.list_orders) if (entry.second) {
                     auto copy = chat; copy.order = entry.second;
                     auto& rows = startup_chat_snapshots_[entry.first];
@@ -204,66 +228,73 @@ void TelegramClient::applyCacheSlice() {
                     });
                     rows.insert(at, std::move(copy));
                 }
-                changed = true;
             } else if (cache_apply_stage_ == 2 && id && !user_names_.count(id)) {
                 if (user_presence_.count(id)) json_object_del(value, "status");
                 parseUser(value); user_photos_[id].fresh = false;
             }
             std::string key = json_object_iter_key(iter);
             json_object_del(collection, key.c_str());
-            if (!json_object_size(collection)) ++cache_apply_stage_;
+            if (!json_object_size(collection)) { changed = changed || cache_apply_stage_ == 1; ++cache_apply_stage_; }
         } else {
             json_decref(snapshot); applying_snapshot_ = nullptr; changed = true; break;
         }
-        if (sceKernelGetSystemTimeWide() - started >= 500) break; // Reduced timeout
+        if (sceKernelGetSystemTimeWide() - started >= (cache_apply_stage_ == 1 ? 8000 : 500)) break;
     }
 
-    if (changed) publishChats();
+    if (changed && cache_apply_stage_ != 1) publishChats();
     if (!ready_ && !chats_.empty() && input_kind_ == InputKind::None) status_ = i18n::text("conn.cached_connecting");
 }
 
 void TelegramClient::requestCachedDetails(int index) {
     // Online responses provide session-valid IDs. Offline details are read and
     // validated only when opened, on the same Storage worker as file checks.
-    if (ready_ || logging_out_ || !cache_restore_allowed_) return;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    // Online, only a history the quick copy could not show (file not merged yet) is read here.
+    if ((ready_ && index != -1) || logging_out_ || !cache_restore_allowed_) return;
+    lock_queue(&queue_mutex_);
     cache_demand_ = {current_chat_id_, history_generation_, sticker_session_, sticker_generation_, index, true};
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
 }
 void TelegramClient::prepareCachedDetails() {
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     auto key = cache_demand_; cache_demand_.pending = false;
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     if (!key.pending) return;
+    if (key.index == -1 && ui_cache_.historyPending(key.chat)) {
+        auto alive = [](void* opaque) -> bool { return !static_cast<TelegramClient*>(opaque)->stopping_; };
+        ui_cache_.loadHistory(key.chat, alive, this);
+    }
     json_t* data = key.index == -1 ? ui_cache_.history(key.chat) :
         key.index == -2 ? ui_cache_.stickerSnapshot() : ui_cache_.stickerItems(key.index);
     auto proceed = [](void* opaque) -> bool {
         auto* self = static_cast<TelegramClient*>(opaque);
         if (self->stopping_) return false;
-        performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&self->queue_mutex_);
         const bool replaced = self->cache_demand_.pending;
-        pthread_mutex_unlock(&self->queue_mutex_);
+        unlock_queue(&self->queue_mutex_);
         sceKernelDelayThread(500);
         return !replaced;
     };
     if (!media_cache_.resolve(data, true, proceed, this)) { if (data) json_decref(data); return; }
     clear_cached_file_ids(data);
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     if (!stopping_ && !cache_demand_.pending) {
         if (cache_result_) json_decref(static_cast<json_t*>(cache_result_));
         cache_result_ = data; cache_result_key_ = key; data = nullptr;
     }
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     if (data) json_decref(data);
 }
 void TelegramClient::applyCachedDetails() {
     void* opaque = nullptr;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     std::swap(opaque, cache_result_); auto key = cache_result_key_;
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     auto* data = static_cast<json_t*>(opaque);
     if (!data) return;
-    if (!ready_ && !logging_out_ && cache_restore_allowed_ && key.chat == current_chat_id_ &&
+    // Online, the cache only fills a chat whose first page has not arrived yet.
+    const bool wanted = !ready_ || (key.index == -1 && history_pending_ && history_cursor_ == 0 &&
+                                    (history_items_.empty() || history_cached_));
+    if (wanted && !logging_out_ && cache_restore_allowed_ && key.chat == current_chat_id_ &&
         key.history == history_generation_ && key.session == sticker_session_ && key.stickers == sticker_generation_) {
         if (key.index == -1) {
             history_items_.clear();
@@ -277,35 +308,30 @@ void TelegramClient::applyCachedDetails() {
 }
 void TelegramClient::prepareCachedAvatar() {
     int64_t id = 0;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     if (!cached_avatar_requests_.empty()) {
         id = cached_avatar_requests_.front(); cached_avatar_requests_.pop_front();
     }
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     if (!id) return;
     auto* file = ui_cache_.chatAvatar(id);
     auto proceed = [](void* opaque) -> bool { return !static_cast<TelegramClient*>(opaque)->stopping_; };
     if (file && media_cache_.resolve(file, true, proceed, this)) {
-        auto* local = json_object_get(file, "local");
-        std::string path = json_is_true(json_object_get(local, "is_downloading_completed")) ? json_str(local, "path") : "";
         // Validate even descriptors without a remote cache key. Storage only.
-        struct stat info{};
-        const auto expected=json_i53(file,"size");
-        if (path.empty() || stat(path.c_str(),&info) || !S_ISREG(info.st_mode) ||
-            info.st_size<=0 || (expected>0 && info.st_size!=expected && info.st_size!=vault::sealed_size(expected))) path.clear();
-        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        std::string path = valid_avatar_path(file);
+        lock_queue(&queue_mutex_);
         if (!stopping_) cached_avatar_results_.emplace_back(id, std::move(path));
-        pthread_mutex_unlock(&queue_mutex_);
+        unlock_queue(&queue_mutex_);
     }
     if (file) json_decref(file);
 }
 void TelegramClient::applyCachedAvatar() {
     std::pair<int64_t, std::string> result;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     if (!cached_avatar_results_.empty()) {
         result = std::move(cached_avatar_results_.front()); cached_avatar_results_.pop_front();
     }
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     if (!result.first || logging_out_ || !cache_restore_allowed_) return;
     auto apply = [&](ChatItem& chat) {
         if (chat.id == result.first && chat.cached_metadata) chat.avatar_path = result.second;
@@ -406,6 +432,8 @@ TelegramClient::~TelegramClient() {
 }
 
 void TelegramClient::stopWorker() {
+    // The app exits through here: hand the list on screen to Storage before it stops.
+    if (startup_list_dirty_ && cache_worker_started_) queueStartupList();
     stopping_ = true;
 
     const bool worker_running = worker_started_.exchange(false);
@@ -420,17 +448,19 @@ void TelegramClient::stopWorker() {
     if (applying_snapshot_) json_decref(static_cast<json_t*>(applying_snapshot_));
     applying_snapshot_ = nullptr;
 
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     for (void* root : parsed_) json_decref(static_cast<json_t*>(root));
     parsed_.clear(); incoming_.clear(); outgoing_.clear();
     if (restored_snapshot_) json_decref(static_cast<json_t*>(restored_snapshot_));
     restored_snapshot_ = nullptr;
+    if (pending_startup_list_) json_decref(static_cast<json_t*>(pending_startup_list_));
+    pending_startup_list_ = nullptr;
     if (cache_result_) json_decref(static_cast<json_t*>(cache_result_));
     cache_result_ = nullptr; cache_demand_.pending = false;
     cached_avatar_requests_.clear(); cached_avatar_results_.clear(); cached_avatar_seen_.clear();
     incoming_bytes_ = parsed_wire_bytes_ = 0; incoming_priority_ = 0;
     sampleQueues();
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
 }
 
 void* TelegramClient::workerEntry(void* self) {
@@ -453,7 +483,7 @@ void TelegramClient::runParser() {
     while (!stopping_) {
         std::string text;
         int64_t received_at = 0;
-        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&queue_mutex_);
         if (!incoming_.empty()) {
             text = std::move(incoming_.front().text);
             incoming_bytes_ -= text.size();
@@ -462,7 +492,7 @@ void TelegramClient::runParser() {
             incoming_.pop_front();
             sampleQueues();
         }
-        pthread_mutex_unlock(&queue_mutex_);
+        unlock_queue(&queue_mutex_);
         if (text.empty()) { sceKernelDelayThread(2000); continue; }
         const auto raw_wait=performance::now()-received_at;
         performance::observe(performance::Metric::RawWait, raw_wait);
@@ -561,11 +591,11 @@ void TelegramClient::runParser() {
                 ui_cache_.saveStickerPacks(root);
                 json_object_set_new(root,"@ui_saved",json_true());
             }
-            performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+            lock_queue(&queue_mutex_);
             parsed_wire_bytes_ += metadata.bytes;
             parsed_wire_bytes_ -= parsed_.enqueue(root,metadata);
             sampleQueues();
-            pthread_mutex_unlock(&queue_mutex_);
+            unlock_queue(&queue_mutex_);
         }
         if (sceKernelGetSystemTimeWide() - slice_started >= 2000) {
             sceKernelDelayThread(500);
@@ -578,13 +608,16 @@ bool TelegramClient::cacheLoadProceed(void* opaque) {
     auto* self = static_cast<TelegramClient*>(opaque);
     int64_t pause_started=0;
     while (!self->stopping_) {
-        performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&self->queue_mutex_);
         const size_t pending = self->incoming_.size() + self->parsed_.size();
-        const bool congested = pending >= 32;
         // Live events waiting for the Parser/UI mean the cores are shared with
         // this load: halve its duty cycle (2 ms work, 2 ms rest) instead of 80%.
+        // A large backlog stops it: running alongside the startup update flood
+        // slowed the Parser (10 s event backlog), the UI frames and first chat
+        // opening, while the load itself finished no sooner.
+        const bool congested = pending >= 32;
         const bool busy = pending >= 8;
-        pthread_mutex_unlock(&self->queue_mutex_);
+        unlock_queue(&self->queue_mutex_);
         const auto now = sceKernelGetSystemTimeWide();
         if (now>=self->interaction_until_.load() && now>=self->cache_service_at_) {
             self->cache_service_at_=now+10000;
@@ -617,9 +650,10 @@ void* TelegramClient::cacheEntry(void* opaque) {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Storage);
     if (self->restore_on_cache_worker_) {
         auto* snapshot = static_cast<json_t*>(self->prepareCache());
-        performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&self->queue_mutex_);
         if (!self->stopping_) { self->restored_snapshot_ = snapshot; snapshot = nullptr; }
-        pthread_mutex_unlock(&self->queue_mutex_);
+        self->startup_index_read_ = true;
+        unlock_queue(&self->queue_mutex_);
         if (snapshot) json_decref(snapshot);
         if (!self->stopping_) {
             performance::Scope details(performance::Metric::CacheDetailsLoad);
@@ -646,6 +680,10 @@ void* TelegramClient::cacheEntry(void* opaque) {
         if (now < self->interaction_until_.load()) { sceKernelDelayThread(10000); continue; }
         self->prepareCachedDetails();
         self->prepareCachedAvatar();
+        self->writeStartupList(false);
+        // Chat histories are merged one file per pass, the open chat first.
+        const bool merged = self->full_cache_loaded_ &&
+            self->ui_cache_.loadHistory(self->history_preferred_.load(), cacheLoadProceed, self);
         auto validate = [](void* opaque) -> bool {
             auto* client = static_cast<TelegramClient*>(opaque);
             return !client->stopping_ && !cpu_scheduler::videoActive() &&
@@ -665,19 +703,21 @@ void* TelegramClient::cacheEntry(void* opaque) {
             next_performance = sceKernelGetSystemTimeWide() + 5000000;
         }
         if (now >= next) {
-            performance::lock(&self->queue_mutex_, performance::Metric::QueueLock);
+            lock_queue(&self->queue_mutex_);
             bool congested = self->incoming_.size()+self->parsed_.size() >= 128;
-            pthread_mutex_unlock(&self->queue_mutex_);
+            unlock_queue(&self->queue_mutex_);
             if (!congested) {
                 self->media_cache_.flush(proceed, self);
                 self->ui_cache_.flush(proceed, self);
                 next = sceKernelGetSystemTimeWide() + 90000000;
             }
         }
-        sceKernelDelayThread(checked_file ? 2000 : 100000);
+        sceKernelDelayThread(checked_file || merged ? 2000 : 100000);
     }
     // Caches are best-effort: keep the last atomic snapshot instead of blocking
     // shutdown with a fresh full save. An in-flight write observes stopping_.
+    // The startup index is small: the list shown at exit is the first one shown next time.
+    self->writeStartupList(true);
     self->flushUploadLogs();
     gif_diagnostics::flush();
     if (diag_log::enabled(diag_log::Kind::Performance))
@@ -695,23 +735,23 @@ void TelegramClient::runWorker() {
     media_trash::rotate();
     client_ = td_json_client_create();
     if (!client_) {
-        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&queue_mutex_);
         incoming_.push_back({"{\"@type\":\"error\",\"code\":500,\"message\":\"TDLib creation failed\"}", sceKernelGetSystemTimeWide()});
         incoming_bytes_ += incoming_.back().text.size(); sampleQueues();
-        pthread_mutex_unlock(&queue_mutex_);
+        unlock_queue(&queue_mutex_);
         return;
     }
     int64_t last_receive = 0;
     while (!stopping_) {
         std::deque<Request> requests;
-        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&queue_mutex_);
         // Hard memory limit: over it, TDLib is neither fed nor run until the queues drain (see
         // td_queue_paused). Parser and UI keep consuming meanwhile.
         const bool was_paused = receive_paused_;
         receive_paused_ = td_queue_paused(receive_paused_, incoming_bytes_ + parsed_wire_bytes_, incoming_.size() + parsed_.size());
         if (receive_paused_) {
             const size_t queued_bytes = incoming_bytes_ + parsed_wire_bytes_, queued_events = incoming_.size() + parsed_.size();
-            pthread_mutex_unlock(&queue_mutex_);
+            unlock_queue(&queue_mutex_);
             if (!was_paused) std::fprintf(stderr, "TDLib paused: %zu bytes / %zu events queued\n", queued_bytes, queued_events);
             sceKernelDelayThread(5000);
             continue;
@@ -730,7 +770,7 @@ void TelegramClient::runWorker() {
                 return request.priority + std::min<int64_t>(4, (now-request.queued)/2000000);
             };
             for (auto it = outgoing_.begin(); it != outgoing_.end(); ++it) {
-                if (!td_request_allowed(it->priority,it->backlog_exempt,congested,interactive,foreground)) continue;
+                if (!td_request_allowed(it->priority,it->backlog_exempt,congested,interactive,foreground,now-it->queued)) continue;
                 if (best == outgoing_.end() || score(*it) > score(*best)) best = it;
             }
             if (best == outgoing_.end()) break;
@@ -745,7 +785,7 @@ void TelegramClient::runWorker() {
             requests.push_back(std::move(*best)); outgoing_.erase(best);
         }
         sampleQueues();
-        pthread_mutex_unlock(&queue_mutex_);
+        unlock_queue(&queue_mutex_);
         for (auto& request : requests) {
             // Only tracked requests are stamped, outside the shared mutex.
             // @extra is echoed by TDLib, correlating the reply without a map.
@@ -781,7 +821,7 @@ void TelegramClient::runWorker() {
             performance::observe(performance::Metric::Receive, performance::now()-receive_time);
             if (response) {
                 gif_diagnostics::raw("received", response, receive_time);
-                performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+                lock_queue(&queue_mutex_);
                 if ((incoming_bytes_ + parsed_wire_bytes_ > kTdQueueHighWaterBytes ||
                      incoming_.size() + parsed_.size() > kTdQueueHighWaterEvents) && td_event_is_ephemeral(response)) {
                     // Overloaded: shed a value the next update of the same kind replaces anyway.
@@ -790,7 +830,7 @@ void TelegramClient::runWorker() {
                     const bool report = now - shed_reported_ >= 10000000;
                     if (report) shed_reported_ = now;
                     const uint64_t shed = shed_events_;
-                    pthread_mutex_unlock(&queue_mutex_);
+                    unlock_queue(&queue_mutex_);
                     if (report) std::fprintf(stderr, "TDLib queue over budget: %llu ephemeral updates dropped so far\n", (unsigned long long)shed);
                     received = true;
                     continue;
@@ -803,7 +843,7 @@ void TelegramClient::runWorker() {
                 if (priority) { incoming_.insert(incoming_.begin() + incoming_priority_, std::move(entry)); ++incoming_priority_; }
                 else incoming_.push_back(std::move(entry));
                 sampleQueues();
-                pthread_mutex_unlock(&queue_mutex_);
+                unlock_queue(&queue_mutex_);
                 received = true;
             } else break;
             if (sceKernelGetSystemTimeWide() - receive_started >= 2000) break;
@@ -975,10 +1015,10 @@ void TelegramClient::checkProxy(const ProxyConfig& proxy) {
 
 void TelegramClient::sendRaw(const char* json, int priority, bool first_history, bool backlog_exempt, int32_t file_id, bool forum_check) {
     if (!worker_started_) return;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     outgoing_.push_back({json, priority, sceKernelGetSystemTimeWide(),first_history,backlog_exempt,file_id,forum_check});
     sampleQueues();
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
 }
 
 void TelegramClient::sendJson(void* opaque) {
@@ -1042,6 +1082,8 @@ std::string TelegramClient::inputPrompt() const {
         case InputKind::Code: return tr("input.code");
         case InputKind::Password: return tr("input.password");
         case InputKind::FirstName: return tr("input.first_name");
+        case InputKind::Email: return tr("input.email");
+        case InputKind::EmailCode: return tr("input.email_code");
         case InputKind::Message: return tr("input.message");
         default: return "";
     }
@@ -1116,6 +1158,13 @@ void TelegramClient::submitInput(const std::string& value) {
     } else if (kind == InputKind::FirstName) {
         root = json_pack("{s:s,s:s,s:s}", "@type", "registerUser", "first_name", value.c_str(), "last_name", "");
         status_ = i18n::text("auth.registering");
+    } else if (kind == InputKind::Email) {
+        root = json_pack("{s:s,s:s}", "@type", "setAuthenticationEmailAddress", "email_address", value.c_str());
+        status_ = i18n::text("auth.sending_code");
+    } else if (kind == InputKind::EmailCode) {
+        root = json_pack("{s:s,s:{s:s,s:s}}", "@type", "checkAuthenticationEmailCode",
+                         "code", "@type", "emailAddressAuthenticationCode", "code", value.c_str());
+        status_ = i18n::text("auth.checking_code");
     } else if (kind == InputKind::Message && current_chat_id_ != 0) {
         root = json_object();
         json_object_set_new(root, "@type", json_string("sendMessage"));
@@ -1192,7 +1241,7 @@ void TelegramClient::processAuth(void* opaque) {
         // the vault off must not wait, or the vault key could never be dropped without a login.
         if (vault::disabling()) migrateDatabaseKey();
         cache_restore_allowed_ = false;
-        startup_chat_snapshots_.clear();
+        startup_chat_snapshots_.clear(); startup_list_hold_ = false;
         ready_ = false; known_chats_.clear(); chats_.clear(); leaveChat(); ui_cache_.clear(); user_names_.clear(); supergroup_forum_.clear(); supergroup_member_.clear(); basic_group_member_.clear(); supergroup_rights_.clear(); basic_group_rights_.clear(); reply_target_ = forward_chat_ = forward_message_ = 0; clearSearch(); user_photos_.clear(); sender_requests_.clear();
         folder_windows_.clear(); folders_.clear(); selected_folder_ = 0; syncArchiveFolder(); user_presence_.clear();
         setInput(InputKind::Phone, i18n::text("auth.prompt.phone"));
@@ -1203,7 +1252,8 @@ void TelegramClient::processAuth(void* opaque) {
         auto via_of = [](const char* kind) {
             return !std::strcmp(kind, "authenticationCodeTypeTelegramMessage") ? "auth.via.app" :
                 !std::strcmp(kind, "authenticationCodeTypeCall") || !std::strcmp(kind, "authenticationCodeTypeFlashCall") ||
-                !std::strcmp(kind, "authenticationCodeTypeMissedCall") ? "auth.via.call" : "auth.via.sms";
+                !std::strcmp(kind, "authenticationCodeTypeMissedCall") ? "auth.via.call" :
+                !std::strcmp(kind, "authenticationCodeTypeFragment") ? "auth.via.fragment" : "auth.via.sms";
         };
         auth_detail_ = phone.empty() ? i18n::Text()
             : i18n::text("auth.code_sent", {"+" + phone, i18n::text(via_of(json_str(json_object_get(info, "type"), "@type")))});
@@ -1212,6 +1262,22 @@ void TelegramClient::processAuth(void* opaque) {
         auth_next_via_ = auth_can_resend_ ? i18n::text(via_of(json_str(next, "@type"))) : i18n::Text();
         auth_resend_at_ = sceKernelGetSystemTimeWide() + json_i53(info, "timeout") * 1000000;
         setInput(InputKind::Code, i18n::text("auth.prompt.code"));
+    } else if (!std::strcmp(type, "authorizationStateWaitEmailAddress")) {
+        // Telegram may require a login email for the number instead of sending a code.
+        auth_detail_.clear(); auth_can_resend_ = false;
+        setInput(InputKind::Email, i18n::text("auth.prompt.email"));
+    } else if (!std::strcmp(type, "authorizationStateWaitEmailCode")) {
+        json_t* info = json_object_get(state, "code_info");
+        const std::string pattern = json_str(info, "email_address_pattern");
+        auth_detail_ = pattern.empty() ? i18n::Text() : i18n::text("auth.email_code_sent", {pattern});
+        auth_can_resend_ = false;
+        setInput(InputKind::EmailCode, i18n::text("auth.prompt.email_code"));
+    } else if (!std::strcmp(type, "authorizationStateWaitPremiumPurchase")) {
+        // The login requires an in-store Premium purchase, which the console cannot make.
+        // TDLib still accepts another phone number or a QR sign-in from this state.
+        auth_can_resend_ = false;
+        auth_detail_ = i18n::text("auth.premium_hint");
+        setInput(InputKind::Phone, i18n::text("auth.premium_required"));
     } else if (!std::strcmp(type, "authorizationStateWaitPassword")) {
         setInput(InputKind::Password, i18n::text("auth.prompt.password"));
     } else if (!std::strcmp(type, "authorizationStateWaitRegistration")) {
@@ -1249,6 +1315,12 @@ void TelegramClient::processAuth(void* opaque) {
         opened_chat_id_ = 0;
         connection_ready_ = false;
         status_ = i18n::text("tg.closed");
+    } else if (!ready_ && !logging_out_ && std::strcmp(type, "authorizationStateClosing") &&
+               !std::strncmp(type, "authorizationState", 18)) {
+        // A sign-in step this client does not know must not leave the screen without a prompt:
+        // offer the phone number and QR sign-in again; TDLib reports an error if it rejects them.
+        auth_detail_.clear(); auth_can_resend_ = false;
+        setInput(InputKind::Phone, i18n::text("auth.unknown_step", {std::string(type + 18)}));
     }
 }
 
@@ -1610,7 +1682,7 @@ void TelegramClient::ensureSenderMedia(const MessageItem& message) {
     if (path.empty()) requestFile(file, 8);
 }
 
-void TelegramClient::parseChat(void* opaque) {
+ChatItem TelegramClient::chatFromJson(void* opaque) const {
     json_t* chat = (json_t*)opaque;
     ChatItem item;
     json_t* chat_type = json_object_get(chat, "type");
@@ -1622,10 +1694,9 @@ void TelegramClient::parseChat(void* opaque) {
     item.group = !std::strcmp(json_str(chat_type, "@type"), "chatTypeBasicGroup") ||
         (!std::strcmp(json_str(chat_type, "@type"), "chatTypeSupergroup") && !json_is_true(json_object_get(chat_type, "is_channel")));
     item.id = json_i53(chat, "id");
-    if (!item.id) return;
+    if (!item.id) return item;
     if (json_t* permissions = json_object_get(chat, "permissions"))
         item.can_send = json_is_true(json_object_get(permissions, "can_send_basic_messages"));
-    updateReadOutbox(item.id, json_i53(chat, "last_read_outbox_message_id"));
 
     // Retain metadata across tabs; membership/order belongs to each TDLib list.
     json_t* positions = json_object_get(chat, "positions");
@@ -1648,10 +1719,22 @@ void TelegramClient::parseChat(void* opaque) {
         json_t* local = json_object_get(small, "local");
         if (json_is_object(local) && json_is_true(json_object_get(local, "is_downloading_completed"))) item.avatar_path = json_str(local, "path");
     }
+    return item;
+}
+void TelegramClient::parseChat(void* opaque) {
+    json_t* chat = (json_t*)opaque;
+    ChatItem item = chatFromJson(chat);
+    if (!item.id) return;
+    updateReadOutbox(item.id, json_i53(chat, "last_read_outbox_message_id"));
     auto it = std::find_if(known_chats_.begin(), known_chats_.end(), [&](const ChatItem& c){ return c.id == item.id; });
     if (it != known_chats_.end()) {
         noteLastMessage(item.id, json_object_get(chat, "last_message"));
         item.last_message_id = std::max(item.last_message_id, it->last_message_id);
+        // Keep the picture on screen until TDLib's download replaces it (updateFile); a
+        // removed photo (no file) still clears it.
+        if (item.avatar_path.empty() && item.avatar_file_id && !it->avatar_path.empty()) {
+            item.avatar_path = it->avatar_path; item.avatar_stale = true;
+        }
     }
     if (it == known_chats_.end()) known_chats_.push_back(item);
     else *it = item;
@@ -2124,9 +2207,9 @@ void TelegramClient::requestFile(int32_t file_id, int priority, bool visible_ava
     bool fresh = pending_files_.insert(file_id).second;
     if (!fresh && file_priorities_[file_id] >= priority) {
         if (visible_avatar) {
-            performance::lock(&queue_mutex_,performance::Metric::QueueLock);
+            lock_queue(&queue_mutex_);
             for (auto& queued:outgoing_) if (queued.file_id==file_id) queued.backlog_exempt=true;
-            pthread_mutex_unlock(&queue_mutex_);
+            unlock_queue(&queue_mutex_);
         }
         return;
     }
@@ -2174,17 +2257,17 @@ void TelegramClient::logUploads(bool force) {
     if (snapshot.empty() || snapshot == upload_log_snapshot_) return;
     upload_log_snapshot_ = snapshot;
     std::string entry = std::to_string(std::time(nullptr)) + " " + snapshot;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     // Diagnostic output may be dropped under slow storage; protocol events may not.
     if (upload_logs_.size() >= 64) upload_logs_.pop_front();
     upload_logs_.push_back(std::move(entry));
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
 }
 void TelegramClient::flushUploadLogs() {
     std::deque<std::string> lines;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     lines.swap(upload_logs_);
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     if (lines.empty() || !diag_log::enabled(diag_log::Kind::Upload)) return;
     // Rotate on the cache worker, never on UI/network threads.
     SceIoStat info{};
@@ -2294,8 +2377,7 @@ void TelegramClient::updateFile(void* opaque, bool stream_update) {
     for (auto& entry:reaction_previews_) if (entry.second.file==id)
         entry.second.path=json_is_true(json_object_get(local,"is_downloading_completed")) ? path : "";
     if (!json_is_true(json_object_get(local, "is_downloading_completed"))) {
-        for (auto& chat : known_chats_) if (chat.avatar_file_id == id) chat.avatar_path.clear();
-        for (auto& chat : chats_) if (chat.avatar_file_id == id) chat.avatar_path.clear();
+        // Chat avatars keep their last picture while TDLib (re)downloads the file.
         auto clear_path = [&](MessageItem& message) {
             if (message.media_file_id == id) message.media_path.clear();
             if (message.voice_file_id == id) message.voice_path.clear();
@@ -2311,8 +2393,12 @@ void TelegramClient::updateFile(void* opaque, bool stream_update) {
     }
     if (!path[0]) return;
     pending_files_.erase(id);
-    for (auto& chat : chats_) if (chat.avatar_file_id == id) chat.avatar_path = path;
-    for (auto& chat : known_chats_) if (chat.avatar_file_id == id) chat.avatar_path = path;
+    for (auto& chat : chats_) if (chat.avatar_file_id == id) { chat.avatar_path = path; chat.avatar_stale = false; }
+    for (auto& chat : known_chats_) if (chat.avatar_file_id == id) {
+        // A new picture changes the startup index even when the list itself does not.
+        if (chat.avatar_path != path) startup_list_dirty_ = true;
+        chat.avatar_path = path; chat.avatar_stale = false;
+    }
     for (auto& message : messages_) {
         if (message.media_file_id == id) message.media_path = GifCatalog::previewPath(message.media_video_preview, path);
         for (auto& photo : message.photos) {
@@ -2334,13 +2420,13 @@ void TelegramClient::ensureChatMedia(size_t index) {
     if (index >= chats_.size()) return;
     const auto& chat = chats_[index];
     if (chat.cached_metadata && chat.avatar_path.empty() && cache_restore_allowed_) {
-        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&queue_mutex_);
         if (cached_avatar_requests_.size() + cached_avatar_results_.size() < 32 &&
             !cached_avatar_seen_.count(chat.id)) {
             if (cached_avatar_seen_.size() >= 2048) cached_avatar_seen_.clear();
             cached_avatar_seen_.insert(chat.id); cached_avatar_requests_.push_back(chat.id);
         }
-        pthread_mutex_unlock(&queue_mutex_);
+        unlock_queue(&queue_mutex_);
     }
     // Restored file IDs are intentionally zero. loadChats may return only list
     // positions, so explicitly refresh metadata for visible cached rows.
@@ -2353,7 +2439,7 @@ void TelegramClient::ensureChatMedia(size_t index) {
             sendJson(request);
         }
     }
-    if (chat.avatar_path.empty()) requestFile(chat.avatar_file_id, 8,true);
+    if (chat.avatar_path.empty() || chat.avatar_stale) requestFile(chat.avatar_file_id, 8,true);
 }
 
 void TelegramClient::ensureMessageMedia(size_t index) {
@@ -3039,8 +3125,12 @@ void TelegramClient::process(void* opaque) {
             if (json_i53(root, "code") == 404) chats_end_ = true;
             else chats_error_ = json_str(root, "message");
         }
-        if (!std::strcmp(type, "ok") || (!std::strcmp(type, "error") && json_i53(root, "code") == 404))
+        if (!std::strcmp(type, "ok") || (!std::strcmp(type, "error") && json_i53(root, "code") == 404)) {
             finishStartupChatList();
+            chats_last_updated_[selected_folder_] = std::time(nullptr);
+            // Telegram answered before the startup index was read: show the live list now.
+            if (startup_list_hold_) { startup_list_hold_ = false; publishChats(); }
+        }
         retire_td_json(root,wire_bytes);
         return;
     }
@@ -3273,10 +3363,14 @@ void TelegramClient::pump(bool interactive) {
         gif_status_ = i18n::text("gif.timeout");
         gif_diagnostics::record("timeout", gif_request_kind_.c_str(), gifs_.generation - 1, performance::now());
     }
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     std::swap(restored, restored_snapshot_);
-    pthread_mutex_unlock(&queue_mutex_);
+    const bool index_read = startup_index_read_;
+    unlock_queue(&queue_mutex_);
     if (restored) beginCacheApply(restored);
+    if (startup_list_hold_ && index_read && (!applying_snapshot_ || cache_apply_stage_ > 1)) {
+        startup_list_hold_ = false; publishChats();
+    }
     if (proxy_check_deadline_ && sceKernelGetSystemTimeWide() >= proxy_check_deadline_) {
         proxy_check_deadline_ = 0; ++proxy_check_generation_;
         proxy_check_status_ = i18n::text("proxy.check.timeout");
@@ -3304,20 +3398,20 @@ void TelegramClient::pump(bool interactive) {
     int64_t pump_start = sceKernelGetSystemTimeWide();
     if (!interactive) logUploads();
     size_t queued=0;
-    performance::lock(&queue_mutex_,performance::Metric::QueueLock);queued=parsed_.size();pthread_mutex_unlock(&queue_mutex_);
+    lock_queue(&queue_mutex_);queued=parsed_.size();unlock_queue(&queue_mutex_);
     const int budget=td_pump_budget_us(queued,interactive,pump_start<interaction_until_.load());
     const int limit=interactive ? 4 : budget>2000 ? 128 : 32;
     bool changed = false;
     for (int i = 0; i < limit; ++i) {
         void* msg = nullptr;TdEventMetadata selected;
-        performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+        lock_queue(&queue_mutex_);
         const bool background_turn = (++event_turn_ % 4) == 0;
         const auto select_started=performance::now();
         msg = take_td_event(parsed_, interactive && !background_turn, background_turn, current_chat_id_, history_generation_,&selected);
         performance::observe(performance::Metric::EventSelect,performance::now()-select_started);
         if (msg) parsed_wire_bytes_ -= selected.bytes;
         sampleQueues();
-        pthread_mutex_unlock(&queue_mutex_);
+        unlock_queue(&queue_mutex_);
         if (!msg) break;
         int64_t received = selected.received;
         if (received > 0) performance::observe(performance::Metric::EventWait, performance::now()-received);
@@ -3351,6 +3445,7 @@ void TelegramClient::pump(bool interactive) {
         applyCacheSlice(); applyCachedDetails(); applyCachedAvatar();
         if (sceKernelGetSystemTimeWide()-pump_start<2000) applyStickerSlice();
     }
+    if (startup_list_dirty_ && sceKernelGetSystemTimeWide() >= next_startup_list_save_) queueStartupList();
     drain_retired_json(retired_json.size()>256 ? 8000 : 2500);
     recoverListRequests(sceKernelGetSystemTimeWide());
     if (ready_ && !current_chat_id_ && !chats_pending_ && !chats_end_ && chats_error_.empty() &&
@@ -3377,6 +3472,71 @@ void TelegramClient::finishStartupChatList() {
     publishChats();
 }
 
+void TelegramClient::queueStartupList() {
+    // Only a list Telegram confirmed in this session replaces the previous index.
+    if (logging_out_ || !cache_restore_allowed_ || chats_last_updated_.empty() || known_chats_.empty()) return;
+    startup_list_dirty_ = false;
+    next_startup_list_save_ = sceKernelGetSystemTimeWide() + 60000000;
+    auto list_json = [](int32_t id) {
+        return id == kArchiveFolderId ? json_pack("{s:s}", "@type", "chatListArchive") :
+            id ? json_pack("{s:s,s:i}", "@type", "chatListFolder", "chat_folder_id", id) : json_pack("{s:s}", "@type", "chatListMain");
+    };
+    // The index keeps only the top rows of each list; serializing every known chat here
+    // (~1200) cost a 70-80 ms UI frame per save. Pick the same rows startup_copy keeps.
+    std::unordered_map<int32_t, std::vector<std::pair<int64_t, size_t>>> ranked;
+    for (size_t i = 0; i < known_chats_.size(); ++i)
+        for (const auto& entry : known_chats_[i].list_orders)
+            if (entry.second) ranked[entry.first].push_back({entry.second, i});
+    std::vector<bool> keep(known_chats_.size(), false);
+    for (auto& list : ranked) {
+        auto& rows = list.second;
+        const size_t kept = std::min(UiCache::kStartupRowsPerList, rows.size());
+        std::partial_sort(rows.begin(), rows.begin() + kept, rows.end(), [&](const auto& a, const auto& b) {
+            return a.first != b.first ? a.first > b.first : known_chats_[a.second].id > known_chats_[b.second].id;
+        });
+        for (size_t i = 0; i < kept; ++i) keep[rows[i].second] = true;
+    }
+    auto* chats = json_object();
+    for (size_t index = 0; index < known_chats_.size(); ++index) {
+        if (!keep[index]) continue;
+        const auto& chat = known_chats_[index];
+        auto* positions = json_array();
+        for (const auto& entry : chat.list_orders) if (entry.second)
+            json_array_append_new(positions, json_pack("{s:o,s:I}", "list", list_json(entry.first), "order", (json_int_t)entry.second));
+        json_t* type = chat.user_id ? json_pack("{s:s,s:I}", "@type", "chatTypePrivate", "user_id", (json_int_t)chat.user_id) :
+            chat.supergroup_id ? json_pack("{s:s,s:I,s:b}", "@type", "chatTypeSupergroup", "supergroup_id", (json_int_t)chat.supergroup_id, "is_channel", chat.channel) :
+            chat.basic_group_id ? json_pack("{s:s,s:I}", "@type", "chatTypeBasicGroup", "basic_group_id", (json_int_t)chat.basic_group_id) :
+            json_pack("{s:s}", "@type", "chatTypePrivate");
+        auto outbox = read_outbox_.find(chat.id);
+        json_object_set_new(chats, std::to_string(chat.id).c_str(), json_pack("{s:s,s:I,s:s,s:o,s:o,s:{s:b},s:i,s:b,s:{s:I},s:I}",
+            "@type", "chat", "id", (json_int_t)chat.id, "title", chat.title.c_str(), "type", type, "positions", positions,
+            "permissions", "can_send_basic_messages", chat.can_send, "unread_count", chat.unread_count,
+            "is_marked_as_unread", chat.marked_unread, "last_message", "id", (json_int_t)chat.last_message_id,
+            "last_read_outbox_message_id", (json_int_t)(outbox == read_outbox_.end() ? 0 : outbox->second)));
+        // The cache does not store updateFile, so the shown picture is the only record of a fresh download.
+        if (!chat.avatar_path.empty())
+            json_object_set_new(json_object_get(chats, std::to_string(chat.id).c_str()), "@avatar_path", json_string(chat.avatar_path.c_str()));
+    }
+    const auto generation = ui_cache_.generation();
+    lock_queue(&queue_mutex_);
+    if (pending_startup_list_) json_decref(static_cast<json_t*>(pending_startup_list_));
+    pending_startup_list_ = chats; pending_startup_generation_ = generation;
+    unlock_queue(&queue_mutex_);
+}
+
+void TelegramClient::writeStartupList(bool final) {
+    // Storage only. Kept pending until the full cache (names, avatars) has been merged.
+    if (!full_cache_loaded_) return;
+    lock_queue(&queue_mutex_);
+    auto* chats = static_cast<json_t*>(pending_startup_list_); pending_startup_list_ = nullptr;
+    const auto generation = pending_startup_generation_;
+    unlock_queue(&queue_mutex_);
+    if (!chats) return;
+    auto proceed = [](void* opaque) -> bool { return !static_cast<TelegramClient*>(opaque)->stopping_; };
+    ui_cache_.saveStartupList(chats, generation, final ? nullptr : +proceed, this);
+    json_decref(chats);
+}
+
 void TelegramClient::publishChats() {
     performance::Scope measurement(performance::Metric::PublishChats);
     auto snapshot = startup_chat_snapshots_.find(selected_folder_);
@@ -3384,8 +3544,28 @@ void TelegramClient::publishChats() {
         selected_chat_count_ = snapshot->second.size();
         const size_t visible = std::min(chats_target_, snapshot->second.size());
         chats_.assign(snapshot->second.begin(), snapshot->second.begin()+visible);
+        // The folder is shown from the startup index at once; don't time it until Telegram confirms.
+        if (folder_selected_at_ && visible) {
+            if (!folder_first_seen_) performance::observe(performance::Metric::FolderFirstRow, performance::now() - folder_selected_at_);
+            performance::observe(performance::Metric::FolderReady, performance::now() - folder_selected_at_);
+            performance::observe(performance::Metric::FolderRequests, (int64_t)folder_requests_);
+            folder_first_seen_ = true; folder_selected_at_ = 0;
+        }
+        // Keep the previous order, but show what Telegram already reported for these chats.
+        for (auto& row : chats_) {
+            auto live = std::find_if(known_chats_.begin(), known_chats_.end(), [&](const ChatItem& c) { return c.id == row.id; });
+            if (live == known_chats_.end() || live->cached_metadata) continue;
+            const auto order = row.order; auto avatar = std::move(row.avatar_path);
+            row = *live; row.order = order;
+            if (row.avatar_path.empty() && row.avatar_file_id && !avatar.empty()) { row.avatar_path = std::move(avatar); row.avatar_stale = true; }
+        }
         return;
     }
+    if (startup_list_hold_) {
+        chats_.clear(); selected_chat_count_ = 0;
+        return;
+    }
+    startup_list_dirty_ = true;
     // TDLib can send cached updates beyond loadChats.limit. Expose only the
     // requested window; never download avatars for the undisplayed remainder.
     struct RankedChat { const ChatItem* item; int64_t order; };
@@ -3627,10 +3807,10 @@ void TelegramClient::checkChatUpdates(bool manual) {
     if (refresh_pending_) {
         if (manual) {
             refresh_manual_ = true;
-            performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+            lock_queue(&queue_mutex_);
             for (auto& request : outgoing_)
                 if (request.text.find("\"kind\":\"refresh_main") != std::string::npos) request.priority = 3;
-            pthread_mutex_unlock(&queue_mutex_);
+            unlock_queue(&queue_mutex_);
             notice_ = i18n::text("notice.refreshing_chats");
             notice_until_ = sceKernelGetSystemTimeWide() + 10000000;
         }
@@ -3653,6 +3833,7 @@ void TelegramClient::finishChatRefresh() {
     refresh_pending_ = false;
     refresh_deadline_ = 0;
     publishChats();
+    chats_last_updated_[selected_folder_] = std::time(nullptr);
     if (refresh_manual_) refresh_top_ = true;
     std::vector<int64_t> current;
     for (const auto& chat : chats_) current.push_back(chat.id);
@@ -3741,13 +3922,13 @@ void TelegramClient::dropListAvatarDownloads() {
     // Unsent requests are dropped; sent ones are cancelled only if TDLib has
     // not started them. The list requests them again when shown.
     std::unordered_set<int32_t> unsent;
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     for (auto it = outgoing_.begin(); it != outgoing_.end();) {
         if (it->file_id && list_avatar_files_.count(it->file_id)) { unsent.insert(it->file_id); it = outgoing_.erase(it); }
         else ++it;
     }
     sampleQueues();
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
     for (auto id : list_avatar_files_) {
         if (!pending_files_.erase(id)) continue;
         file_priorities_.erase(id);
@@ -4002,7 +4183,11 @@ void TelegramClient::refreshHistory() {
     ++history_generation_;
     cached_reactions_.clear();
     history_items_.clear(); messages_.clear();
-    json_t* cached = ui_cache_.history(current_chat_id_);
+    history_preferred_ = current_chat_id_;
+    // Only the first screen is copied here, on the UI thread; offline the full cached history
+    // follows from Storage (requestCachedDetails). 60 messages took 150-775 ms to copy and check.
+    json_t* cached = ui_cache_.history(current_chat_id_, 12);
+    const bool cached_partial = !json_object_size(cached) || ui_cache_.historyPending(current_chat_id_);
     media_cache_.resolve(cached, false); clear_cached_file_ids(cached);
     const char* key; json_t* message;
     if (json_is_object(cached)) json_object_foreach(cached, key, message) { if (matchesTopic(message)) history_items_.push_back(parseMessage(message)); }
@@ -4012,7 +4197,7 @@ void TelegramClient::refreshHistory() {
     history_cursor_ = 0; history_target_ = 60;
     history_pending_ = history_end_ = false; history_done_ = !ready_;
     history_error_.clear();
-    requestCachedDetails();
+    if (!ready_ || cached_partial) requestCachedDetails();
     requestHistoryPage();
 }
 
@@ -4472,7 +4657,8 @@ void TelegramClient::clearAccountMemory() {
     ready_ = false; input_kind_ = InputKind::None;
     connection_ready_ = false; cancelProxyCheck();
     chats_request_deadline_ = refresh_deadline_ = 0;
-    startup_chat_snapshots_.clear();
+    startup_chat_snapshots_.clear(); startup_list_hold_ = false;
+    chats_last_updated_.clear();
     known_chats_.clear(); chats_.clear(); leaveChat();
     ui_cache_.clear(); media_cache_.clear();
     user_names_.clear(); user_photos_.clear(); sender_requests_.clear(); user_presence_.clear(); supergroup_forum_.clear(); supergroup_member_.clear(); basic_group_member_.clear(); clearSearch();
@@ -4490,10 +4676,10 @@ void TelegramClient::clearAccountMemory() {
     uploads_ = MediaUploads{};
     uploads_pending_ = false;
     upload_log_snapshot_.clear();
-    performance::lock(&queue_mutex_, performance::Metric::QueueLock);
+    lock_queue(&queue_mutex_);
     outgoing_.clear(); upload_logs_.clear();
     sampleQueues();
-    pthread_mutex_unlock(&queue_mutex_);
+    unlock_queue(&queue_mutex_);
 }
 
 void TelegramClient::logout() {

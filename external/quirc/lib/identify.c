@@ -464,6 +464,104 @@ static void find_region_corners(struct quirc *q,
 			find_other_corners, &psd);
 }
 
+/* Rounded finder rings have no dark pixels at their geometric corners.
+ * Extrapolate the four straight outer sides instead of treating arc pixels as
+ * corners. Central strips avoid the arcs; maxima exclude the inner white ring.
+ * This is an opt-in retry so normal QR identification is unchanged. */
+#define ROUNDED_BINS 16
+struct rounded_edge {
+    quirc_float_t tx, ty, nx, ny, mx, my, length;
+    quirc_float_t outer[ROUNDED_BINS];
+    struct quirc_point points[ROUNDED_BINS];
+};
+struct rounded_fit { struct rounded_edge edges[4]; };
+
+static void rounded_span(void *user_data, int y, int left, int right)
+{
+    struct rounded_fit *fit = user_data;
+    int x, i;
+    for (x = left; x <= right; x++) {
+        for (i = 0; i < 4; i++) {
+            struct rounded_edge *e = &fit->edges[i];
+            quirc_float_t u = (x-e->mx)*e->tx + (y-e->my)*e->ty;
+            quirc_float_t v = x*e->nx + y*e->ny;
+            int bin;
+            if (u < -e->length*0.15f || u >= e->length*0.15f)
+                continue;
+            bin = (int)((u/e->length + 0.15f) * (ROUNDED_BINS/0.3f));
+            if (bin < 0 || bin >= ROUNDED_BINS) continue;
+            if (v > e->outer[bin]) {
+                e->outer[bin] = v;
+                e->points[bin].x = x;
+                e->points[bin].y = y;
+            }
+        }
+    }
+}
+
+static void rounded_corners(struct quirc *q, int ring,
+                            const struct quirc_point *center,
+                            struct quirc_point *corners)
+{
+    struct rounded_fit fit;
+    quirc_float_t nx[4], ny[4], offset[4];
+    struct quirc_point result[4];
+    struct quirc_region *region = &q->regions[ring];
+    int i, j;
+    memset(&fit, 0, sizeof(fit));
+    for (i = 0; i < 4; i++) {
+        struct rounded_edge *e = &fit.edges[i];
+        const struct quirc_point *a = &corners[i], *b = &corners[(i+1)%4];
+        quirc_float_t dx = b->x-a->x, dy = b->y-a->y;
+        e->length = sqrt(dx*dx + dy*dy);
+        if (e->length < 7) return;
+        e->tx = dx/e->length; e->ty = dy/e->length;
+        e->nx = e->ty; e->ny = -e->tx;
+        e->mx = (a->x+b->x)*0.5f; e->my = (a->y+b->y)*0.5f;
+        if ((center->x-e->mx)*e->nx + (center->y-e->my)*e->ny > 0) {
+            e->nx = -e->nx; e->ny = -e->ny;
+        }
+        for (j = 0; j < ROUNDED_BINS; j++) e->outer[j] = -1e30f;
+    }
+    flood_fill_seed(q, region->seed.x, region->seed.y, ring,
+                    QUIRC_PIXEL_BLACK, rounded_span, &fit);
+    flood_fill_seed(q, region->seed.x, region->seed.y,
+                    QUIRC_PIXEL_BLACK, ring, NULL, NULL);
+    for (i = 0; i < 4; i++) {
+        struct rounded_edge *e = &fit.edges[i];
+        quirc_float_t su=0, sv=0, suu=0, suv=0, slope, intercept, denom;
+        int count=0;
+        for (j = 0; j < ROUNDED_BINS; j++) {
+            quirc_float_t u, v;
+            if (e->outer[j] < -1e20f) continue;
+            u = (e->points[j].x-e->mx)*e->tx + (e->points[j].y-e->my)*e->ty;
+            v = e->outer[j]-e->mx*e->nx-e->my*e->ny;
+            su += u; sv += v; suu += u*u; suv += u*v; count++;
+        }
+        if (count < 6) return;
+        denom = suu-su*su/count;
+        if (denom < 1) return;
+        slope = (suv-su*sv/count)/denom;
+        intercept = (sv-slope*su)/count;
+        nx[i] = e->nx-slope*e->tx; ny[i] = e->ny-slope*e->ty;
+        offset[i] = intercept+nx[i]*e->mx+ny[i]*e->my;
+    }
+    for (i = 0; i < 4; i++) {
+        int prev = (i+3)%4;
+        quirc_float_t det = nx[prev]*ny[i]-ny[prev]*nx[i];
+        quirc_float_t x, y, dx, dy;
+        if (fabs(det) < 0.2f) return;
+        x = (offset[prev]*ny[i]-ny[prev]*offset[i])/det;
+        y = (nx[prev]*offset[i]-offset[prev]*nx[i])/det;
+        dx = x-corners[i].x; dy = y-corners[i].y;
+        /* Reject fits that move a corner by over 40% of a finder side. */
+        if (dx*dx+dy*dy > fit.edges[i].length*fit.edges[i].length*0.16f ||
+            x < 0 || x >= q->w || y < 0 || y >= q->h) return;
+        result[i].x = (int)round(x); result[i].y = (int)round(y);
+    }
+    memcpy(corners, result, sizeof(result));
+}
+
 static void record_capstone(struct quirc *q, int ring, int stone)
 {
 	struct quirc_region *stone_reg = &q->regions[stone];
@@ -487,6 +585,10 @@ static void record_capstone(struct quirc *q, int ring, int stone)
 
 	/* Find the corners of the ring */
 	find_region_corners(q, ring, &stone_reg->seed, capstone->corners);
+    if (q->rounded_finders) {
+        rounded_corners(q, ring, &stone_reg->seed, capstone->corners);
+        rounded_corners(q, ring, &stone_reg->seed, capstone->corners);
+    }
 
 	/* Set up the perspective transform and find the center */
 	perspective_setup(capstone->c, capstone->corners, 7.0, 7.0);
@@ -1046,7 +1148,27 @@ static void test_grouping(struct quirc *q, unsigned int i)
 		if (i == j)
 			continue;
 
-		perspective_unmap(c1->c, &c2->center, &u, &v);
+        if (q->rounded_finders) {
+            /* Pixel rounding on a small fitted ring makes its projective
+             * extrapolation unstable far away. Use its mean side directions
+             * for neighbour grouping; the full QR still gets a perspective fit. */
+            quirc_float_t ax = (c1->corners[1].x-c1->corners[0].x +
+                               c1->corners[2].x-c1->corners[3].x)*0.5f;
+            quirc_float_t ay = (c1->corners[1].y-c1->corners[0].y +
+                               c1->corners[2].y-c1->corners[3].y)*0.5f;
+            quirc_float_t bx = (c1->corners[3].x-c1->corners[0].x +
+                               c1->corners[2].x-c1->corners[1].x)*0.5f;
+            quirc_float_t by = (c1->corners[3].y-c1->corners[0].y +
+                               c1->corners[2].y-c1->corners[1].y)*0.5f;
+            quirc_float_t dx = c2->center.x-c1->center.x;
+            quirc_float_t dy = c2->center.y-c1->center.y;
+            quirc_float_t det = ax*by-ay*bx;
+            if (fabs(det) < 1) continue;
+            u = 3.5f+7*(dx*by-dy*bx)/det;
+            v = 3.5f+7*(ax*dy-ay*dx)/det;
+        } else {
+            perspective_unmap(c1->c, &c2->center, &u, &v);
+        }
 
 		u = fabs(u - (quirc_float_t)3.5);
 		v = fabs(v - (quirc_float_t)3.5);

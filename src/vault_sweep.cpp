@@ -61,7 +61,10 @@ void walk(const std::string& directory, bool top_of_db, std::vector<std::string>
 bool is_db_cache(const std::string& raw) {
     std::string path = normalized(raw);
     const std::string db = std::string(VITAGRAM_DB_DIR) + "/";
-    return has_prefix(path, db) && path.find('/', db.size()) == std::string::npos && ends_with(path, ".json");
+    if (!has_prefix(path, db) || !ends_with(path, ".json")) return false;
+    // Chat histories of the UI cache live one file per chat in ui-history/.
+    const size_t start = has_prefix(path, db + "ui-history/") ? db.size() + 11 : db.size();
+    return path.find('/', start) == std::string::npos;
 }
 
 bool is_user_file(const std::string& raw) {

@@ -34,6 +34,11 @@ struct quirc *quirc_new(void)
 	return q;
 }
 
+void quirc_set_rounded_finders(struct quirc *q, int enabled)
+{
+	q->rounded_finders = !!enabled;
+}
+
 void quirc_destroy(struct quirc *q)
 {
 	free(q->image);

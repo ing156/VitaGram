@@ -17,8 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
 # VitaSDK requires ##.##; the package version matches the final two source components.
-set(VITA_VERSION  "37.24")
-set(VITAGRAM_VERSION "0.37.24")
+set(VITA_VERSION  "37.53")
+set(VITAGRAM_VERSION "0.37.53")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 option(VITAGRAM_PICKER_LOG "Write browsed folders and file names to ux0:data/vitagram/picker.log (plain text)" OFF)
@@ -184,6 +184,10 @@ list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/manifest.json" ui/manifest.json)
 list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/themes/vhbb/NOTICE.txt" ui/themes/vhbb/NOTICE.txt
     FILE "${UI_ASSET_ROOT}/themes/vhbb/LICENSE.txt" ui/themes/vhbb/LICENSE.txt)
 list(APPEND UI_VPK_FILES FILE "${CMAKE_SOURCE_DIR}/assets/ui_extra/corner_buttons.png" ui/corner_buttons.png)
+foreach(UI_GLOW_THEME dark light)
+  list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/themes/${UI_GLOW_THEME}/fixed/focus_edge_glow_16x128.png"
+    ui/themes/${UI_GLOW_THEME}/fixed/focus_edge_glow_16x128.png)
+endforeach()
 foreach(UI_THEME dark light vhbb)
   set(UI_THEME_DIR "${UI_ASSET_ROOT}/themes/${UI_THEME}")
   foreach(UI_SLICE ${UI_SLICES})
@@ -238,6 +242,7 @@ add_executable(${PROJECT_NAME}
   src/vault_ui.cpp
   src/qr_scanner.cpp
   src/qr_encode.cpp
+  src/qr_render.cpp
   src/video_note_encoder.cpp
   src/video_note_recorder.cpp
   src/vita_net.cpp

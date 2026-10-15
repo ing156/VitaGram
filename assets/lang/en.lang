@@ -102,6 +102,7 @@ chats.none = No chats in this list
 chats.retry = Retry: {0}
 chats.state_loading = Loading
 chats.state_ready = Ready
+chats.last_updated = Last updated: {0}
 chats.status = {0}  |  Loaded {1} chats{2}
 chats.tap_more = "  |  Tap here for more"
 
@@ -694,6 +695,15 @@ auth.qr_waiting = Waiting for confirmation on your phone
 auth.qr_requesting = Requesting a QR code...
 auth.qr_steps = On your phone open Telegram > Settings > Devices > Link Desktop Device and scan this code. The code refreshes by itself.\n\nIf the account has two-step verification, the password is asked next.
 auth.qr_footer = {circle} Cancel (restarts the app)
+input.email = Login email:
+input.email_code = Email code:
+auth.prompt.email = Telegram asks for a login email for this number
+auth.prompt.email_code = Enter the code sent to your email
+auth.email_code_sent = Code sent to {0}
+auth.premium_required = Telegram requires Premium to sign in with this number
+auth.premium_hint = Sign in with a QR code from your phone or enter another number
+auth.unknown_step = Unsupported sign-in step ({0}). Try a QR code.
+auth.via.fragment = on fragment.com
 vault.method.title = Choose how to unlock
 vault.method.buttons = {cross}  Console buttons\nQuick to enter: D-pad, {cross} {circle} {triangle} {square}. At least 12 presses. The limited set of buttons makes this less reliable than a passphrase, but convenient. Use a long sequence for better protection.
 vault.method.text = {square}  Text passphrase\nStronger: a typed phrase of at least 10 characters, entered on the app's own on-screen keyboard, so the system keyboard never learns it. Best for long-term protection. Use plain letters, digits and symbols: accented letters can be typed in different ways and may not match later.
@@ -739,7 +749,7 @@ upload.menu_footer = {dpad} Select    {cross} Choose    {circle} Cancel
 upload.hidden_on = hidden files: shown
 upload.hidden_off = hidden files: not shown
 upload.empty = Nothing to send here
-upload.browse_footer = {cross} Open / choose    {square} Hidden    {triangle} Refresh    {circle} Back
+upload.browse_footer = {cross} Choose    {square} Done    {triangle} Hidden    {circle} Back
 upload.send_failed = Could not hand the file over to Telegram
 upload.review_title = Attachments: {0} / {1}
 upload.add_image = + Add image
@@ -747,8 +757,8 @@ upload.add_video = + Add video
 upload.add_file = + Add file
 upload.send = Send ({0})
 upload.file_info = {0} ({1}), sent as a file
-upload.review_footer = {cross} Choose   {triangle} Remove   {circle} Cancel
-upload.review_footer_video = {cross} Choose   {square} Play/Pause   {triangle} Remove   {circle} Cancel
+upload.review_footer = {cross} Choose   {square} Send   {triangle} Remove   {circle} Cancel
+upload.review_footer_video = {cross} Play/Pause   {square} Send   {triangle} Remove   {circle} Cancel
 upload.dir_empty = The system returned an empty folder
 upload.filtered = No matching files. Skipped {0}: {1}
 upload.latest = Latest screenshots (all folders)
@@ -969,3 +979,18 @@ settings.spoiler_both = On both events
 
 settings.language_loading = Loading language…
 settings.font_load_failed = Could not load the font. Previous language kept.
+
+# --- List scroll speed ---
+settings.scroll_speed = Scroll speed
+settings.scroll_normal = Normal
+settings.scroll_fast = Fast
+settings.scroll_very_fast = Very fast
+
+# Attachment sorting
+upload.sort_hint = {dpad} Sort: {0}
+upload.sort_newest = Newest first
+upload.sort_oldest = Oldest first
+upload.sort_name_asc = Name A-Z
+upload.sort_name_desc = Name Z-A
+upload.sort_size_asc = Smallest first
+upload.sort_size_desc = Largest first

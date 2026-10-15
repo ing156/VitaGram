@@ -70,6 +70,20 @@ int main() {
         loaded.load(); assert(loaded.spoiler_reset == 2); // Migrate the earlier two-switch layout.
     }
 
+    // Every scroll preset persists; missing or malformed preferences retain Normal.
+    {
+        for (int mode = 0; mode < ScrollRepeat::kSpeedChoices; ++mode) {
+            AppSettings settings; settings.scroll_speed = mode; assert(settings.save());
+            AppSettings loaded; loaded.load();
+            assert(loaded.loaded && loaded.scroll_speed == mode);
+        }
+        for (const char* json : {"{}", R"({"scroll_speed":-1})", R"({"scroll_speed":3})",
+                                R"({"scroll_speed":"fast"})", R"({"scroll_speed":true})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(loaded.scroll_speed == 0);
+        }
+    }
+
     struct Item { std::string path, data; } items[] = {
         {files + "/photos/a.jpg", blob(30000, 1)}, {files + "/videos/v.mp4", blob(200000, 2)},
         {db + "/stickers/s.webp", blob(9000, 3)}, {db + "/thumbnails/b1/t.jpg", blob(1, 4)},
@@ -86,6 +100,8 @@ int main() {
     using namespace vault_sweep;
     assert(is_user_file(files + "/photos/a.jpg") && is_user_file("ux0:/data/vitagram/files/photos/a.jpg"));
     assert(is_user_file(db + "/stickers/s.webp") && is_user_file(db + "/ui-cache.json"));
+    assert(is_db_cache(db + "/ui-cache.json") && is_db_cache(db + "/ui-history/42.json"));
+    assert(!is_db_cache(db + "/stickers/s.json") && !is_db_cache(db + "/ui-history/x/42.json"));
     assert(!is_user_file(db + "/db.sqlite") && !is_user_file(db + "/td.binlog") && !is_user_file(files + "/../x"));
     assert(!is_user_file(files + "/a.vgs") && !is_user_file("ux0:data/vitagram/settings.json") && !is_user_file("/etc/passwd"));
     // A link inside the tree is not followed: files outside VitaGram's directories are never listed.

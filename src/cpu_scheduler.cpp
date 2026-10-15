@@ -1,4 +1,5 @@
 #include "cpu_scheduler.h"
+#include "priority_ceiling.h"
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
 #include <pthread.h>
@@ -107,6 +108,8 @@ void balance(bool urgent) { // mutex held
 void init() {
     SceKernelThreadInfo info{}; info.size = sizeof(info);
     if (sceKernelGetThreadInfo(sceKernelGetThreadId(), &info) >= 0) base_priority = info.currentPriority;
+    // Lock holders the UI waits on run at the UI thread priority (offset 0 below).
+    priority_ceiling::ui_priority = std::max(32, base_priority);
     start_probe();
 }
 Thread::Thread(Role role) : id_(sceKernelGetThreadId()) {

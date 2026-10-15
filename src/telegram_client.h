@@ -40,6 +40,7 @@ struct ChatItem {
     std::string title;
     int32_t avatar_file_id = 0;
     std::string avatar_path;
+    bool avatar_stale = false; // avatar_path is an earlier picture shown until avatar_file_id downloads.
 };
 
 struct PhotoItem {
@@ -144,6 +145,8 @@ enum class InputKind {
     Code,
     Password,
     FirstName,
+    Email,
+    EmailCode,
     Message
 };
 
@@ -206,10 +209,12 @@ public:
     bool canResendCode() const;
     // "Next: SMS in 42 s" / "Press triangle to get it by SMS"; empty when no other method exists.
     std::string authResendInfo() const;
-    bool canGoBackInput() const { return input_kind_ == InputKind::Code || input_kind_ == InputKind::Password || input_kind_ == InputKind::FirstName; }
+    bool canGoBackInput() const { return input_kind_ == InputKind::Code || input_kind_ == InputKind::Password || input_kind_ == InputKind::FirstName ||
+        input_kind_ == InputKind::Email || input_kind_ == InputKind::EmailCode; }
     // QR sign-in: Telegram's tg://login link while waiting for the phone to confirm (empty otherwise).
     const std::string& qrLink() const { return qr_link_; }
-    bool canRequestQr() const { return !ready_ && (input_kind_ == InputKind::Phone || input_kind_ == InputKind::Code || input_kind_ == InputKind::Password); }
+    bool canRequestQr() const { return !ready_ && (input_kind_ == InputKind::Phone || input_kind_ == InputKind::Code || input_kind_ == InputKind::Password ||
+        input_kind_ == InputKind::Email || input_kind_ == InputKind::EmailCode); }
     void requestQr();
     void backInput();
     void resendCode();
@@ -241,8 +246,14 @@ public:
     std::string transcriptionStatus() const;
     bool takeChatTopRequest() { bool result = refresh_top_; refresh_top_ = false; return result; }
     void loadMoreChats();
+    // The rows come from the previous launch and are being confirmed by Telegram.
+    bool chatsFromStartupIndex() const { return startup_chat_snapshots_.count(selected_folder_) > 0; }
     bool chatsLoading() const { return ready_ && !chats_end_ && chats_error_.empty() && (chats_.size() < chats_target_ || startup_chat_snapshots_.count(selected_folder_)); }
     bool chatsEnd() const { return chats_end_ && chats_.size() == selected_chat_count_; }
+    int64_t chatsLastUpdated() const {
+        auto found = chats_last_updated_.find(selected_folder_);
+        return found == chats_last_updated_.end() ? 0 : found->second;
+    }
     const i18n::Text& chatsError() const { return chats_error_; }
     void openChat(int64_t chat_id, const i18n::Text& title);
     // UI thread, immediately after committing a new catalog. No network requests.
@@ -435,6 +446,7 @@ private:
     bool history_cached_ = false;
     std::vector<ChatFolderItem> folders_;
     int32_t selected_folder_ = 0;
+    std::unordered_map<int32_t, int64_t> chats_last_updated_;
     bool show_archive_ = true;
     unsigned list_generation_ = 0;
     unsigned refresh_generation_ = 0;
@@ -502,6 +514,7 @@ private:
     bool cache_restore_allowed_ = true, live_folders_received_ = false; // UI only.
     void* restored_snapshot_ = nullptr; // Ownership protected by queue_mutex_.
     bool full_cache_loaded_ = false; // Storage worker only (or synchronous restore).
+    std::atomic<int64_t> history_preferred_{0}; // Open chat: its history file is merged first.
     void* applying_snapshot_ = nullptr; // UI owns the incremental snapshot.
     unsigned cache_apply_stage_ = 0;
     bool cache_restore_chats_ = false;
@@ -591,6 +604,17 @@ private:
     void publishChats();
     std::map<int32_t, std::vector<ChatItem>> startup_chat_snapshots_;
     void finishStartupChatList();
+    // Until the startup index is installed (or known to be absent), live chats that TDLib
+    // announces before loadChats are not shown as a partial list.
+    bool startup_list_hold_ = false;
+    bool startup_index_read_ = false; // queue_mutex_; set by Storage with restored_snapshot_.
+    bool startup_list_dirty_ = false;
+    int64_t next_startup_list_save_ = 0;
+    void* pending_startup_list_ = nullptr; // queue_mutex_; written by Storage.
+    uint64_t pending_startup_generation_ = 0; // queue_mutex_; UiCache generation of the list.
+    void queueStartupList(); // UI: the confirmed top of each list for the next launch.
+    void writeStartupList(bool final); // Storage.
+    ChatItem chatFromJson(void* chat_obj) const;
     std::vector<MessageItem> messages_;
     std::unordered_set<int32_t> pending_files_;
     struct DocumentDownload { std::string directory, name; };

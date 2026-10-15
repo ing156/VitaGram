@@ -54,8 +54,9 @@ struct FontLoader {
     pthread_t thread{}; bool started=false;
     std::array<std::vector<unsigned char>,6> text;
     std::vector<unsigned char> emoji;
-    std::atomic<bool> done{false}; std::atomic<bool> stop{false};
-    bool adopted=false; uint64_t started_at=0;
+    // `text_done` comes first: text fallbacks are adopted without waiting for the emoji font.
+    std::atomic<bool> text_done{false}; std::atomic<bool> done{false}; std::atomic<bool> stop{false};
+    bool text_adopted=false; bool adopted=false; uint64_t started_at=0;
 } loader;
 std::vector<unsigned char> emoji_data; // Owns the memory face's bytes.
 unsigned font_revision = 0;
@@ -181,6 +182,7 @@ bool read_file(const char* path, std::vector<unsigned char>& out) {
 void* load_fallback_fonts(void*) {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Storage);
     for (size_t i=1; i<loader.text.size() && !loader.stop; ++i) if (text_paths[i]) read_file(text_paths[i],loader.text[i]);
+    loader.text_done=true;
     if (!loader.stop) read_file(emoji_path,loader.emoji);
     loader.done=true;
     return nullptr;
@@ -239,7 +241,7 @@ bool rich_text_init() {
     if (read_file(text_paths[0],main_font)) adopt_text_face(0,std::move(main_font));
     if (FT_New_Face(library, emoji_path, 0, &face)) face = nullptr;
     if (face && (!face->num_fixed_sizes || FT_Select_Size(face, 0))) { FT_Done_Face(face); face = nullptr; }
-    loader.done=false; loader.stop=false; loader.adopted=false; loader.started_at=performance::now();
+    loader.text_done=false; loader.done=false; loader.stop=false; loader.text_adopted=false; loader.adopted=false; loader.started_at=performance::now();
     pthread_attr_t attributes; pthread_attr_init(&attributes);
     pthread_attr_setstacksize(&attributes, 64 * 1024);
     loader.started = pthread_create(&loader.thread, &attributes, load_fallback_fonts, nullptr) == 0;
@@ -274,10 +276,18 @@ void rich_text_poll() {
         for (auto& text : text_faces) if (text.font && text.font->needs_reset()) text.font->reset();
         widths.clear(); run_widths.clear();
     }
+    if (!loader.text_adopted && loader.text_done) {
+        // The emoji font (~11 MB) is still being read; it used to delay these by seconds.
+        loader.text_adopted=true;
+        for (size_t i=1; i<text_faces.size(); ++i) if (text_paths[i]) adopt_text_face(i,std::move(loader.text[i]));
+        // Earlier measurements routed these code points to the main font.
+        widths.clear(); run_widths.clear(); font_choices={}; ++font_revision;
+        performance::observe(performance::Metric::FontsFallback, performance::now()-loader.started_at);
+    }
     if (loader.adopted || !loader.done) return;
     if (loader.started) { pthread_join(loader.thread, nullptr); loader.started=false; }
     loader.adopted=true;
-    for (size_t i=1; i<text_faces.size(); ++i) if (text_paths[i]) adopt_text_face(i,std::move(loader.text[i]));
+    const bool had_emoji=face!=nullptr;
     if (!loader.emoji.empty()) {
         FT_Face memory=nullptr;
         if (!FT_New_Memory_Face(library,loader.emoji.data(),static_cast<FT_Long>(loader.emoji.size()),0,&memory) &&
@@ -287,14 +297,15 @@ void rich_text_poll() {
         } else if (memory) FT_Done_Face(memory);
         std::vector<unsigned char>().swap(loader.emoji);
     }
-    // Earlier measurements routed these code points to the main font.
-    widths.clear(); run_widths.clear(); font_choices={}; ++font_revision;
-    performance::observe(performance::Metric::FontsFallback, performance::now()-loader.started_at);
+    // The file-backed emoji face covered the same glyphs, so widths and layout stay valid;
+    // only a first emoji face changes which code points are measured as emoji.
+    if (!had_emoji && face) { widths.clear(); run_widths.clear(); ++font_revision; }
+    performance::observe(performance::Metric::FontsEmoji, performance::now()-loader.started_at);
 }
 unsigned rich_text_revision() { return font_revision; }
 LanguageFontStatus rich_text_japanese_font_status() {
     if (text_faces[3].font) return LanguageFontStatus::Ready;
-    return loader.adopted ? LanguageFontStatus::Failed : LanguageFontStatus::Loading;
+    return loader.text_adopted ? LanguageFontStatus::Failed : LanguageFontStatus::Loading;
 }
 LanguageFontStatus rich_text_prepare_language_font(const char* path) {
     const std::string wanted = path ? path : "";

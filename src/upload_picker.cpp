@@ -174,6 +174,42 @@ std::string UploadPicker::fullPath(const Entry& e) const {
     return path.empty() ? e.name : join(path, e.name);
 }
 
+const char* UploadPicker::sortKey() const {
+    static const char* keys[] = {"upload.sort_newest", "upload.sort_oldest", "upload.sort_name_asc",
+                                 "upload.sort_name_desc", "upload.sort_size_asc", "upload.sort_size_desc"};
+    return keys[(int)sort];
+}
+
+void UploadPicker::sortEntries() {
+    const std::string focused = selected >= 0 && selected < (int)entries.size() ? fullPath(entries[selected]) : std::string();
+    std::sort(entries.begin(), entries.end(), [&](const Entry& a, const Entry& b) {
+        if (path.empty() && kind == Kind::Photo) {
+            const bool a_latest = a.dir && a.name == LatestView;
+            const bool b_latest = b.dir && b.name == LatestView;
+            if (a_latest != b_latest) return a_latest;
+        }
+        switch (sort) {
+            case Sort::Newest: if (a.modified != b.modified) return a.modified > b.modified; break;
+            case Sort::Oldest: if (a.modified != b.modified) return a.modified < b.modified; break;
+            case Sort::SizeAsc: if (a.size != b.size) return a.size < b.size; break;
+            case Sort::SizeDesc: if (a.size != b.size) return a.size > b.size; break;
+            default: break;
+        }
+        const std::string an = lower(a.name), bn = lower(b.name);
+        if (an != bn) return sort == Sort::NameDesc ? an > bn : an < bn;
+        // Identical names in the latest view still have a deterministic order.
+        return fullPath(a) < fullPath(b);
+    });
+    for (int i = 0; i < (int)entries.size(); ++i)
+        if (fullPath(entries[i]) == focused) { selected = i; break; }
+}
+
+void UploadPicker::changeSort(int direction) {
+    if (stage != Stage::Browse || direction == 0) return;
+    sort = (Sort)(((int)sort + (int)Sort::Count + (direction < 0 ? -1 : 1)) % (int)Sort::Count);
+    sortEntries();
+}
+
 void UploadPicker::reload() {
     entries.clear();
     selected = 0;
@@ -183,12 +219,16 @@ void UploadPicker::reload() {
         for (const char* root : {"ux0:", "uma0:", "imc0:", "ur0:", "grw0:"})
             if (exists(root)) entries.push_back({root, true, 0});
         addShortcuts();
+        sortEntries();
+        selected = 0;
         return;
     }
     if (path == LatestView) {
         for (const char* root : {"ux0:picture/SCREENSHOT", "uma0:picture/SCREENSHOT"}) scanLatest(root, root, 0);
         std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.modified > b.modified; });
         if (entries.size() > 300) entries.resize(300);
+        sortEntries();
+        selected = 0;
         if (entries.empty()) info = i18n::text("upload.dir_empty");
         std::string first;
         for (size_t i = 0; i < entries.size() && i < 3; ++i) first += entries[i].full + " [" + entries[i].date + "] ";
@@ -228,11 +268,8 @@ void UploadPicker::reload() {
     sceIoDclose(dir);
     if (entries.empty())
         info = raw == 0 ? i18n::text("upload.dir_empty") : i18n::text("upload.filtered", {std::to_string(skipped_count), skipped});
-    std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
-        // Newest first, folders and files mixed.
-        if (a.modified != b.modified) return a.modified > b.modified;
-        return lower(a.name) < lower(b.name);
-    });
+    sortEntries();
+    selected = 0;
     std::string newest;
     for (size_t i = 0; i < entries.size() && i < 3; ++i) newest += entries[i].name + " [" + entries[i].date + "] ";
     log("raw=" + std::to_string(raw) + " shown=" + std::to_string(entries.size()) + " skipped=" + skipped + " newest: " + newest);
@@ -242,33 +279,46 @@ void UploadPicker::enter() {
     if (stage != Stage::Browse || selected < 0 || selected >= (int)entries.size()) return;
     const Entry& e = entries[selected];
     if (e.dir) {
-        history.push_back(selected);
+        history.push_back(fullPath(e));
         // Shortcuts in the drive list are absolute paths.
         path = path.empty() ? e.name : join(path, e.name);
         reload();
         return;
     }
     const std::string full = fullPath(e);
-    bool known = false;
-    for (const auto& item : items) if (item.path == full) known = true;
-    if (!known && items.size() < MaxItems) items.push_back({full, e.name, kind, e.size});
+    const auto marked = std::find_if(items.begin(), items.end(), [&](const Item& item) { return item.path == full; });
+    if (marked != items.end()) items.erase(marked);
+    else if (items.size() < MaxItems) items.push_back({full, e.name, kind, e.size});
+}
+
+bool UploadPicker::isMarked(const Entry& entry) const {
+    if (entry.dir) return false;
+    const std::string full = fullPath(entry);
+    return std::any_of(items.begin(), items.end(), [&](const Item& item) { return item.path == full; });
+}
+
+void UploadPicker::finishSelection() {
+    if (stage != Stage::Browse || items.empty()) return;
     stage = Stage::Review;
-    selected = std::max(0, (int)items.size() - 1);
+    selected = 0;
+    error.clear();
 }
 
 void UploadPicker::up() {
     if (stage != Stage::Browse) return;
     if (path.empty()) {
         if (items.empty()) { stage = Stage::Menu; selected = (int)kind; }
-        else { stage = Stage::Review; selected = (int)items.size(); }
+        else { stage = Stage::Review; selected = (int)items.size() + 1; }
         return;
     }
     size_t slash = path.find_last_of('/');
     path = slash == std::string::npos ? std::string() : path.substr(0, slash);
     reload();
     if (!history.empty()) {
-        selected = std::max(0, std::min(history.back(), (int)entries.size() - 1));
+        const std::string focused = history.back();
         history.pop_back();
+        for (int i = 0; i < (int)entries.size(); ++i)
+            if (fullPath(entries[i]) == focused) { selected = i; break; }
     }
 }
 
@@ -279,33 +329,35 @@ void UploadPicker::toggleHidden() {
 
 // Rescan the current folder (or the drive list) and keep the cursor on the same entry.
 void UploadPicker::refresh() {
-    std::string name = selected >= 0 && selected < (int)entries.size() ? entries[selected].name : std::string();
+    std::string focused = selected >= 0 && selected < (int)entries.size() ? fullPath(entries[selected]) : std::string();
     const int old_selected = selected;
     reload();
     selected = std::max(0, std::min(old_selected, (int)entries.size() - 1));
-    for (int i = 0; i < (int)entries.size(); ++i) if (entries[i].name == name) { selected = i; break; }
+    for (int i = 0; i < (int)entries.size(); ++i) if (fullPath(entries[i]) == focused) { selected = i; break; }
 }
 
 bool UploadPicker::reviewActivate() {
     if (stage != Stage::Review) return false;
-    const int n = (int)items.size();
-    if (selected >= n && selected < n + 3) {
-        if (items.size() < MaxItems) chooseKind((Kind)(selected - n));
-        return false;
-    }
-    if (selected == n + 3 && n > 0) {
-        result_ = items; has_result_ = true;
-        close();
-        return true;
+    if (selected == 0) return sendBatch();
+    const int first_add = (int)items.size() + 1;
+    if (selected >= first_add && selected < first_add + 3) {
+        if (items.size() < MaxItems) chooseKind((Kind)(selected - first_add));
     }
     return false;
 }
 
+bool UploadPicker::sendBatch() {
+    if (stage != Stage::Review || items.empty()) return false;
+    result_ = items; has_result_ = true;
+    close();
+    return true;
+}
+
 void UploadPicker::removeSelected() {
-    if (stage != Stage::Review || selected < 0 || selected >= (int)items.size()) return;
-    items.erase(items.begin() + selected);
+    if (stage != Stage::Review || selected <= 0 || selected > (int)items.size()) return;
+    items.erase(items.begin() + selected - 1);
     if (items.empty()) { stage = Stage::Menu; selected = 0; return; }
-    selected = std::min(selected, (int)items.size() - 1);
+    selected = std::min(selected, (int)items.size());
 }
 
 bool UploadPicker::takeResult(std::vector<Item>& out) {

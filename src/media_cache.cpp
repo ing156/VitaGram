@@ -1,6 +1,7 @@
 #include "performance.h"
 #include "cache_writer.h"
 #include "media_cache.h"
+#include "priority_ceiling.h"
 #include "config.h"
 #include "vault.h"
 #include <sys/stat.h>
@@ -38,6 +39,8 @@ bool valid_path(const char* path, int64_t size) {
 }
 }
 void MediaCache::lockAs(const char* who, int line) {
+    // The UI waits on this mutex too: a Storage holder runs at the UI priority meanwhile.
+    priority_ceiling::enter();
     if (!performance::enabled) { pthread_mutex_lock(&mutex_); return; }
     const char* blocker = nullptr; int blocker_line = 0;
     const auto started = performance::now();
@@ -67,6 +70,7 @@ void MediaCache::unlockHeld() {
     }
     held_since_ = 0; holder_.store(nullptr);
     pthread_mutex_unlock(&mutex_);
+    priority_ceiling::leave();
 }
 MediaCache::~MediaCache() { clearPending(); if (index_) json_decref(index_); pthread_mutex_destroy(&mutex_); }
 void MediaCache::clearPending() {

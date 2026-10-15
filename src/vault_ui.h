@@ -10,6 +10,7 @@ struct Env {
     vita2d_pgf* font;
     bool dark;
     int theme = -1; // Default keeps existing callers compatible; main passes the saved theme ID.
+    int scroll_speed = 0;
 };
 
 // Launch gate: asks once whether to encrypt, unlocks an existing vault. Returns when the app may

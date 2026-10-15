@@ -940,3 +940,52 @@ index 0000000..b4486fa
 +inline void vita_trace_path(const char*) {}
 +#endif
 +}  // namespace td
+diff --git a/tddb/td/db/binlog/Binlog.cpp b/tddb/td/db/binlog/Binlog.cpp
+index e6d1859..989b07f 100644
+--- a/tddb/td/db/binlog/Binlog.cpp
++++ b/tddb/td/db/binlog/Binlog.cpp
+@@ -413,7 +413,15 @@ void Binlog::sync(const char *source) {
+   if (need_sync_) {
+     LOG(INFO) << "Sync binlog from " << source;
+     auto status = fd_.sync();
++#if TD_VITA
++    // Sync can fail while the console sleeps and ux0 is unmounted; the data is flushed again later.
++    if (status.is_error()) {
++      LOG(WARNING) << "Failed to sync binlog: " << status;
++      return;
++    }
++#else
+     LOG_IF(FATAL, status.is_error()) << "Failed to sync binlog: " << status;
++#endif
+     need_sync_ = false;
+   }
+ }
+@@ -429,7 +437,28 @@ void Binlog::flush(const char *source) {
+     byte_flow_source_.wakeup();
+   }
+   auto r_written = fd_.flush_write();
++#if TD_VITA
++  if (r_written.is_error() && !path_.empty()) {
++    // ux0 is unmounted while the console sleeps: descriptors opened before that fail with ENODEV.
++    LOG(WARNING) << "Reopening binlog after write error: " << r_written.error();
++    auto r_new_fd = FileFd::open(path_, FileFd::Flags::Read | FileFd::Flags::Write);
++    if (r_new_fd.is_ok()) {
++      auto new_fd = r_new_fd.move_as_ok();
++      auto r_size = new_fd.get_size();
++      if (r_size.is_ok() && new_fd.seek(r_size.ok()).is_ok()) {
++        static_cast<FileFd &>(fd_) = std::move(new_fd);
++        r_written = fd_.flush_write();
++      }
++    }
++  }
++  if (r_written.is_error()) {
++    // Keep the unwritten events buffered and retry on the next flush instead of aborting.
++    LOG(ERROR) << "Failed to flush binlog: " << r_written.error();
++    return;
++  }
++#else
+   r_written.ensure();
++#endif
+   auto written = r_written.ok();
+   if (written > 0) {
+     need_sync_ = true;

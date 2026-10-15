@@ -148,6 +148,23 @@ int main() {
         auto* kept = parsed.history(9);
         assert(json_object_size(kept) == 60 && json_object_get(kept, "70") && json_object_get(kept, "11") && !json_object_get(kept, "10"));
         assert(!json_object_get(kept, "500") && !json_object_get(kept, "501")); json_decref(kept);
+        // A reloaded page replaces stored messages; the old trees are freed after the mutex.
+        std::string again = R"({"@type":"messages","messages":[)";
+        for (int id = 61; id <= 75; ++id) again += std::string(id>61?",":"") + "{\"id\":" + std::to_string(id) + ",\"chat_id\":9,\"content\":{\"@type\":\"messageText\",\"v\":2}}";
+        again += "]}";
+        reply = parse(again.c_str()); parsed.rememberMessages(reply); json_decref(reply);
+        kept = parsed.history(9);
+        assert(json_object_size(kept) == 60 && json_object_get(kept, "75") && json_object_get(kept, "16") && !json_object_get(kept, "15"));
+        assert(json_integer_value(json_object_get(json_object_get(json_object_get(kept, "65"), "content"), "v")) == 2); json_decref(kept);
+        // Histories beyond 20 chats are trimmed from another chat, a few messages per reply.
+        for (int chat = 100; chat < 121; ++chat) {
+            std::string page = R"({"@type":"messages","messages":[)";
+            for (int id = 1; id <= 3; ++id) page += std::string(id>1?",":"") + "{\"id\":" + std::to_string(id) + ",\"chat_id\":" + std::to_string(chat) + "}";
+            page += "]}";
+            reply = parse(page.c_str()); parsed.rememberMessages(reply); json_decref(reply);
+        }
+        kept = parsed.history(9); assert(json_object_size(kept) < 60); json_decref(kept);
+        kept = parsed.history(120); assert(json_object_size(kept) == 3); json_decref(kept);
     }
     light.saveStartup(small);
     UiCache next;
@@ -156,6 +173,8 @@ int main() {
     assert(avatar && json_integer_value(json_object_get(avatar,"id"))==0);
     assert(!std::strcmp(json_string_value(json_object_get(json_object_get(avatar,"local"),"path")),"ux0:data/vitagram/files/avatar.png"));
     json_decref(avatar);
+    event(next,R"({"@type":"updateNewChat","chat":{"id":1,"title":"Live, photo not downloaded","positions":[],"photo":{"small":{"@type":"file","id":5,"local":{"is_downloading_completed":false}}}}})");
+    avatar=next.chatAvatar(1); assert(avatar && json_object_get(avatar,"local")); json_decref(avatar); // Index picture until TDLib downloads.
     event(next,R"({"@type":"updateNewChat","chat":{"id":1,"title":"Live without photo","positions":[]}})");
     assert(!next.chatAvatar(1)); // Live removal wins over the old startup index.
     // Interrupted writes retain the previous complete index.
@@ -165,6 +184,26 @@ int main() {
     next.clear(); assert(!next.loadStartup() && !next.chatAvatar(1));
     light.flush(); disk_index = UiCache().loadStartup();
     assert(disk_index && json_equal(small, disk_index)); json_decref(disk_index); json_decref(small);
+    {   // The confirmed list borrows cached photos without copying the live cache under its mutex.
+        auto* pending = parse(R"({"1":{"@type":"chat","id":1,"title":"Lower","positions":[{"list":{"@type":"chatListMain"},"order":10}]},)"
+                              R"("2":{"@type":"chat","id":2,"title":"Top","positions":[{"list":{"@type":"chatListMain"},"order":20}],"@avatar_path":"ux0:data/vitagram/files/top.png"}})");
+        assert(!light.saveStartupList(pending, light.generation())); // Not merged with disk yet.
+        light.load();
+        assert(light.saveStartupList(pending, light.generation()));
+        json_decref(pending);
+        auto* list = UiCache().loadStartup(); assert(list);
+        assert(!std::strcmp(json_object_iter_key(json_object_iter(json_object_get(list, "chats"))), "2"));
+        auto* avatar = json_object_get(json_object_get(list, "avatars"), "1");
+        assert(!std::strcmp(json_string_value(json_object_get(json_object_get(avatar, "local"), "path")), "ux0:data/vitagram/files/avatar.png"));
+        // A picture downloaded this session (shown, but unknown to the cached photo) is kept too.
+        avatar = json_object_get(json_object_get(list, "avatars"), "2");
+        assert(avatar && !std::strcmp(json_string_value(json_object_get(json_object_get(avatar, "local"), "path")), "ux0:data/vitagram/files/top.png"));
+        assert(!json_object_get(json_object_get(json_object_get(list, "chats"), "2"), "@avatar_path"));
+        json_decref(list);
+        auto* live = light.snapshot(); // The cached photo itself is untouched.
+        assert(json_integer_value(json_object_get(json_object_get(json_object_get(json_object_get(json_object_get(live, "chats"), "1"), "photo"), "small"), "size")) == 4);
+        json_decref(live);
+    }
     UiCache racing;
     load_blocked = true; load_entered = false; load_released = false;
     auto loader = std::async(std::launch::async, [&] { racing.load(); });
@@ -212,6 +251,58 @@ int main() {
     UiCache fallback; assert(!fallback.loadStartup()); fallback.load();
     small = fallback.startupSnapshot(); assert(json_object_size(json_object_get(small, "chats")) == 2); json_decref(small);
     std::puts("Startup index: sorted lightweight snapshot, atomic interruption, clear and legacy fallback passed");
+
+    {   // Histories: one file per chat, merged lazily; the legacy monolithic history migrates.
+        auto* legacy = parse(R"({"chats":{"42":{"id":42,"title":"Legacy","positions":[]}},"history":{"42":{)"
+                             R"("1":{"id":1,"chat_id":42},"2":{"id":2,"chat_id":42},"3":{"id":3,"chat_id":42}}}})");
+        assert(!json_dump_file(legacy, VITAGRAM_DB_DIR "/ui-cache.json", JSON_COMPACT)); json_decref(legacy);
+        UiCache::removeHistoryFiles();
+        {
+            UiCache migrating; migrating.load();
+            auto* kept = migrating.history(42); assert(json_object_size(kept) == 3); json_decref(kept);
+            kept = migrating.history(42, 2); // Only the newest are copied.
+            assert(json_object_size(kept) == 2 && json_object_get(kept, "3") && !json_object_get(kept, "1")); json_decref(kept);
+            migrating.flush(); assert(migrating.saved_ == migrating.revision_ && migrating.history_dirty_.empty());
+        }
+        auto* main_file = load_cache(VITAGRAM_DB_DIR "/ui-cache.json"); assert(main_file);
+        assert(!json_object_get(main_file, "history") && json_object_get(json_object_get(main_file, "chats"), "42"));
+        json_decref(main_file);
+        auto* chat_file = load_cache(VITAGRAM_DB_DIR "/ui-history/42.json");
+        assert(chat_file && json_object_size(chat_file) == 3); json_decref(chat_file);
+
+        UiCache lazy; lazy.load();
+        assert(lazy.historyPending(42) && !lazy.history(42)); // Startup reads no history file.
+        event(lazy, R"({"@type":"updateDeleteMessages","chat_id":42,"message_ids":[2]})");
+        event(lazy, R"({"@type":"updateNewMessage","message":{"id":9,"chat_id":42,"content":{"@type":"messageText","v":"live"}}})");
+        event(lazy, R"({"@type":"updateChatTitle","chat_id":42,"title":"Renamed"})");
+        lazy.flush(); // The unmerged chat file is kept, not overwritten by the one live message.
+        chat_file = load_cache(VITAGRAM_DB_DIR "/ui-history/42.json");
+        assert(chat_file && json_object_size(chat_file) == 3); json_decref(chat_file);
+        assert(lazy.loadHistory(99) && !lazy.historyPending(42) && !lazy.loadHistory());
+        auto* kept = lazy.history(42);
+        assert(json_object_size(kept) == 3 && json_object_get(kept, "1") && !json_object_get(kept, "2") && json_object_get(kept, "9"));
+        json_decref(kept);
+        assert(lazy.saved_ != lazy.revision_); lazy.flush(); assert(lazy.saved_ == lazy.revision_);
+        chat_file = load_cache(VITAGRAM_DB_DIR "/ui-history/42.json");
+        assert(chat_file && json_object_size(chat_file) == 3 && !json_object_get(chat_file, "2")); json_decref(chat_file);
+        // Only the changed chat is written once the main file is current.
+        const auto main_saved = lazy.main_saved_;
+        event(lazy, R"({"@type":"updateMessageEdited","chat_id":42,"message_id":9,"edit_date":5})");
+        assert(lazy.main_revision_ == main_saved); lazy.flush();
+        chat_file = load_cache(VITAGRAM_DB_DIR "/ui-history/42.json");
+        assert(json_integer_value(json_object_get(json_object_get(chat_file, "9"), "edit_date")) == 5); json_decref(chat_file);
+        // An interrupted chat write stays dirty for the next flush.
+        event(lazy, R"({"@type":"updateMessageEdited","chat_id":42,"message_id":9,"edit_date":6})");
+        lazy.flush([](void*) { return false; });
+        lazy.flush([](void* p) { return ++*static_cast<int*>(p) < 2; }, &checkpoints);
+        assert(lazy.history_dirty_.count(42) && lazy.saved_ != lazy.revision_);
+        lazy.flush(); assert(lazy.history_dirty_.empty());
+        // Another account's histories are never merged: clear() removes every file on the next flush.
+        lazy.clear(); lazy.flush();
+        struct stat gone{}; assert(stat(VITAGRAM_DB_DIR "/ui-history/42.json", &gone));
+        UiCache after_clear; after_clear.load(); assert(!after_clear.historyPending(42) && !after_clear.loadHistory());
+    }
+    std::puts("Per-chat histories: legacy migration, lazy merge with live deletions, partial writes, wipe passed");
 
     ExitGesture exit;
     assert(!exit.update(false,true,true,false,100)); // Select first.

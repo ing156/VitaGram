@@ -1,5 +1,6 @@
 #pragma once
 #include "diag_log.h"
+#include "scroll_repeat.h"
 #include "proxy_config.h"
 #include "secure_store.h"
 #include "vault.h"
@@ -14,6 +15,7 @@ struct AppSettings {
     int retention = 2, capacity = 2, theme = 1, font = 5, request_batch_size = 64;
     int opacity = 75;       // percent of the surface PNGs (rows, message cards) over the wallpaper, 5% steps
     int avatar_shape = 0;   // 0 rounded square, 1 circle
+    int scroll_speed = 0;   // Normal, Fast, Very fast: 2, 4, 6 pages per second.
     bool show_threads = false;
     bool gyroscope_enabled = true;
     bool show_archive = true;  // Archive tab in the chat list folders
@@ -103,6 +105,9 @@ struct AppSettings {
         request_batch_size = value("request_batch_size", 64, 64);
         opacity = std::max(kMinOpacity, std::min(kMaxOpacity, (value("opacity", 75, 100) + kOpacityStep / 2) / kOpacityStep * kOpacityStep));
         avatar_shape = value("avatar_shape", 0, 1);
+        if (json_t* v = json_object_get(root, "scroll_speed"))
+            if (json_is_integer(v) && json_integer_value(v) >= 0 && json_integer_value(v) < ScrollRepeat::kSpeedChoices)
+                scroll_speed = (int)json_integer_value(v);
         cache_storage = value("cache_storage", 0, 1);
         auto_lock = value("auto_lock", 3, kLockChoices - 1);
         if (json_t* v = json_object_get(root, "lock_on_leave"))
@@ -163,6 +168,7 @@ struct AppSettings {
         json_object_set_new(root, "show_archive", json_boolean(show_archive));
         json_object_set_new(root, "opacity", json_integer(opacity));
         json_object_set_new(root, "avatar_shape", json_integer(avatar_shape));
+        json_object_set_new(root, "scroll_speed", json_integer(scroll_speed));
         json_object_set_new(root, "log_mask", json_integer(log_mask));
         json_object_set_new(root, "spoiler_reset", json_integer(spoiler_reset));
         json_object_set_new(root, "recording_shortcuts", json_boolean(recording_shortcuts));
