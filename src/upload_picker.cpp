@@ -1,5 +1,6 @@
 #include "upload_picker.h"
 #include "i18n.h"
+#include "diag_log.h"
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
 #include <psp2/apputil.h>
@@ -102,7 +103,8 @@ bool UploadPicker::exists(const std::string& directory) {
 }
 
 void UploadPicker::openMenu() {
-    stage = Stage::Menu; selected = 0; error.clear(); has_result_ = false; items.clear();
+    stage = Stage::Menu; selected = 0; error.clear(); has_result_ = false; items.clear(); caption.clear();
+    result_.clear(); result_caption_.clear();
 }
 
 void UploadPicker::chooseKind(Kind k) {
@@ -115,6 +117,8 @@ void UploadPicker::chooseKind(Kind k) {
 
 // Quick entries for the drive list: the places where screenshots and clips live.
 void UploadPicker::addShortcuts() {
+    if (kind == Kind::File && diag_log::mask().load(std::memory_order_relaxed))
+        entries.push_back({LogsDirectory, true, 0, 0, "", i18n::text("logs.title")});
     // The screenshot folder is a system-managed directory that can be missing from the parent listing
     // and may fail the existence probe at times, so it is always offered; the others only if present.
     // Flat list of the newest screenshots from every game sub-folder.
@@ -183,6 +187,11 @@ const char* UploadPicker::sortKey() const {
 void UploadPicker::sortEntries() {
     const std::string focused = selected >= 0 && selected < (int)entries.size() ? fullPath(entries[selected]) : std::string();
     std::sort(entries.begin(), entries.end(), [&](const Entry& a, const Entry& b) {
+        if (path.empty() && kind == Kind::File) {
+            const bool a_logs = a.dir && a.name == LogsDirectory;
+            const bool b_logs = b.dir && b.name == LogsDirectory;
+            if (a_logs != b_logs) return a_logs;
+        }
         if (path.empty() && kind == Kind::Photo) {
             const bool a_latest = a.dir && a.name == LatestView;
             const bool b_latest = b.dir && b.name == LatestView;
@@ -348,7 +357,7 @@ bool UploadPicker::reviewActivate() {
 
 bool UploadPicker::sendBatch() {
     if (stage != Stage::Review || items.empty()) return false;
-    result_ = items; has_result_ = true;
+    result_ = items; result_caption_ = caption; has_result_ = true;
     close();
     return true;
 }
@@ -360,8 +369,10 @@ void UploadPicker::removeSelected() {
     selected = std::min(selected, (int)items.size());
 }
 
-bool UploadPicker::takeResult(std::vector<Item>& out) {
+bool UploadPicker::takeResult(std::vector<Item>& out, std::string* text) {
     if (!has_result_) return false;
     out = std::move(result_); result_.clear(); has_result_ = false;
+    if (text) *text = std::move(result_caption_);
+    result_caption_.clear();
     return true;
 }

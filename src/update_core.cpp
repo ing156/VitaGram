@@ -395,6 +395,10 @@ bool extract_zip(FILE* zip, const std::string& dest,
     uint32_t count = u16(&eocd_buf[eocd + 10]), cd_size = u32(&eocd_buf[eocd + 12]), cd_offset = u32(&eocd_buf[eocd + 16]);
     if (count == 0xFFFF || cd_size == 0xFFFFFFFFu || cd_offset == 0xFFFFFFFFu) { error = "zip64 packages are not supported"; return false; }
     if ((uint64_t)cd_offset + cd_size > (uint64_t)file_size) { error = "package directory is damaged"; return false; }
+    // Telegram VPKs are untrusted; bound directory allocation before reading it.
+    if (cd_size > (16u << 20) || uint64_t(count) * 46 > cd_size) {
+        error = "package directory is unreasonably large or damaged"; return false;
+    }
     std::vector<unsigned char> cd(cd_size);
     std::fseek(zip, cd_offset, SEEK_SET);
     if (cd_size && std::fread(cd.data(), 1, cd_size, zip) != cd_size) { error = "package read failed"; return false; }

@@ -1,6 +1,7 @@
 #include "performance.h"
 #include "cache_writer.h"
 #include "ui_cache.h"
+#include "event_stats.h"
 #include "priority_ceiling.h"
 #include "config.h"
 #include <utility>
@@ -606,7 +607,9 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
         ~MessagesTimer() { if (on) performance::observe(performance::Metric::MessagesRememberUs, performance::now() - started); }
     } messages_timer{!std::strcmp(t, "messages"), performance::now()};
     performance::SlowScope slow(performance::SlowPhase::Remember,t,wire_bytes);
+    const auto lock_started = event_stats::active() ? performance::now() : 0;
     lock_cache(&mutex_);
+    if (lock_started) event_stats::add(t, event_stats::Lock, performance::now() - lock_started);
     if (!data_) { unlock_cache(&mutex_); return; }
     if (!loaded_) {
         if (auto id = number(root, "chat_id")) early_history_.insert(id);
@@ -820,13 +823,13 @@ void UiCache::rememberMessages(json_t* root, uint64_t wire_bytes) {
     }
     performance::observe(performance::Metric::MessagesRememberUs, performance::now() - started);
 }
-void UiCache::flush(bool (*proceed)(void*), void* context) {
+bool UiCache::flush(bool (*proceed)(void*), void* context) {
     performance::Scope measurement(performance::Metric::UiFlush);
-    if (proceed && !proceed(context)) return;
+    if (proceed && !proceed(context)) return false;
     struct Pending { int64_t chat; json_t* items; }; // no items: the chat left the cache, its file goes
     std::vector<Pending> histories;
     lock_cache(&mutex_);
-    if (!data_ || revision_ == saved_) { unlock_cache(&mutex_); return; }
+    if (!data_ || revision_ == saved_) { unlock_cache(&mutex_); return false; }
     performance::Scope snapshot_time(performance::Metric::UiSnapshot);
     const uint64_t revision = revision_, main_revision = main_revision_, generation = generation_;
     // Each chat's history has its own file now: only the main file (chats, users, stickers)
@@ -843,7 +846,9 @@ void UiCache::flush(bool (*proceed)(void*), void* context) {
     const bool wipe = history_wipe_;
     history_wipe_ = false;
     json_t* all = json_object_get(data_, "history");
+    bool limited = false;
     for (auto it = history_dirty_.begin(); it != history_dirty_.end();) {
+        if (histories.size() == kHistoriesPerFlush) { limited = true; break; } // The rest stay dirty.
         json_t* items = json_object_get(all, std::to_string(*it).c_str());
         const bool present = json_object_size(items) != 0;
         if (history_pending_.count(*it)) {
@@ -861,7 +866,7 @@ void UiCache::flush(bool (*proceed)(void*), void* context) {
         lock_cache(&mutex_);
         if (generation == generation_) { for (auto& h : histories) history_dirty_.insert(h.chat); history_wipe_ |= wipe; }
         unlock_cache(&mutex_);
-        return;
+        return false;
     }
     if (wipe) removeHistoryFiles();
     bool ok = true, interrupted = false;
@@ -921,8 +926,9 @@ void UiCache::flush(bool (*proceed)(void*), void* context) {
     lock_cache(&mutex_);
     if (generation == generation_) {
         for (auto chat : failed) history_dirty_.insert(chat);
-        if (ok) saved_ = revision;
+        if (ok && !limited) saved_ = revision;
     }
     unlock_cache(&mutex_);
     if (!ok && !interrupted && result != cache_writer::Result::Interrupted) std::fprintf(stderr, "UI cache write failed\n");
+    return ok && limited; // A failed or interrupted pass waits for the regular interval.
 }

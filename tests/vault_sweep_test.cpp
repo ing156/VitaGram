@@ -84,6 +84,43 @@ int main() {
         }
     }
 
+    // Package installation requires a persisted boolean opt-in.
+    {
+        for (bool allow : {false, true}) {
+            AppSettings settings; settings.allow_vpk_install = allow; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.allow_vpk_install == allow);
+        }
+        for (const char* json : {"{}", R"({"allow_vpk_install":1})", R"({"allow_vpk_install":"true"})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(!loaded.allow_vpk_install);
+        }
+    }
+
+    // Keyboard choice persists; old or malformed files retain the system keyboard.
+    {
+        for (bool custom : {false, true}) {
+            AppSettings settings; settings.custom_keyboard = custom; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.custom_keyboard == custom);
+        }
+        for (const char* json : {"{}", R"({"custom_keyboard":1})", R"({"custom_keyboard":"true"})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(!loaded.custom_keyboard);
+        }
+    }
+
+    // Input-language preferences survive restart; old/malformed settings stay automatic.
+    {
+        AppSettings settings; settings.keyboard_languages = {"en", "ru"}; assert(settings.save());
+        AppSettings loaded; loaded.load();
+        assert(loaded.keyboard_languages == std::vector<std::string>({"en", "ru"}));
+        for (const char* json : {"{}", R"({"keyboard_languages":true})", R"({"keyboard_languages":[1,"unknown"]})"}) {
+            spit("ux0:data/vitagram/settings.json", json); loaded.load(); assert(loaded.keyboard_languages.empty());
+        }
+        spit("ux0:data/vitagram/settings.json", R"({"keyboard_languages":["ru","en-GB","ru",null,"unknown"]})");
+        loaded.load(); assert(loaded.keyboard_languages == std::vector<std::string>({"ru", "en"}));
+        loaded.keyboard_languages.clear(); assert(loaded.save()); loaded.load(); assert(loaded.keyboard_languages.empty());
+    }
+
     struct Item { std::string path, data; } items[] = {
         {files + "/photos/a.jpg", blob(30000, 1)}, {files + "/videos/v.mp4", blob(200000, 2)},
         {db + "/stickers/s.webp", blob(9000, 3)}, {db + "/thumbnails/b1/t.jpg", blob(1, 4)},
@@ -161,6 +198,29 @@ int main() {
     }
     for (int i = 0; i < 50 && !vault::is_sealed(streamed); ++i) usleep(100000);
     assert(vault::is_sealed(streamed));
+
+    // A foreground pass holds the background sealer off the files (they share "<file>.vgs").
+    const std::string held = files + "/photos/held.bin";
+    spit(held, blob(300000, 13));
+    {
+        SealerPause pause;
+        assert(sealer_paused());
+        sealer.enqueue(held);
+        usleep(900000);
+        assert(!vault::is_sealed(held) && access((held + ".vgs").c_str(), F_OK) != 0);
+    }
+    assert(!sealer_paused());
+    for (int i = 0; i < 50 && !vault::is_sealed(held); ++i) usleep(100000);
+    assert(vault::is_sealed(held));
+    {
+        // A conversion already running gives way before the pause returns.
+        const std::string big = files + "/photos/big.bin";
+        spit(big, blob(4 << 20, 14));
+        sealer.enqueue(big);
+        for (int i = 0; i < 100 && access((big + ".vgs").c_str(), F_OK) != 0 && !vault::is_sealed(big); ++i) usleep(5000);
+        SealerPause pause;
+        assert(access((big + ".vgs").c_str(), F_OK) != 0);
+    }
     sealer.stop();
 
     // Protected state is not downgraded (F02): with the vault on and no migration pending, plain or

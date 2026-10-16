@@ -17,8 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
 # VitaSDK requires ##.##; the package version matches the final two source components.
-set(VITA_VERSION  "37.53")
-set(VITAGRAM_VERSION "0.37.53")
+set(VITA_VERSION  "37.73")
+set(VITAGRAM_VERSION "0.37.73")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 option(VITAGRAM_PICKER_LOG "Write browsed folders and file names to ux0:data/vitagram/picker.log (plain text)" OFF)
@@ -232,6 +232,9 @@ add_executable(${PROJECT_NAME}
   src/audio_recorder.cpp
   src/telegram_client.cpp
   src/keyboard.cpp
+  src/custom_keyboard.cpp
+  src/keyboard_layout.cpp
+  src/keyboard_case.cpp
   src/proxy_link.cpp
   src/secure_store.cpp
   src/vault_crypto.cpp
@@ -240,6 +243,9 @@ add_executable(${PROJECT_NAME}
   src/vault_avio.cpp
   src/vault_readahead.cpp
   src/vault_ui.cpp
+  src/memory_hygiene.cpp
+  src/crash_dump.cpp
+  src/process_modules.cpp
   src/qr_scanner.cpp
   src/qr_encode.cpp
   src/qr_render.cpp
@@ -249,6 +255,8 @@ add_executable(${PROJECT_NAME}
   src/update_core.cpp
   src/https_client.cpp
   src/updater.cpp
+  src/vpk_package.cpp
+  src/vpk_installer.cpp
   src/package_promote.cpp
   src/vita_compat/vita_posix_stubs.cpp
 )
@@ -297,6 +305,8 @@ else()
 endif()
 
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=utf8_to_ucs2")
+# Every free() zeroes the block first while the vault is on (src/memory_hygiene.h).
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=free")
 # The prepared VitaSDK linker script reserves this gap for vita-elf-create's
 # SCE metadata, whose size can exceed the incidental padding after code.
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--defsym=__sce_headroom=0x10000")
@@ -351,8 +361,8 @@ target_link_libraries(${PROJECT_NAME}
 # Its own directory keeps vita_create_vpk()'s accumulated flags apart from the main package.
 add_subdirectory(src/updater_app)
 # head.bin of the updater app as the console's installer wrote it (ux0:app/VGUPDATE1/sce_sys/package/head.bin
-# after installing vitagram-updater.vpk once with VitaShell). Without it the installer falls back to
-# VitaGram's own head.bin, whose content id does not match the updater's title id.
+# after installing vitagram-updater.vpk once with VitaShell). Otherwise the installer regenerates
+# a header for the updater title from VitaGram's installed homebrew header.
 set(UPDATER_HEAD_FILES)
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/updater-head.bin")
   list(APPEND UPDATER_HEAD_FILES FILE "${CMAKE_SOURCE_DIR}/assets/updater-head.bin" updater/head.bin)

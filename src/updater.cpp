@@ -2,6 +2,7 @@
 #include "https_client.h"
 #include "update_core.h"
 #include "package_promote.h"
+#include "vpk_package.h"
 #include <cstdio>
 #include <vector>
 #ifdef __vita__
@@ -343,9 +344,23 @@ bool copy_file(const char* from, const std::string& to) {
 }
 }
 
+bool Updater::handoffConfirmedPackage(const std::string& package_dir, const HandoffText& text, std::string& detail) {
+    std::string bytes;
+    if (!read_small(package_dir + "/sce_sys/param.sfo", 1024 * 1024, bytes)) {
+        detail = "cannot read local VitaGram package metadata"; return false;
+    }
+    vpk::Metadata metadata;
+    if (!vpk::parse_sfo(std::vector<uint8_t>(bytes.begin(), bytes.end()), metadata) || metadata.title_id != "VITAGRM01") {
+        detail = "local package is not VitaGram"; return false;
+    }
+    if (!startInstaller(kHandoffDir, package_dir, text, detail)) return false;
+    return true;
+}
+
 // Hands the unpacked package to the VitaGram Updater app. The running application cannot be replaced,
 // so the updater app (a separate title) closes VitaGram and installs the package after this process ends.
-bool Updater::startInstaller(const std::string& work_dir, const std::string& package_dir, const HandoffText& text, std::string& detail) {
+bool Updater::prepareInstaller(const std::string& work_dir, std::string& detail) {
+    update::make_directories(work_dir);
     struct stat info;
     const std::string updater_eboot = std::string(kUpdaterApp) + "/eboot.bin";
     if (stat(updater_eboot.c_str(), &info) != 0) {
@@ -361,6 +376,19 @@ bool Updater::startInstaller(const std::string& work_dir, const std::string& pac
         struct stat head_info;
         const bool own_head = stat(kUpdaterHead, &head_info) == 0;
         if (installed) installed = stageHead(package, reason, own_head ? kUpdaterHead : "app0:sce_sys/package/head.bin");
+        if (installed && !own_head) {
+            // Retarget the installed homebrew header to the helper's own ID.
+            std::string bytes;
+            const std::string path = package + "/sce_sys/package/head.bin";
+            installed = read_small(path, 1024 * 1024, bytes);
+            std::vector<uint8_t> head(bytes.begin(), bytes.end());
+            vpk::Metadata helper; helper.title_id = kUpdaterTitle;
+            if (installed) installed = vpk::make_head(head, helper);
+            FILE* f = installed ? std::fopen(path.c_str(), "wb") : nullptr;
+            installed = f && std::fwrite(head.data(), 1, head.size(), f) == head.size();
+            if (f && std::fclose(f) != 0) installed = false;
+            if (!installed) reason = "cannot prepare updater package header";
+        }
         struct stat package_eboot;
         const long long expected = stat((package + "/eboot.bin").c_str(), &package_eboot) == 0 ? (long long)package_eboot.st_size : -1;
         if (installed) installed = promote_package(package, reason, updater_eboot.c_str(), expected);
@@ -374,6 +402,13 @@ bool Updater::startInstaller(const std::string& work_dir, const std::string& pac
             return false;
         }
     }
+    return true;
+}
+
+bool Updater::prepareLocalInstaller(std::string& detail) { return prepareInstaller(kHandoffDir, detail); }
+
+bool Updater::startInstaller(const std::string& work_dir, const std::string& package_dir, const HandoffText& text, std::string& detail) {
+    if (!prepareInstaller(work_dir, detail)) return false;
     update::make_directories(kHandoffDir);
     FILE* f = std::fopen(kHandoffFile, "wb");
     // Text lines are single lines: strip anything that would break the format.
@@ -395,6 +430,15 @@ bool Updater::startInstaller(const std::string& work_dir, const std::string& pac
     return true;
 }
 #else
+bool Updater::prepareLocalInstaller(std::string& detail) {
+    detail = "installing is only possible on the console"; return false;
+}
+bool Updater::prepareInstaller(const std::string&, std::string& detail) {
+    detail = "installing is only possible on the console"; return false;
+}
+bool Updater::handoffConfirmedPackage(const std::string&, const HandoffText&, std::string& detail) {
+    detail = "installing is only possible on the console"; return false;
+}
 bool Updater::startInstaller(const std::string&, const std::string&, const HandoffText&, std::string& detail) {
     detail = "installing is only possible on the console";
     return false;

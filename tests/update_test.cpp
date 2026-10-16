@@ -115,6 +115,7 @@ static void zip(const std::string& dir) {
     assert(last_total == 5 + 100000 + 6);
     assert(!extract_zip(dir + "/slip.zip", dir + "/out2", nullptr, error) && error.find("unsafe") != std::string::npos);
     assert(!extract_zip(dir + "/corrupt.zip", dir + "/out3", nullptr, error));
+    assert(!extract_zip(dir + "/oversized-directory.zip", dir + "/huge", nullptr, error) && error.find("directory") != std::string::npos);
     assert(!extract_zip(dir + "/missing.zip", dir + "/out4", nullptr, error));
     assert(!extract_zip(dir + "/good.zip", dir + "/out5", [](uint64_t, uint64_t) { return false; }, error) && error == "cancelled");
     assert(!safe_entry_name("../x") && !safe_entry_name("/x") && !safe_entry_name("a/../b") && !safe_entry_name("a\\b") &&

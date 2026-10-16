@@ -17,6 +17,11 @@ with zipfile.ZipFile(d + "/good.zip", "w") as z:
     z.writestr("lang/en.lang", "stored", zipfile.ZIP_STORED)
 with zipfile.ZipFile(d + "/slip.zip", "w") as z:
     z.writestr("../evil", "x")
+# A sparse archive claiming an oversized central directory must fail before allocation.
+import struct
+with open(d + "/oversized-directory.zip", "wb") as f:
+    f.seek((16 << 20) + 1)
+    f.write(struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, 1, 1, (16 << 20) + 1, 0, 0))
 # Claims one uncompressed byte (local and central headers) but inflates to 1 MiB.
 import struct
 with zipfile.ZipFile(d + "/underreported.zip", "w", compression=zipfile.ZIP_DEFLATED) as z:

@@ -131,6 +131,12 @@ unknown sizes, unavailable variants, the actual download file ID and unchanged v
 failures. `run-vault-tests.sh` verifies that the key stays the same after moving,
 encrypting, decrypting and re-encrypting an actual source file, and rejects
 unauthenticated samples from a damaged encrypted source.
+
+`bash tests/run-memory-protection-tests.sh` checks the heap-wiping size policy, recognition
+of VitaGram's gzip crash dumps by the NUL-terminated title ID (other titles and partial
+`.psp2dmp.tmp` files included), overwrite-and-delete of only those dumps, classification of
+system, own and injected plugin module paths, and that the masked session keys yield the same
+database/file keys and a verifiable state signature after a lock and unlock.
 With `FFMPEG_NATIVE_BUILD` set, `run-video-tests.sh` also creates and converts
 an eight-second H.264/AAC video, reopens it in cache-only mode, and checks that
 no conversion runs again, including after moving and encrypting its files.
@@ -245,3 +251,58 @@ hold acceleration, one commit on release, bounds, direction conflicts, stale
 message/menu/sleep cancellation and touch-track mapping. The FFmpeg download-stream
 suite also checks actual H.264 keyframe pre-roll. These host checks do not validate
 controller/touch behavior or decoder startup time on Vita hardware.
+
+`bash tests/run-keyboard-tests.sh` checks the shared vault/text keyboard with
+controller and touch events: localized layouts and shift, short/long presses, UTF-8 deletion
+and limits, multiline whitespace, submit/cancel and masked secret rendering.
+It also verifies letter/digit previews, their suppression for secrets, the wider
+text spacebar and the absence of clear-all through touch or R in ordinary fields.
+RU checks cover the 11/11/9 letter rows, е→ё and ь→ъ with touch/controller holds,
+uppercase alternatives, delayed release, cancellation, byte limits and previews.
+Popup tests exercise the exact 299.999/300 ms boundary, deferred insertion until
+release, е/Е→ё/Ё or 4, complete RU number alignment, touch sliding through the
+key-to-panel gap, controller Left/Right selection, Circle/Start cancellation,
+drag-out/re-entry, repeated release, punctuation choices and password byte limits.
+Comma/period remain directly accessible and all digits remain on the symbols layer.
+Rendering calls are stubbed; layout and physical input need a PS Vita check.
+The vault suite checks persistence and malformed values of the keyboard preference.
+
+Transfer tests also cover delayed Telegram links after chat/topic changes and reopening the same chat, stale topic history, document size updates, download progress after navigation and retries with late errors from an earlier attempt.
+
+`bash tests/run-vpk-tests.sh` checks package metadata bounds, rejected title IDs and patch packages, content-ID matching, and homebrew header checksums under ASan/UBSan. Transfer tests check completed export notifications, cached exports and clearing pending offers on logout; vault tests check the default-off installation preference. Native message dialogs and actual installation still need a PS Vita.
+
+Keyboard localization tests cover all 19 shipped catalogs: 15 in-app profiles and
+4 native IME routes, carousel selection/cancellation, preserved drafts, remembered
+profile choices, console-language defaults, Turkish dotted/dotless case and locale
+alternatives. Native IME calls are stubbed: forced languages, UTF-16 drafts,
+password options and multiline mode are checked without opening a Vita dialog.
+
+Keyboard case checks cover one-shot Shift, the 350 ms double-tap boundary, Caps
+Lock/unlock through touch and controller, cancelled and rejected input, numeric
+alternates, deletion, language changes and Turkish case. Context checks include
+message starts, sentence punctuation, quotes, Unicode whitespace, newlines, common
+abbreviations, decimals, filenames and URL/email interiors; password/exact-input
+fields retain manual case. The visual Caps Lock marker still needs device review.
+
+Keyboard cursor checks cover Square backspace, Triangle space, L/R boundaries,
+UTF-8 middle edits, newline/alternate insertion, full-draft byte limits and
+automatic case at the cursor. Vita rendering and physical feel need device checks.
+
+Keyboard language checks cover EN + console defaults, British English mapping,
+unsupported-system fallback, manual lists, the last-language guard, filtered
+carousels, direct cycling, native language masks and CJK-only vault fallback.
+Settings persistence checks cover migration, malformed arrays and default reset.
+
+Language-key checks cover short-press cycling, the 300 ms threshold, controller
+focus retention, touch/controller carousel selection, cancellation, single-language
+input, all 19 profiles, seven visible choices, edge scrolling and IME handoff
+on release. Switching preserves the draft, cursor and Caps Lock.
+
+Deletion-repeat checks cover immediate input, the 350 ms delay and 60 ms interval,
+release at a deadline, touch exit, controller focus changes, masked fields, UTF-8
+middle edits, empty input, delayed-frame burst prevention, cancellation, reopening
+and simultaneous deletion sources.
+
+Passphrase rendering checks verify on-key controller badges, cursor hints inside
+the spacebar, no separate shortcut-help strip, and no exposed passphrase in
+either the full keyboard or the vault keyboard-only drawing mode.

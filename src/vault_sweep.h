@@ -31,6 +31,18 @@ struct Outcome {
     bool clean() const { return completed && failed == 0 && unlisted == 0; }
 };
 using Proceed = bool (*)(void*);
+
+// Holds the background Sealer off the files while a foreground pass converts them: both would use
+// the same "<file>.vgs" temporary. The constructor returns once no background conversion runs
+// (an active one gives way within one 64 KiB chunk); the Sealer resumes when the last pause ends.
+class SealerPause {
+public:
+    SealerPause();
+    ~SealerPause();
+    SealerPause(const SealerPause&) = delete;
+    SealerPause& operator=(const SealerPause&) = delete;
+};
+bool sealer_paused();
 using Report = void (*)(void*, size_t done, size_t total);
 // Converts every user file to sealed (to_sealed) or back to plain. Stops early when `proceed`
 // returns false; the vault keeps a "migration pending" flag so the next start resumes.

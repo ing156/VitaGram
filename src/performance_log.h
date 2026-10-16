@@ -1,11 +1,14 @@
 #pragma once
 #include "performance.h"
 #include "td_diagnostics.h"
+#include "ui_diagnostics.h"
+#include "event_stats.h"
 #include <cstdio>
 #include <sys/stat.h>
 #ifdef __vita__
 #include <psp2/power.h>
 #include <psp2/kernel/sysmem.h>
+#include "cpu_scheduler.h"
 #endif
 
 namespace performance {
@@ -45,6 +48,8 @@ inline bool flush(const char* path, const char* previous, const char* version, i
         if (file) {
             writeSnapshot(file, snapshot, version);
             td_diagnostics::write(file);
+            ui_diagnostics::write(file);
+            event_stats::write(file);
 #ifdef __vita__
             SceKernelFreeMemorySizeInfo memory{}; memory.size = sizeof(memory);
             const int memory_result = sceKernelGetFreeMemorySize(&memory);
@@ -52,6 +57,7 @@ inline bool flush(const char* path, const char* previous, const char* version, i
                 scePowerGetArmClockFrequency(), scePowerGetBusClockFrequency(), scePowerGetGpuClockFrequency(),
                 scePowerGetBatteryTemp(), memory_result, memory.size_user, memory.size_cdram, memory.size_phycont,
                 (long long)cdram_images.load(), (long long)cdram_glyphs.load(), (long long)cdram_video.load());
+            cpu_scheduler::writeReport(file);
 #endif
             ok = !std::ferror(file);
             if (std::fclose(file)) ok = false;

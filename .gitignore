@@ -22,7 +22,10 @@ project/
 
 # test metrics
 docs/
+!docs/
+docs/*
 !docs/controls-analysis.md
+!docs/keyboard-layouts.md
 # tests/ also collects local media, logs and crash dumps: only test sources and fixtures are tracked.
 tests/*
 !tests/*.cpp
@@ -33,6 +36,7 @@ tests/*
 !tests/fixtures/
 !tests/stubs/
 !tests/photo-stubs/
+!tests/keyboard-stubs/
 !tests/font-stubs/
 tests/font-stubs/*
 !tests/font-stubs/vita2d.h

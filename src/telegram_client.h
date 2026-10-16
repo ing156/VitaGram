@@ -82,6 +82,7 @@ struct MessageItem {
     i18n::Text media_label;
     bool pin_message = false;
     bool service_message = false;
+    bool basic_group_created = false;
     bool member_removed = false;
     int64_t removed_member_id = 0;
     int64_t pinned_message_id = 0;
@@ -191,6 +192,8 @@ public:
     const i18n::Text& historyError() const { return history_error_; }
 
     bool ready() const { return ready_; }
+    bool liveListShown() const { return live_list_shown_; } // The first loadChats reply arrived.
+    bool liveRowsShown() const { return live_rows_shown_; } // The visible rows switched from the startup index to live data.
     bool closed() const { return closed_; }
     const i18n::Text& status() const { return status_; }
     std::string uploadStatus() const;
@@ -223,6 +226,12 @@ public:
     const std::vector<ChatItem>& chats() const { return chats_; }
     const std::vector<MessageItem>& messages() const { return messages_; }
     void downloadDocument(const MessageItem& message, const std::string& directory);
+    std::string takeSavedDocument() {
+        if (saved_documents_.empty()) return {};
+        std::string path = std::move(saved_documents_.front());
+        saved_documents_.pop_front();
+        return path;
+    }
     const i18n::Text& documentStatus() const { return document_status_; }
     int64_t currentChatId() const { return current_chat_id_; }
     i18n::Text currentChatTitle() const;
@@ -283,8 +292,8 @@ public:
     int32_t currentTopicId() const { return current_topic_; }
     bool sendAudioFile(const std::string& path, int duration, int64_t chat, int32_t topic);
     // kind: 0 photo, 1 video, 2 file. original=true sends a document without recompression.
-    bool sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic);
-    bool sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic);
+    bool sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic, const std::string& caption = "");
+    bool sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic, const std::string& caption = "");
     void openStickers();
     void loadStickerPacks();
     void selectStickerPack(int index);
@@ -505,11 +514,16 @@ private:
     struct FolderWindow { size_t target = 15; bool end = false; };
     std::unordered_map<int32_t, FolderWindow> folder_windows_;
     int64_t next_chats_request_ = 0;
+    bool live_list_shown_ = false;
+    bool live_rows_shown_ = false;
+    int64_t startup_pump_until_ = 0; // Larger UI budget for the startup flood, until the first live chat list.
     i18n::Text chats_error_;
     void requestChatsPage();
     pthread_t worker_{};
     pthread_t cache_worker_{};
     std::atomic<bool> cache_worker_started_{false};
+    // Set by the Parser when the first loadChats reply arrives; the full cache load waits for it.
+    std::atomic<bool> live_list_received_{false};
     bool restore_on_cache_worker_ = false; // Set before starting that worker.
     bool cache_restore_allowed_ = true, live_folders_received_ = false; // UI only.
     void* restored_snapshot_ = nullptr; // Ownership protected by queue_mutex_.
@@ -617,9 +631,11 @@ private:
     ChatItem chatFromJson(void* chat_obj) const;
     std::vector<MessageItem> messages_;
     std::unordered_set<int32_t> pending_files_;
-    struct DocumentDownload { std::string directory, name; };
+    struct DocumentDownload { std::string directory, name; unsigned generation; };
+    unsigned document_download_generation_ = 0;
     std::unordered_map<int32_t, DocumentDownload> document_downloads_;
     i18n::Text document_status_;
+    std::deque<std::string> saved_documents_; // Successful explicit exports, consumed by the UI.
     std::unordered_set<int32_t> list_avatar_files_; // Chat-list avatars requested from TDLib.
     std::unordered_map<int32_t, int> file_priorities_;
     std::unordered_map<int32_t, int64_t> file_update_times_;

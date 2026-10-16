@@ -13,6 +13,8 @@
 #include "td_event_queue.h"
 #include "config.h"
 #include "performance_log.h"
+#include "event_stats.h"
+#include <unordered_set>
 #include "file_download.h"
 #include "secure_store.h"
 #include "vault.h"
@@ -496,12 +498,16 @@ void TelegramClient::runParser() {
         if (text.empty()) { sceKernelDelayThread(2000); continue; }
         const auto raw_wait=performance::now()-received_at;
         performance::observe(performance::Metric::RawWait, raw_wait);
+        const auto parse_started=performance::now();
         performance::Scope parse_measurement(performance::Metric::Parse);
         performance::SlowScope slow_parse(performance::SlowPhase::Parse,"invalid_json",text.size());
         json_error_t error;
         json_t* root = compact_raw_unused_td_update(text);
+        const auto raw_started = parse_started;
         if (!root) root = compact_raw_sticker_sets(text);
         if (!root) root = compact_raw_chat_update(text);
+        if (!root) root = compact_raw_user_update(text);
+        if (!root) root = compact_raw_new_chat(text);
         if (!root) root = compact_raw_sticker_items(text);
         const bool messages_candidate = !root && text.size() >= 2048 &&
             std::string_view(text.data(), 64).find("\"@type\":\"messages\"") != std::string_view::npos;
@@ -518,7 +524,10 @@ void TelegramClient::runParser() {
             (std::string_view(text.data(), 128).find("\"stickerSet\"") != std::string_view::npos ||
              std::string_view(text.data(), 128).find("\"stickers\"") != std::string_view::npos);
         if (sticker_candidate) performance::observe(performance::Metric::StickerCompactMiss, (int64_t)text.size());
+        const auto json_started = performance::now();
+        const bool from_raw = root != nullptr;
         if (!root) root = json_loads(text.c_str(), 0, &error);
+        const auto json_finished = performance::now();
         if (!root) {
             root = json_pack("{s:s,s:i,s:s}", "@type", "error", "code", 500,
                              "message", "Unable to parse TDLib response");
@@ -527,6 +536,9 @@ void TelegramClient::runParser() {
             json_object_set_new(root, "@received_at", json_integer(received_at));
             if (performance::enabled) json_object_set_new(root, "@wire_bytes", json_integer(text.size()));
             parse_measurement.finish();
+            event_stats::add(json_str(root,"@type"),event_stats::Parse,performance::now()-parse_started);
+            event_stats::add(json_str(root,"@type"),event_stats::Raw,json_started-raw_started);
+            if (!from_raw) event_stats::add(json_str(root,"@type"),event_stats::Json,json_finished-json_started);
             slow_parse.name(json_str(root,"@type")); slow_parse.finish();
             if (auto* compact=compact_unused_td_update(root)) {
                 release_td_json(root);root=compact;
@@ -571,6 +583,13 @@ void TelegramClient::runParser() {
             if (diagnostic_history) performance::observe(performance::Metric::FirstHistoryParse,performance::now()-received_at-raw_wait);
             if (diagnostic_history || (!std::strcmp(json_str(diagnostic_extra,"kind"),"history") && !std::strcmp(json_str(root,"@type"),"error")))
                 foreground_until_.store(0);
+            if (!live_list_received_.load() && !std::strcmp(json_is_object(diagnostic_extra) ? json_str(diagnostic_extra,"kind") :
+                    json_str(root,"@extra"),"load_main_chats")) {
+                // TDLib's own share of startup: when its loadChats reply left the network thread.
+                live_list_received_.store(true);
+                if (const int64_t origin=performance::startup_origin().load(); origin>0 && received_at>=origin)
+                    performance::observe(performance::Metric::StartupLiveReceived,received_at-origin);
+            }
             auto metadata=describe_td_event(root);
             if (!std::strncmp(json_str(diagnostic_extra, "kind"), "gif_", 4))
                 gif_diagnostics::record("parsed", json_str(diagnostic_extra, "kind"), json_i53(diagnostic_extra, "generation"), performance::now());
@@ -655,6 +674,11 @@ void* TelegramClient::cacheEntry(void* opaque) {
         self->startup_index_read_ = true;
         unlock_queue(&self->queue_mutex_);
         if (snapshot) json_decref(snapshot);
+        // The full cache load (merge, details) competed with TDLib for the cores and the card
+        // while it built the first chat list: start it once that list arrives.
+        const int64_t defer_until = sceKernelGetSystemTimeWide() + 20000000;
+        while (!self->stopping_ && !self->live_list_received_.load() && sceKernelGetSystemTimeWide() < defer_until)
+            sceKernelDelayThread(50000);
         if (!self->stopping_) {
             performance::Scope details(performance::Metric::CacheDetailsLoad);
             if (!self->full_cache_loaded_) { self->ui_cache_.load(cacheLoadProceed, self); self->full_cache_loaded_ = true; }
@@ -708,8 +732,9 @@ void* TelegramClient::cacheEntry(void* opaque) {
             unlock_queue(&self->queue_mutex_);
             if (!congested) {
                 self->media_cache_.flush(proceed, self);
-                self->ui_cache_.flush(proceed, self);
-                next = sceKernelGetSystemTimeWide() + 90000000;
+                // Histories left over by the per-pass limit follow shortly, not after the full interval.
+                const bool more = self->ui_cache_.flush(proceed, self);
+                next = sceKernelGetSystemTimeWide() + (more ? 2000000 : 90000000);
             }
         }
         sceKernelDelayThread(checked_file || merged ? 2000 : 100000);
@@ -889,6 +914,7 @@ bool TelegramClient::start(bool defer_cache_worker) {
     if (!defer_cache_worker && !startCacheWorker()) { stopWorker(); return false; }
     sealer_.start(); // seals media as TDLib finishes downloading it (vault on only)
     status_ = i18n::text("tg.created_waiting");
+    startup_pump_until_ = sceKernelGetSystemTimeWide() + 30000000; // Bounded if loadChats never answers.
     sendRaw("{\"@type\":\"getAuthorizationState\",\"@extra\":\"startup_probe\"}");
     return true;
 }
@@ -1647,6 +1673,7 @@ i18n::Text TelegramClient::currentChatTitle() const {
 
 i18n::Text TelegramClient::serviceMessageText(const MessageItem& message) const {
     if (message.pin_message) return i18n::text("service.message_pinned");
+    if (message.basic_group_created) return i18n::text("service.group_created", {senderName(message)});
     if (message.member_removed) {
         MessageItem member;
         member.sender_id = message.removed_member_id;
@@ -2089,6 +2116,11 @@ MessageItem TelegramClient::parseMessage(void* opaque) {
         out.pinned_message_id = json_i53(content, "message_id");
         out.text = i18n::text("service.message_pinned");
     }
+    else if (!std::strcmp(type, "messageBasicGroupChatCreate")) {
+        out.service_message = true;
+        out.basic_group_created = true;
+        out.text = serviceMessageText(out);
+    }
     else if (!std::strcmp(type, "messageChatJoinByLink")) {
         out.service_message = true;
         out.text = i18n::text("service.joined_by_link", {senderName(out)});
@@ -2234,13 +2266,33 @@ void TelegramClient::downloadDocument(const MessageItem& message, const std::str
     if (document_downloads_.count(message.media_file_id)) { document_status_ = i18n::text("doc.already"); return; }
     if (!message.media_path.empty()) {
         std::string result;
+        bool existed = false;
         document_status_ = save_downloaded_file(message.media_path, dir, message.document_name,
-                                                 message.media_file_id, result) ? i18n::text("doc.saved", {result}) : i18n::text("doc.save_failed");
+                                                 message.media_file_id, result, &existed) ?
+            i18n::text(existed ? "doc.exists" : "doc.saved", {result}) : i18n::text("doc.save_failed");
+        if (!result.empty()) saved_documents_.push_back(result);
         return;
     }
-    document_downloads_[message.media_file_id] = {dir, message.document_name};
+    // A sealed cache copy no longer matches TDLib's size, so TDLib drops it and would fetch the
+    // whole file again: an export already in the folder is offered instead.
+    std::string saved = find_saved_download(dir, message.document_name, message.media_file_id, message.document_size);
+    if (!saved.empty()) {
+        document_status_ = i18n::text("doc.exists", {saved});
+        saved_documents_.push_back(saved);
+        return;
+    }
+    if (!ready_) return;
+    const unsigned generation = ++document_download_generation_;
+    document_downloads_[message.media_file_id] = {dir, message.document_name, generation};
     document_status_ = i18n::text("doc.downloading", {safe_download_name(message.document_name, message.media_file_id)});
-    requestFile(message.media_file_id, 32);
+    // Export jobs outlive the message window; correlate errors with this attempt.
+    pending_files_.insert(message.media_file_id);
+    file_priorities_[message.media_file_id] = 32;
+    auto* request = json_pack("{s:s,s:i,s:i,s:I,s:I,s:b}", "@type", "downloadFile",
+        "file_id", message.media_file_id, "priority", 32, "offset", (json_int_t)0, "limit", (json_int_t)0, "synchronous", 0);
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:i,s:I}", "kind", "document_download",
+        "file", message.media_file_id, "generation", (json_int_t)generation));
+    sendJson(request);
 }
 
 std::string TelegramClient::uploadStatus() const {
@@ -2315,19 +2367,26 @@ void TelegramClient::updateFile(void* opaque, bool stream_update) {
     auto document_job = document_downloads_.find(id);
     if (document_job != document_downloads_.end() && json_is_true(json_object_get(local, "is_downloading_completed")) && path[0]) {
         std::string result;
+        bool existed = false;
         document_status_ = save_downloaded_file(path, document_job->second.directory, document_job->second.name,
-                                                 id, result) ? i18n::text("doc.saved", {result}) : i18n::text("doc.save_failed");
+                                                 id, result, &existed) ?
+            i18n::text(existed ? "doc.exists" : "doc.saved", {result}) : i18n::text("doc.save_failed");
+        if (!result.empty()) saved_documents_.push_back(result);
         document_downloads_.erase(document_job);
+    }
+    // Progress must keep updating even after leaving the original chat/topic.
+    if (document_downloads_.count(id)) {
+        const int64_t size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
+        const int64_t downloaded = std::max<int64_t>(0, json_i53(local, "downloaded_size"));
+        document_status_ = i18n::text("doc.downloading", {size > 0 ?
+            i18n::Text(std::to_string((int)std::min(99.0, downloaded * 100.0 / size)) + "%") :
+            i18n::text("unit.kb", {std::to_string(downloaded / 1000)})});
     }
     auto update_document = [&](MessageItem& message) {
         if (message.document && message.media_file_id == id) {
+            const int64_t size = std::max(json_i53(file, "size"), json_i53(file, "expected_size"));
+            if (size > 0) message.document_size = size;
             message.document_downloaded = json_i53(local, "downloaded_size");
-            if (document_downloads_.count(id)) {
-                if (message.document_size > 0)
-                    document_status_ = i18n::text("doc.downloading", {std::to_string(std::min<int64_t>(99,
-                        message.document_downloaded * 100 / message.document_size)) + "%"});
-                else document_status_ = i18n::text("doc.downloading", {i18n::text("unit.kib", {std::to_string(message.document_downloaded / 1024)})});
-            }
         }
     };
     for (auto& message : messages_) update_document(message);
@@ -2530,6 +2589,7 @@ void TelegramClient::process(void* opaque) {
     if (!root) return;
     const uint64_t wire_bytes=td_event_wire_bytes(root);
     performance::SlowScope slow_process(performance::SlowPhase::Process,json_str(root,"@type"),wire_bytes);
+    event_stats::Scope type_measurement(json_str(root,"@type"),event_stats::Process);
     // Ignore late account responses once logout starts; they must not repopulate caches.
     if (logging_out_) {
         if (!std::strcmp(json_str(root, "@type"), "updateAuthorizationState")) processAuth(root);
@@ -2569,11 +2629,18 @@ void TelegramClient::process(void* opaque) {
     logUploads();
     const bool sticker_payload=!std::strcmp(event_type,"stickerSet") || !std::strcmp(event_type,"updateStickerSet") || !std::strcmp(event_type,"stickers") ||
         !std::strncmp(request_kind, "gif_", 4);
+    const auto media_started = event_stats::active() ? performance::now() : 0;
     if (!sticker_payload) for (auto id : media_cache_.enqueue(root)) pending_files_.erase(id);
+    const auto media_enqueued = media_started ? performance::now() : 0;
     // Retain TD's original file metadata for future background/cache resolves.
     // A temporarily unverified UI path must not erase it from persisted history.
     ui_cache_.remember(root,wire_bytes);
+    const auto remembered = media_started ? performance::now() : 0;
     if (!sticker_payload) media_cache_.resolve(root, false);
+    if (media_started) {
+        event_stats::add(event_type, event_stats::Remember, remembered - media_enqueued);
+        event_stats::add(event_type, event_stats::Media, (media_enqueued - media_started) + (performance::now() - remembered));
+    }
 
     const char* type = json_str(root, "@type");
     if (!std::strncmp(request_kind, "gif_", 4)) {
@@ -2838,7 +2905,9 @@ void TelegramClient::process(void* opaque) {
         retire_td_json(root,wire_bytes); return;
     }
     if (!std::strcmp(json_str(extra, "kind"), "public_link")) {
-        if (json_i53(extra, "generation") == link_generation_) {
+        if (json_i53(extra, "generation") == link_generation_ &&
+            json_i53(extra, "chat") == current_chat_id_ &&
+            json_i53(extra, "history") == history_generation_) {
             if (!std::strcmp(type, "chat")) {
                 parseChat(root);
                 openChat(json_i53(root, "id"), json_str(root, "title"));
@@ -3063,6 +3132,17 @@ void TelegramClient::process(void* opaque) {
         }
         retire_td_json(root,wire_bytes); return;
     }
+    if (!std::strcmp(json_str(extra, "kind"), "document_download") && !std::strcmp(type, "error")) {
+        const int32_t file = (int32_t)json_i53(extra, "file");
+        auto job = document_downloads_.find(file);
+        if (job != document_downloads_.end() && json_i53(extra, "generation") == job->second.generation) {
+            document_downloads_.erase(job);
+            pending_files_.erase(file);
+            file_priorities_.erase(file);
+            document_status_ = i18n::text("doc.download_failed", {json_str(root, "message")});
+        }
+        retire_td_json(root, wire_bytes); return;
+    }
     if (!std::strcmp(json_str(extra, "kind"), "voice_download") && !std::strcmp(type, "error")) {
         int32_t file = (int32_t)json_i53(extra, "file");
         if (file == active_voice_file_ && json_i53(extra, "generation") == voice_download_generation_) {
@@ -3126,6 +3206,10 @@ void TelegramClient::process(void* opaque) {
             else chats_error_ = json_str(root, "message");
         }
         if (!std::strcmp(type, "ok") || (!std::strcmp(type, "error") && json_i53(root, "code") == 404)) {
+            startup_pump_until_ = 0; // The live list is here; frames get their usual share again.
+            live_list_shown_ = true;
+            live_rows_shown_ = true;
+            event_stats::stop();
             finishStartupChatList();
             chats_last_updated_[selected_folder_] = std::time(nullptr);
             // Telegram answered before the startup index was read: show the live list now.
@@ -3399,7 +3483,7 @@ void TelegramClient::pump(bool interactive) {
     if (!interactive) logUploads();
     size_t queued=0;
     lock_queue(&queue_mutex_);queued=parsed_.size();unlock_queue(&queue_mutex_);
-    const int budget=td_pump_budget_us(queued,interactive,pump_start<interaction_until_.load());
+    const int budget=td_pump_budget_us(queued,interactive,pump_start<interaction_until_.load(),pump_start<startup_pump_until_);
     const int limit=interactive ? 4 : budget>2000 ? 128 : 32;
     bool changed = false;
     for (int i = 0; i < limit; ++i) {
@@ -3466,6 +3550,7 @@ void TelegramClient::finishStartupChatList() {
     // until the visible window is filled or TDLib confirms the end of the list.
     if (!chats_end_ && live < visible) return;
     startup_chat_snapshots_.erase(snapshot);
+    live_rows_shown_ = true;
     // Cached rows not confirmed by this TDLib session must not linger forever.
     for (auto& chat : known_chats_)
         if (chat.cached_metadata) chat.list_orders.erase(selected_folder_);
@@ -4017,7 +4102,8 @@ bool TelegramClient::openTelegramLink(const std::string& url) {
     }
     ++link_generation_;
     auto* request = json_pack("{s:s,s:s}", "@type", "searchPublicChat", "username", username.c_str());
-    json_object_set_new(request, "@extra", json_pack("{s:s,s:i}", "kind", "public_link", "generation", (int)link_generation_));
+    json_object_set_new(request, "@extra", json_pack("{s:s,s:I,s:I,s:I}", "kind", "public_link", "generation", (json_int_t)link_generation_,
+        "chat", (json_int_t)current_chat_id_, "history", (json_int_t)history_generation_));
     sendJson(request);
     return true;
 }
@@ -4406,9 +4492,9 @@ bool TelegramClient::sendAudioFile(const std::string& path, int duration, int64_
 }
 
 // kind: 0 photo, 1 video, 2 file. The modern schema wraps the file in inputPhoto / inputVideo / inputDocument.
-static json_t* local_file_content(const std::string& path, int kind, bool original, MediaUploads::Kind& upload_kind) {
+static json_t* local_file_content(const std::string& path, int kind, bool original, MediaUploads::Kind& upload_kind, const std::string& text) {
     auto local = [&] { return json_pack("{s:s,s:s}", "@type", "inputFileLocal", "path", path.c_str()); };
-    auto caption = [] { return json_pack("{s:s,s:[]}", "@type", "formattedText", "entities"); };
+    auto caption = [&] { return json_pack("{s:s,s:s,s:[]}", "@type", "formattedText", "text", text.c_str(), "entities"); };
     upload_kind = MediaUploads::Kind::File;
     if (kind == 0 && !original) {
         json_t* photo = json_pack("{s:s,s:o,s:i,s:i}", "@type", "inputPhoto", "photo", local(), "width", 0, "height", 0);
@@ -4432,12 +4518,12 @@ static json_t* forum_topic_id(int32_t topic) {
     return topic ? json_pack("{s:s,s:i}", "@type", "messageTopicForum", "forum_topic_id", topic) : json_null();
 }
 
-bool TelegramClient::sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic) {
+bool TelegramClient::sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic, const std::string& caption) {
     if (!ready_ || !chat || path.empty()) return false;
     SceIoStat file_info{};
     if (sceIoGetstat(path.c_str(), &file_info) < 0 || file_info.st_size <= 0) return false;
     MediaUploads::Kind upload_kind;
-    json_t* content = local_file_content(path, kind, original, upload_kind);
+    json_t* content = local_file_content(path, kind, original, upload_kind, caption);
     json_t* root = json_pack("{s:s,s:I,s:o}", "@type", "sendMessage", "chat_id", (json_int_t)chat,
         "input_message_content", content);
     json_object_set_new(root, "topic_id", forum_topic_id(topic));
@@ -4448,14 +4534,20 @@ bool TelegramClient::sendLocalFile(const std::string& path, int kind, bool origi
 }
 
 // Photos and videos share one album message, documents form their own album; a lone file is a plain message.
-bool TelegramClient::sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic) {
+bool TelegramClient::sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic, const std::string& caption) {
     if (!ready_ || !chat) return false;
     bool ok = true;
+    bool caption_sent = false;
     for (bool media : {true, false}) {
         std::vector<std::pair<std::string, int>> group;
         for (const auto& file : files) if ((file.second != 2) == media) group.push_back(file);
         if (group.empty()) continue;
-        if (group.size() == 1) { ok = sendLocalFile(group[0].first, group[0].second, !media, chat, topic) && ok; continue; }
+        if (group.size() == 1) {
+            const bool sent = sendLocalFile(group[0].first, group[0].second, !media, chat, topic, caption_sent ? "" : caption);
+            caption_sent = caption_sent || sent;
+            ok = sent && ok;
+            continue;
+        }
         json_t* contents = json_array();
         json_t* tokens = json_array();
         const int64_t now = sceKernelGetSystemTimeWide();
@@ -4463,7 +4555,8 @@ bool TelegramClient::sendLocalFiles(const std::vector<std::pair<std::string, int
             SceIoStat info{};
             if (sceIoGetstat(file.first.c_str(), &info) < 0 || info.st_size <= 0) { ok = false; continue; }
             MediaUploads::Kind upload_kind;
-            json_array_append_new(contents, local_file_content(file.first, file.second, !media, upload_kind));
+            json_array_append_new(contents, local_file_content(file.first, file.second, !media, upload_kind, caption_sent ? "" : caption));
+            caption_sent = true;
             json_t* extra = uploads_.beginFile(file.first, info.st_size, upload_kind, chat, now);
             json_array_append_new(tokens, json_incref(json_object_get(extra, "token")));
             json_decref(extra);
@@ -4471,8 +4564,16 @@ bool TelegramClient::sendLocalFiles(const std::vector<std::pair<std::string, int
         if (!json_array_size(contents)) { json_decref(contents); json_decref(tokens); continue; }
         json_t* root = json_pack("{s:s,s:I,s:o}", "@type", "sendMessageAlbum", "chat_id", (json_int_t)chat,
             "input_message_contents", contents);
+        if (json_array_size(contents) == 1) {
+            json_object_set_new(root, "@type", json_string("sendMessage"));
+            json_object_set(root, "input_message_content", json_array_get(contents, 0));
+            json_object_del(root, "input_message_contents");
+        }
         json_object_set_new(root, "topic_id", forum_topic_id(topic));
-        json_object_set_new(root, "@extra", json_pack("{s:s,s:o}", "kind", "media_upload_album", "tokens", tokens));
+        if (json_array_size(tokens) == 1) {
+            json_object_set_new(root, "@extra", json_pack("{s:s,s:O}", "kind", "media_upload", "token", json_array_get(tokens, 0)));
+            json_decref(tokens);
+        } else json_object_set_new(root, "@extra", json_pack("{s:s,s:o}", "kind", "media_upload_album", "tokens", tokens));
         sendJson(root);
     }
     logUploads(true);
@@ -4652,6 +4753,7 @@ void* TelegramClient::cleanupEntry(void* opaque) {
 
 void TelegramClient::clearAccountMemory() {
     document_downloads_.clear();
+    saved_documents_.clear();
     document_status_.clear();
     cache_restore_allowed_ = false;
     ready_ = false; input_kind_ = InputKind::None;

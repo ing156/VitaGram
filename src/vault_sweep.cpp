@@ -58,6 +58,9 @@ void walk(const std::string& directory, bool top_of_db, std::vector<std::string>
 }
 }
 
+static std::atomic<int> g_pauses{0};
+static std::atomic<int> g_background_busy{0};
+
 bool is_db_cache(const std::string& raw) {
     std::string path = normalized(raw);
     const std::string db = std::string(VITAGRAM_DB_DIR) + "/";
@@ -103,6 +106,17 @@ std::vector<std::string> list_user_files(size_t* listing_errors) {
     if (listing_errors) *listing_errors = errors;
     return files;
 }
+
+SealerPause::SealerPause() {
+    g_pauses.fetch_add(1);
+    // The Sealer marks itself busy before it checks for a pause, so once it is idle here it
+    // cannot start a file until the pause ends.
+    while (g_background_busy.load()) sceKernelDelayThread(5000);
+}
+
+SealerPause::~SealerPause() { g_pauses.fetch_sub(1); }
+
+bool sealer_paused() { return g_pauses.load() > 0; }
 
 Outcome convert_all(bool to_sealed, Proceed proceed, void* context, Report report, void* report_context) {
     Outcome outcome;
@@ -172,7 +186,7 @@ void Sealer::run() {
     // video playback for the card and the CPU: give way at once and finish later.
     auto proceed = [](void* opaque) -> bool {
         auto* self = static_cast<Sealer*>(opaque);
-        if (self->stopping_ || cpu_scheduler::videoActive() || download_stream::reading()) return false;
+        if (self->stopping_ || sealer_paused() || cpu_scheduler::videoActive() || download_stream::reading()) return false;
         sceKernelDelayThread(1500); // leaves room for the decoder threads even when idle
         return true;
     };
@@ -186,9 +200,11 @@ void Sealer::run() {
         // Let a freshly completed file finish being used by whoever reported it.
         if (item.second == 0) sceKernelDelayThread(300000);
         // Wait for playback to end, plus a pause so the next video does not start into a rewrite.
-        while (!stopping_ && (cpu_scheduler::videoActive() || download_stream::reading())) sceKernelDelayThread(200000);
+        while (!stopping_ && (sealer_paused() || cpu_scheduler::videoActive() || download_stream::reading())) sceKernelDelayThread(200000);
         if (stopping_) break;
-        auto result = vault::seal_file(item.first, proceed, this);
+        g_background_busy.fetch_add(1);
+        auto result = sealer_paused() ? vault::Convert::Interrupted : vault::seal_file(item.first, proceed, this);
+        g_background_busy.fetch_sub(1);
         if (result == vault::Convert::Interrupted && !stopping_) {
             pthread_mutex_lock(&mutex_);
             queue_.emplace_back(item.first, item.second); // not a failure: try again after playback

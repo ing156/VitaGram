@@ -8,6 +8,8 @@
 class UiCache {
 public:
     static constexpr size_t kStartupRowsPerList = 100; // Startup index keeps the top of each chat list.
+    // Chat histories copied and written by one flush: bounds the copies held at once after a mass update.
+    static constexpr size_t kHistoriesPerFlush = 16;
     UiCache();
     ~UiCache();
     void load(bool (*proceed)(void*) = nullptr, void* context = nullptr); // Storage; cooperative read/parse/merge.
@@ -39,7 +41,8 @@ public:
     bool historyPending(int64_t id); // Its file exists but is not merged yet.
     static void removeHistoryFiles(); // Untrusted caches after a vault signature failure.
     void clear();
-    void flush(bool (*proceed)(void*) = nullptr, void* context = nullptr); // Worker only.
+    // Worker only. True when histories were left for another pass by kHistoriesPerFlush.
+    bool flush(bool (*proceed)(void*) = nullptr, void* context = nullptr);
 private:
     pthread_mutex_t mutex_ = PTHREAD_MUTEX_INITIALIZER;
     json_t* data_ = nullptr;

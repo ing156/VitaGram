@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <new>
 
 namespace vault {
 namespace {
@@ -35,9 +36,29 @@ struct Config {
 std::string g_path = "ux0:data/vitagram/vault.json";
 Config g_config;
 std::atomic<bool> g_unlocked{false}, g_sealing{false};
-uint8_t g_master[32], g_file_key[32], g_state_key[32];
 bool g_state_reset = false, g_state_unauthenticated = false;
-std::string g_db_key;
+
+// Session keys, kept XOR-masked with a random pad that lives in a separate heap block (see vault.h).
+// The master key itself is not kept: it is only needed to derive these.
+enum Slot { kFileSlot, kStateSlot, kDbSlot, kSlots };
+uint8_t g_masked[kSlots][32];
+uint8_t* g_pad = nullptr;
+uint8_t g_pad_fallback[kSlots * 32];
+
+void store_key(Slot slot, const uint8_t key[32]) {
+    for (int i = 0; i < 32; ++i) g_masked[slot][i] = key[i] ^ g_pad[slot * 32 + i];
+}
+void load_key(Slot slot, uint8_t out[32]) {
+    for (int i = 0; i < 32; ++i) out[i] = g_masked[slot][i] ^ g_pad[slot * 32 + i];
+}
+// A key unmasked on the stack for one operation.
+struct SessionKey {
+    uint8_t bytes[32];
+    explicit SessionKey(Slot slot) { load_key(slot, bytes); }
+    ~SessionKey() { vault_crypto::wipe(bytes, 32); }
+    SessionKey(const SessionKey&) = delete;
+    SessionKey& operator=(const SessionKey&) = delete;
+};
 int g_fails = 0;
 std::chrono::steady_clock::time_point g_lock_until;
 
@@ -78,8 +99,10 @@ bool write_config_json(json_t* root) {
 // the file is written unsigned and the next unlock treats it as unauthenticated.
 bool save_config(const uint8_t* state_key = nullptr) {
     if (g_config.state == State::Off) return write_config_json(json_pack("{s:i,s:s}", "v", 1, "mode", "off"));
-    if (!state_key && g_unlocked) state_key = g_state_key;
-    g_config.mac = state_key ? state_mac(g_config, state_key) : std::string();
+    if (!state_key && g_unlocked) {
+        SessionKey own(kStateSlot);
+        g_config.mac = state_mac(g_config, own.bytes);
+    } else g_config.mac = state_key ? state_mac(g_config, state_key) : std::string();
     json_t* root = json_object();
     json_object_set_new(root, "v", json_integer(1));
     json_object_set_new(root, "mode", json_string(g_config.disabling ? "disabling" : "on"));
@@ -107,7 +130,8 @@ Result derive_kek(const Pin& pin, const Config& c, uint8_t kek[32], Progress pro
     uint8_t binding[32];
     bool have_binding = secure_store::console_binding(binding);
     if (c.bind && !have_binding) return Result::Unavailable;
-    std::vector<uint8_t> password{'V', 'G', (uint8_t)(c.method == Method::Text ? 'T' : 'P'), (uint8_t)(c.method == Method::Text ? 'X' : 'N'), '1'};
+    Pin password{'V', 'G', (uint8_t)(c.method == Method::Text ? 'T' : 'P'), (uint8_t)(c.method == Method::Text ? 'X' : 'N'), '1'};
+    password.reserve(password.size() + pin.size());
     password.insert(password.end(), pin.begin(), pin.end());
     uint8_t stretched[32];
     Ticks ticks{progress, context, (int)(128 * c.p), 0, -1};
@@ -126,13 +150,17 @@ Result derive_kek(const Pin& pin, const Config& c, uint8_t kek[32], Progress pro
 }
 
 void install_master(const uint8_t master[32]) {
-    std::memcpy(g_master, master, 32);
-    hkdf(g_master, 32, "", "VitaGram file key v1", g_file_key, 32);
-    derive_state_key(g_master, g_state_key);
-    uint8_t db[32];
-    hkdf(g_master, 32, "", "VitaGram tdlib key v1", db, 32);
-    g_db_key = to_hex(db, 32);
-    wipe(db, 32);
+    if (!g_pad) g_pad = new (std::nothrow) uint8_t[kSlots * 32];
+    if (!g_pad) g_pad = g_pad_fallback;
+    if (!random_bytes(g_pad, kSlots * 32)) std::memset(g_pad, 0, kSlots * 32);
+    uint8_t key[32];
+    hkdf(master, 32, "", "VitaGram file key v1", key, 32);
+    store_key(kFileSlot, key);
+    derive_state_key(master, key);
+    store_key(kStateSlot, key);
+    hkdf(master, 32, "", "VitaGram tdlib key v1", key, 32);
+    store_key(kDbSlot, key);
+    wipe(key, 32);
     g_unlocked = true;
     g_sealing = !g_config.disabling;
     g_config.state = State::Unlocked;
@@ -204,7 +232,7 @@ bool file_subkey(const uint8_t header[kHeader], uint8_t out[32]) {
     uint8_t base[32];
     if (header[7] == kKeyConsole) { if (!console_file_key(base)) return false; }
     else if (!g_unlocked) return false;
-    else std::memcpy(base, g_file_key, 32);
+    else load_key(kFileSlot, base);
     std::string label = "VGfile1";
     label.append((const char*)header + 8, 16);
     hmac_sha256(base, 32, label.data(), label.size(), out);
@@ -475,8 +503,8 @@ bool reset() {
 
 void lock() {
     g_unlocked = false; g_sealing = false;
-    wipe(g_master, 32); wipe(g_file_key, 32); wipe(g_state_key, 32);
-    if (!g_db_key.empty()) { wipe(&g_db_key[0], g_db_key.size()); g_db_key.clear(); }
+    wipe(g_masked, sizeof(g_masked));
+    if (g_pad) wipe(g_pad, kSlots * 32);
     if (g_config.state == State::Unlocked) g_config.state = State::Locked;
 }
 
@@ -486,11 +514,15 @@ int lockout_seconds() {
     return (int)std::chrono::duration_cast<std::chrono::seconds>(g_lock_until - now).count() + 1;
 }
 
-std::string database_key() { return g_unlocked ? g_db_key : std::string(); }
+std::string database_key() {
+    if (!g_unlocked) return std::string();
+    SessionKey key(kDbSlot);
+    return to_hex(key.bytes, 32);
+}
 
 bool file_key(uint8_t out[32]) {
     if (!g_unlocked) return false;
-    std::memcpy(out, g_file_key, 32);
+    load_key(kFileSlot, out);
     return true;
 }
 

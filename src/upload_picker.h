@@ -21,6 +21,7 @@ public:
     std::string path; i18n::Text error;
     std::vector<Entry> entries;
     std::vector<Item> items;       // collected attachments
+    std::string caption;          // shared text, sent once with the batch
     int selected = 0;              // row in the current stage
     bool show_hidden = false;
     Sort sort = Sort::Newest;
@@ -29,7 +30,7 @@ public:
 
     bool active() const { return stage != Stage::Closed; }
     void openMenu();
-    void close() { stage = Stage::Closed; items.clear(); }
+    void close() { stage = Stage::Closed; items.clear(); caption.clear(); }
     void chooseKind(Kind k);       // Menu / Review -> Browse
     void reload();
     void enter();                  // X in Browse: open folder / toggle file selection
@@ -40,23 +41,27 @@ public:
     void refresh();
     void changeSort(int direction); // D-pad left/right, without rescanning files
     const char* sortKey() const;
-    // Review rows: "send", items..., then "add photo", "add video", "add file".
-    int reviewRows() const { return (int)items.size() + 4; }
+    // Review rows: "send", items..., "add photo", "add video", "add file", text.
+    int reviewRows() const { return (int)items.size() + 5; }
+    bool textSelected() const { return stage == Stage::Review && selected == reviewRows() - 1; }
+    const char* captionKey() const { return caption.empty() ? "upload.add_text" : "upload.edit_text"; }
     bool reviewActivate();         // true when the batch was released for sending
     bool sendBatch();              // Square in Review, from any row
     void removeSelected();         // Triangle in Review
     const Item* focusedItem() const { return selected > 0 && selected <= (int)items.size() ? &items[selected - 1] : nullptr; }
-    bool takeResult(std::vector<Item>& out);
+    bool takeResult(std::vector<Item>& out, std::string* text = nullptr);
 
     // Path shown/used for an entry (flat "latest" view entries carry their own full path).
     std::string fullPath(const Entry& e) const;
     static constexpr const char* LatestView = "@latest";
+    static constexpr const char* LogsDirectory = "ux0:data/vitagram";
 
     static bool matches(Kind k, const std::string& name);
     static std::string formatSize(int64_t bytes);
 private:
     bool has_result_ = false;
     std::vector<Item> result_;
+    std::string result_caption_;
     static bool exists(const std::string& directory);
     void sortEntries();
     void addShortcuts();

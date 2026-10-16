@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <vita2d.h>
 
 // Screens of the data vault: first-run question, key entry with console buttons, unlock at start,
@@ -11,6 +12,11 @@ struct Env {
     bool dark;
     int theme = -1; // Default keeps existing callers compatible; main passes the saved theme ID.
     int scroll_speed = 0;
+    std::vector<std::string> keyboard_languages;
+    // Optional: run once per drawn frame (not while a key is derived) by the settings flows, so the
+    // caller keeps pumping its event queues while a vault screen owns the display.
+    void (*tick)(void*) = nullptr;
+    void* tick_context = nullptr;
 };
 
 // Launch gate: asks once whether to encrypt, unlocks an existing vault. Returns when the app may
@@ -26,7 +32,8 @@ Outcome enable_flow(const Env& env);   // new key twice -> vault on
 Outcome disable_flow(const Env& env);  // current key -> vault switching off
 Outcome change_flow(const Env& env);   // current key, new key twice
 // Lists how many files are sealed, seals the plain ones on request, verifies sealed files and can
-// delete damaged ones. Safe while TDLib runs: recently changed files (maybe downloading) are skipped.
+// delete damaged ones. Safe while TDLib runs: recently changed files (maybe downloading) and TDLib's
+// temp directory are skipped, and the background sealer is held off while files are converted.
 Outcome check_flow(const Env& env);
 
 // Lock while the app runs (auto-lock after inactivity, sleep or the PS button): asks for the key until

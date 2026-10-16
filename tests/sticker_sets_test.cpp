@@ -103,6 +103,62 @@ int main() {
     json_t* d3 = compact_raw_chat_update(nolast); assert(d3 && !json_object_get(d3, "last_message")); json_decref(d3);
     assert(!compact_raw_chat_update(upd.substr(0, upd.size() - 2)));
     assert(!compact_raw_chat_update(t));
+    // updateUser keeps the names, type, status and the small profile photo file.
+    std::string user = "{\"@type\":\"updateUser\",\"user\":{\"@type\":\"user\",\"id\":777,\"first_name\":\"\\u0418\\u0432\\u0430\\u043d\",\"last_name\":\"P\","
+        "\"usernames\":{\"active_usernames\":[\"x\"]},\"phone_number\":\"\",\"status\":{\"@type\":\"userStatusOffline\",\"was_online\":5},"
+        "\"profile_photo\":{\"@type\":\"profilePhoto\",\"id\":\"9\",\"small\":{\"@type\":\"file\",\"id\":42,\"size\":10,\"expected_size\":10,"
+        "\"local\":{\"@type\":\"localFile\",\"path\":\"ux0:a.jpg\",\"is_downloading_completed\":true,\"can_be_deleted\":true},"
+        "\"remote\":{\"@type\":\"remoteFile\",\"id\":\"AAA\",\"unique_id\":\"U\"}},\"big\":{\"@type\":\"file\",\"id\":43},"
+        "\"minithumbnail\":{\"data\":\"" + pad + "\"},\"has_animation\":false},\"emoji_status\":null,\"is_contact\":true,"
+        "\"type\":{\"@type\":\"userTypeBot\",\"can_join_groups\":true},\"language_code\":\"ru\"}}";
+    json_t* cu = compact_raw_user_update(user);
+    assert(cu);
+    json_t* cuser = json_object_get(cu, "user");
+    assert(json_integer_value(json_object_get(cuser, "id")) == 777);
+    assert(!std::strcmp(json_string_value(json_object_get(cuser, "first_name")), "\xd0\x98\xd0\xb2\xd0\xb0\xd0\xbd"));
+    assert(!json_object_get(cuser, "usernames") && !json_object_get(cuser, "is_contact") && !json_object_get(cuser, "language_code"));
+    assert(!std::strcmp(json_string_value(json_object_get(json_object_get(cuser, "type"), "@type")), "userTypeBot"));
+    assert(json_integer_value(json_object_get(json_object_get(cuser, "status"), "was_online")) == 5);
+    json_t* cphoto = json_object_get(cuser, "profile_photo");
+    assert(!json_object_get(cphoto, "big") && !json_object_get(cphoto, "minithumbnail"));
+    json_t* csmall = json_object_get(cphoto, "small");
+    assert(!std::strcmp(json_string_value(json_object_get(csmall, "@type")), "file") && json_integer_value(json_object_get(csmall, "id")) == 42);
+    assert(!std::strcmp(json_string_value(json_object_get(json_object_get(csmall, "local"), "path")), "ux0:a.jpg"));
+    assert(json_is_true(json_object_get(json_object_get(csmall, "local"), "is_downloading_completed")));
+    assert(!std::strcmp(json_string_value(json_object_get(json_object_get(csmall, "remote"), "unique_id")), "U"));
+    json_decref(cu);
+    std::string nophoto = "{\"@type\":\"updateUser\",\"user\":{\"@type\":\"user\",\"id\":8,\"first_name\":\"A\",\"profile_photo\":null,\"pad\":\"" + pad + "\"}}";
+    json_t* np = compact_raw_user_update(nophoto); assert(np && json_is_null(json_object_get(json_object_get(np, "user"), "profile_photo"))); json_decref(np);
+    std::string status = "{\"@type\":\"updateUserStatus\",\"user_id\":8,\"status\":{\"@type\":\"userStatusOnline\",\"expires\":1},\"pad\":\"" + pad + "\"}";
+    assert(!compact_raw_user_update(status));
+    assert(!compact_raw_user_update(user.substr(0, user.size() - 2)));
+    // updateNewChat keeps what the chat list and the UI cache read.
+    std::string newchat = "{\"@type\":\"updateNewChat\",\"chat\":{\"@type\":\"chat\",\"id\":-1009,\"type\":{\"@type\":\"chatTypeSupergroup\",\"supergroup_id\":9,\"is_channel\":true},"
+        "\"title\":\"\\u041a\\u0430\\u043d\\u0430\\u043b\",\"photo\":{\"@type\":\"chatPhotoInfo\",\"small\":{\"@type\":\"file\",\"id\":77,\"size\":5,"
+        "\"local\":{\"path\":\"ux0:c.jpg\",\"is_downloading_completed\":true},\"remote\":{\"id\":\"R\",\"unique_id\":\"Q\"}},\"big\":{\"@type\":\"file\",\"id\":78},"
+        "\"minithumbnail\":{\"data\":\"" + pad + "\"}},\"permissions\":{\"can_send_basic_messages\":true},"
+        "\"last_message\":{\"@type\":\"message\",\"id\":555,\"is_outgoing\":false,\"content\":{\"@type\":\"messageText\",\"text\":{\"text\":\"x\"}}},"
+        "\"positions\":[{\"@type\":\"chatPosition\",\"list\":{\"@type\":\"chatListMain\"},\"order\":\"99\",\"is_pinned\":false}],"
+        "\"unread_count\":3,\"is_marked_as_unread\":true,\"last_read_outbox_message_id\":550,\"notification_settings\":{\"mute_for\":0},"
+        "\"available_reactions\":{\"@type\":\"chatAvailableReactionsAll\"},\"draft_message\":null}}";
+    json_t* nc = compact_raw_new_chat(newchat);
+    assert(nc);
+    json_t* cchat = json_object_get(nc, "chat");
+    assert(json_integer_value(json_object_get(cchat, "id")) == -1009);
+    assert(json_is_true(json_object_get(json_object_get(cchat, "type"), "is_channel")));
+    assert(json_integer_value(json_object_get(cchat, "unread_count")) == 3 && json_is_true(json_object_get(cchat, "is_marked_as_unread")));
+    assert(json_integer_value(json_object_get(cchat, "last_read_outbox_message_id")) == 550);
+    assert(json_is_true(json_object_get(json_object_get(cchat, "permissions"), "can_send_basic_messages")));
+    assert(json_array_size(json_object_get(cchat, "positions")) == 1);
+    json_t* clast = json_object_get(cchat, "last_message");
+    assert(json_integer_value(json_object_get(clast, "id")) == 555 && !json_object_get(clast, "content"));
+    json_t* cphoto2 = json_object_get(cchat, "photo");
+    assert(!json_object_get(cphoto2, "big") && !json_object_get(cphoto2, "minithumbnail"));
+    assert(json_integer_value(json_object_get(json_object_get(cphoto2, "small"), "id")) == 77);
+    assert(!json_object_get(cchat, "notification_settings") && !json_object_get(cchat, "available_reactions") && !json_object_get(cchat, "draft_message"));
+    json_decref(nc);
+    assert(!compact_raw_new_chat(newchat.substr(0, newchat.size() - 2)));
+    assert(!compact_raw_new_chat(user));
     // messages replies: only the members the client reads survive.
     std::string msg = "{\"@type\":\"message\",\"id\":11,\"sender_id\":{\"@type\":\"messageSenderUser\",\"user_id\":5},\"chat_id\":-100,"
         "\"is_outgoing\":false,\"can_be_edited\":false,\"can_be_forwarded\":true,\"reply_to\":null,\"forward_info\":{\"x\":1},\"date\":1700000000,"

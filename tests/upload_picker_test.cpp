@@ -1,4 +1,6 @@
 #include "upload_picker.h"
+#include "diag_log.h"
+#include <algorithm>
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
 #include <psp2/apputil.h>
@@ -83,12 +85,24 @@ int main() {
         assert(picker.focusedItem() == &picker.items[0]);
         picker.selected = 10;
         assert(picker.focusedItem() == &picker.items[9]);
+        // Caption survives browsing/review, travels with the batch, and is cleared on close.
+        picker.selected = picker.reviewRows() - 1;
+        assert(picker.textSelected() && !picker.focusedItem());
+        assert(std::string(picker.captionKey()) == "upload.add_text");
+        picker.caption = "Текст к вложению\nSecond line";
+        assert(std::string(picker.captionKey()) == "upload.edit_text");
+        assert(!picker.reviewActivate() && picker.stage == Stage::Review);
+        picker.chooseKind(kind);
+        assert(!picker.caption.empty());
+        picker.finishSelection();
         if (kind == Kind::Video) assert(picker.sendBatch()); // shortcut from a file row
         else {
             picker.selected = 0;
             assert(picker.reviewActivate()); // X on the top Send row
         }
-        assert(picker.takeResult(result) && result.size() == 10);
+        std::string caption;
+        assert(picker.takeResult(result, &caption) && result.size() == 10);
+        assert(caption == "Текст к вложению\nSecond line" && picker.caption.empty());
         assert(!picker.takeResult(result));
         assert(picker.stage == Stage::Closed && picker.items.empty());
     }
@@ -102,8 +116,12 @@ int main() {
     assert(picker.path == "ux0:picture/nested" && picker.items.size() == 1);
     picker.up();
     assert(picker.path == "ux0:picture" && picker.items.size() == 1);
+    picker.caption = "Discarded";
     picker.close();
-    assert(picker.items.empty());
+    assert(picker.items.empty() && picker.caption.empty());
+    picker.caption = "Stale";
+    picker.openMenu();
+    assert(picker.caption.empty());
     // Offset file rows must remove/preview the right item, never the Send row.
     UploadPicker review;
     review.stage = Stage::Review;
@@ -117,7 +135,7 @@ int main() {
     assert(!review.reviewActivate()); // file row does not send
     std::vector<UploadPicker::Item> outgoing;
     assert(!review.takeResult(outgoing));
-    review.selected = review.reviewRows() - 1; // shortcut also works on Add file
+    review.selected = review.reviewRows() - 1; // shortcut also works on the text row
     assert(!review.focusedItem());
     assert(review.sendBatch() && review.takeResult(outgoing));
     assert(outgoing.size() == 1 && outgoing[0].path == "b");
@@ -214,5 +232,41 @@ int main() {
     photos.up();
     assert(photos.path.empty() && photos.selected == 0);
     assert(photos.entries.front().name == UploadPicker::LatestView);
-    std::puts("upload picker: selection, sorting, cursor identity, navigation and explicit send: PASS");
+    // Any enabled diagnostic log exposes the real log directory, pinned for every sort.
+    auto has_logs = [](const UploadPicker& picker) {
+        return std::count_if(picker.entries.begin(), picker.entries.end(), [](const UploadPicker::Entry& entry) {
+            return entry.name == UploadPicker::LogsDirectory;
+        });
+    };
+    UploadPicker files;
+    diag_log::set_mask(0);
+    files.chooseKind(Kind::File);
+    assert(!has_logs(files));
+    for (int bit = 0; bit < diag_log::kCount; ++bit) {
+        diag_log::set_mask(1u << bit);
+        files.chooseKind(Kind::File);
+        assert(has_logs(files) == 1);
+        assert(files.entries.front().name == UploadPicker::LogsDirectory);
+        files.selected = 1;
+        const auto focused = files.fullPath(files.entries[1]);
+        for (int sort = 0; sort < (int)Sort::Count; ++sort) {
+            files.changeSort(1);
+            files.refresh();
+            assert(files.entries.front().name == UploadPicker::LogsDirectory);
+            assert(files.fullPath(files.entries[files.selected]) == focused);
+        }
+        files.selected = 0;
+        files.enter();
+        assert(files.path == UploadPicker::LogsDirectory);
+        files.up(); files.up(); files.up();
+        assert(files.path.empty() && files.entries.front().name == UploadPicker::LogsDirectory);
+        for (Kind kind : {Kind::Photo, Kind::Video}) {
+            files.chooseKind(kind);
+            assert(!has_logs(files));
+        }
+    }
+    diag_log::set_mask(0);
+    files.chooseKind(Kind::File);
+    assert(!has_logs(files));
+    std::puts("upload picker: selection, sorting, cursor identity, navigation, logs shortcut and explicit send: PASS");
 }

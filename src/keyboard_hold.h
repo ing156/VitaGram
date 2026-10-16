@@ -1,10 +1,12 @@
 #pragma once
 #include <cstdint>
 
-// Resolve one gesture into either a letter or its alternate digit, never both.
+// Resolve one gesture into either a letter or its alternate character, never both.
 struct KeyboardHold {
     enum class Result { None, Short, Long };
-    static constexpr uint64_t delay = 550000;
+    // HeliBoard Defaults.kt uses PREF_KEY_LONGPRESS_TIMEOUT = 300 ms.
+    // The UI opens choices on Long and commits the chosen symbol on release.
+    static constexpr uint64_t delay = 300000;
     bool active = false, fired = false;
     uint64_t since = 0;
 

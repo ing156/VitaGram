@@ -1,8 +1,14 @@
 #pragma once
 #include <cstddef>
-inline int td_pump_budget_us(size_t queued,bool interactive,bool recently_active) {
+// Until the first live chat list arrives the UI only draws the cached list, and every queued
+// startup update delays the live one: the flood gets most of the frame instead of 2-8 ms.
+// 25 ms drops the static list to ~30 fps; input switches back to the interactive budget.
+constexpr int kTdStartupPumpUs = 25000;
+inline int td_pump_budget_us(size_t queued,bool interactive,bool recently_active,bool startup=false) {
     if (interactive) return 500;
-    if (recently_active || queued<128) return 2000;
+    if (recently_active) return 2000;
+    if (startup && queued>=32) return kTdStartupPumpUs;
+    if (queued<128) return 2000;
     if (queued<512) return 4000;
     if (queued<2000) return 6000;
     return 8000;

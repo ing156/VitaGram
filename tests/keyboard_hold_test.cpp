@@ -5,6 +5,7 @@
 int main() {
     using R = KeyboardHold::Result;
     KeyboardHold hold;
+    static_assert(KeyboardHold::delay == 300000, "Keyboard long press must open after 300 ms");
     assert(hold.update(1, false, false) == R::None);
     hold.start(100);
     assert(hold.update(200, true, false) == R::None);

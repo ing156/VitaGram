@@ -54,6 +54,10 @@ public:
     // True when removeUpdaterApp() would do something (so the caller can show a message first).
     static bool updaterCleanupDue(const std::string& work_dir, const std::string& fallback_dir);
     void reportStartupFailure(const std::string& detail); // result of a failed applyPending()
+    // Explicit, already-confirmed local VPK installation; never used by automatic updates.
+    // The extracted package must identify VitaGram. On success the caller must exit, not restart itself.
+    static bool prepareLocalInstaller(std::string& detail);
+    static bool handoffConfirmedPackage(const std::string& package_dir, const HandoffText& text, std::string& detail);
     Snapshot snapshot() const;
     const std::string& currentVersion() const { return current_; }
 
@@ -68,6 +72,7 @@ private:
     bool finishThread();
     static Pending applyIn(const std::string& work_dir, const std::string& current_version, const HandoffText& text, const Progress& progress, std::string& detail);
     bool chooseDir(uint64_t package_size, std::string& dir, std::string& detail);
+    static bool prepareInstaller(const std::string& work_dir, std::string& detail);
     static bool startInstaller(const std::string& work_dir, const std::string& package_dir, const HandoffText& text, std::string& detail);
     static bool stageHead(const std::string& package_dir, std::string& detail,
                           const char* source = "app0:sce_sys/package/head.bin");

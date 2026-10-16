@@ -2,20 +2,29 @@
 #include "priority_ceiling.h"
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
+#include <psp2/power.h>
 #include <pthread.h>
 #include <array>
 #include <atomic>
 #include <algorithm>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 
 namespace cpu_scheduler {
 namespace {
-struct Entry { int id = -1; Role role = Role::Parser; int core = -1; int64_t moved = 0; };
+struct Entry {
+    int id = -1; Role role = Role::Parser; int core = -1; int64_t moved = 0;
+    // Performance-log interval: one-second samples on each core, core changes, the kernel thread name.
+    std::array<uint16_t, 4> seconds{}; uint16_t moves = 0; char name[32] = {};
+};
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 std::array<Entry, 16> threads;
 int base_priority = 0x10000100;
 int audio_active = 0, video_active = 0;
+// Startup flood: the Parser gets a core of its own (CPU3 when usable), the other background
+// threads keep off it. Disabled while video owns cores.
+bool parser_pinned = false;
 enum ProbeState { Checking = -1, Timeout = -2, CreateFailed = -3,
     StartFailed = -4, AffinityFailed = -5, WrongCore = -6, Confirmed = 1 };
 std::atomic<int> fourth{Checking};
@@ -27,6 +36,9 @@ int probe_info_error = 0;
 std::array<int, 4> load{{-1,-1,-1,-1}};
 std::array<uint64_t, 4> previous_idle{};
 int64_t last_tick = 0, last_sample = 0;
+// Performance-log interval, reset by writeReport(): per-core busy percent and the ARM clock.
+std::array<uint32_t, 4> busy_sum{}; std::array<int, 4> busy_max{{-1,-1,-1,-1}};
+uint32_t report_samples = 0; int clock_min = 0, clock_max = 0;
 const int masks[] = {SCE_KERNEL_CPU_MASK_USER_0, SCE_KERNEL_CPU_MASK_USER_1,
     SCE_KERNEL_CPU_MASK_USER_2, SCE_KERNEL_CPU_MASK_SYSTEM};
 void check(const char* what, int rc) {
@@ -68,7 +80,7 @@ bool background(Role role) { return role == Role::Network || role == Role::Parse
 void move(Entry& thread, int core, int64_t now) {
     if (thread.core == core) return;
     int rc = sceKernelChangeThreadCpuAffinityMask(thread.id, masks[core]);
-    if (rc >= 0) { thread.core = core; thread.moved = now; }
+    if (rc >= 0) { if (thread.core >= 0) ++thread.moves; thread.core = core; thread.moved = now; }
     else {
         check("affinity", rc);
         if (core == 3) { probe_error = rc; fourth = AffinityFailed; }
@@ -76,6 +88,7 @@ void move(Entry& thread, int core, int64_t now) {
         // including when the preferred CPU3 is unavailable.
         int fallback = video_active ? 0 : 2;
         if (core != fallback && sceKernelChangeThreadCpuAffinityMask(thread.id, masks[fallback]) >= 0) {
+            if (thread.core >= 0) ++thread.moves;
             thread.core = fallback; thread.moved = now;
         }
     }
@@ -83,21 +96,30 @@ void move(Entry& thread, int core, int64_t now) {
 void balance(bool urgent) { // mutex held
     int64_t now = sceKernelGetSystemTimeWide();
     int assigned[4] = {};
+    const int parser_core = parser_pinned && !video_active ? (fourth == Confirmed ? 3 : 2) : -1;
     for (auto& thread : threads) {
         if (thread.id < 0 || !background(thread.role)) continue;
+        if (thread.role == Role::Parser && parser_core >= 0) {
+            move(thread, parser_core, now);
+            if (thread.core >= 0) ++assigned[thread.core];
+            continue;
+        }
         int best = video_active ? 0 : 2, best_score = 10000;
+        bool found = false;
         auto score = [&](int core) {
             return (load[core] < 0 ? 40 : load[core]) + assigned[core] * 30 +
                 (core == 0 ? 30 : 0);
         };
         for (int core = 0; core <= 3; ++core) {
             if ((core == 0 && !video_active) || (core == 1 && audio_active) ||
-                (core == 2 && video_active) || (core == 3 && fourth != Confirmed)) continue;
-            if (score(core) < best_score) { best = core; best_score = score(core); }
+                (core == 2 && video_active) || (core == 3 && fourth != Confirmed) || core == parser_core) continue;
+            if (score(core) < best_score) { best = core; best_score = score(core); found = true; }
         }
+        // No other core is free (audio holds CPU1 and CPU3 is unusable): share rather than stall.
+        if (!found && parser_core >= 0) { if (thread.core >= 0) ++assigned[thread.core]; continue; }
         bool forbidden = thread.core < 0 || (thread.core == 0 && !video_active) ||
             (thread.core == 1 && audio_active) || (thread.core == 2 && video_active) ||
-            (thread.core == 3 && fourth != Confirmed);
+            (thread.core == 3 && fourth != Confirmed) || thread.core == parser_core;
         // Avoid chasing every transient spike and repeatedly evicting warm caches.
         if (urgent || forbidden || (now - thread.moved >= 5000000 && best_score + 20 < score(thread.core)))
             move(thread, best, now);
@@ -119,7 +141,10 @@ Thread::Thread(Role role) : id_(sceKernelGetThreadId()) {
         role == Role::Prefetch ? 16 : role == Role::Storage ? 28 : 24;
     check("priority", sceKernelChangeThreadPriority(id_, std::max(32, base_priority + offset)));
     for (auto& thread : threads) if (thread.id < 0) {
-        thread = Entry{id_, role, -1, 0};
+        thread = Entry{};
+        thread.id = id_; thread.role = role;
+        SceKernelThreadInfo info{}; info.size = sizeof(info);
+        if (sceKernelGetThreadInfo(id_, &info) >= 0) std::strncpy(thread.name, info.name, sizeof(thread.name) - 1);
         int initial_core = role == Role::Ui ? 0 : role == Role::Audio ? 1 :
             (background(role) && video_active ? 0 : 2);
         move(thread, initial_core, sceKernelGetSystemTimeWide());
@@ -171,7 +196,9 @@ void tick() {
         start_probe();
     SceKernelSystemInfo info{}; info.size = sizeof(info);
     int rc = sceKernelGetSystemInfo(&info);
+    const int clock = scePowerGetArmClockFrequency();
     pthread_mutex_lock(&mutex);
+    bool sampled = false;
     if (rc >= 0) {
         for (int core = 0; core < 4; ++core) {
             uint64_t idle = info.cpuInfo[core].idleClock;
@@ -179,12 +206,26 @@ void tick() {
                 uint64_t delta = idle - previous_idle[core];
                 int busy = 100 - (int)std::min<uint64_t>(100, delta * 100 / (now-last_sample));
                 load[core] = load[core] < 0 ? busy : (load[core] + busy) / 2;
+                busy_sum[core] += busy; busy_max[core] = std::max(busy_max[core], busy);
+                sampled = true;
             }
             previous_idle[core] = idle;
         }
         last_sample = now;
     } else { load.fill(-1); last_sample = 0; }
     balance(false);
+    if (sampled) {
+        ++report_samples;
+        if (clock > 0) { clock_min = clock_min ? std::min(clock_min, clock) : clock; clock_max = std::max(clock_max, clock); }
+    }
+    // Where each thread ran during this second, after balancing.
+    for (auto& thread : threads)
+        if (thread.id >= 0 && thread.core >= 0 && thread.seconds[thread.core] < UINT16_MAX) ++thread.seconds[thread.core];
+    pthread_mutex_unlock(&mutex);
+}
+void pinParser(bool pinned) {
+    pthread_mutex_lock(&mutex);
+    if (parser_pinned != pinned) { parser_pinned = pinned; balance(true); }
     pthread_mutex_unlock(&mutex);
 }
 bool videoActive() {
@@ -192,6 +233,27 @@ bool videoActive() {
     bool active = video_active > 0;
     pthread_mutex_unlock(&mutex);
     return active;
+}
+void writeReport(FILE* file) {
+    static const char* role_names[] = {"ui", "audio", "video", "network", "parser", "storage", "prefetch"};
+    static const char* fourth_names[] = {"checking", "timeout", "create_failed", "start_failed", "affinity_failed", "wrong_core"};
+    const int state = fourth.load();
+    const char* cpu3 = state == Confirmed ? "confirmed" : state <= Checking && state >= WrongCore ? fourth_names[Checking - state] : "unknown";
+    pthread_mutex_lock(&mutex);
+    auto mean = [](uint32_t sum, uint32_t n) { return n ? (int)(sum / n) : -1; };
+    std::fprintf(file, "cpu_cores samples=%u cpu3=%s arm_mhz_min=%d arm_mhz_max=%d audio=%d video=%d busy_mean=%d,%d,%d,%d busy_max=%d,%d,%d,%d\n",
+        report_samples, cpu3, clock_min, clock_max, audio_active, video_active,
+        mean(busy_sum[0], report_samples), mean(busy_sum[1], report_samples), mean(busy_sum[2], report_samples), mean(busy_sum[3], report_samples),
+        busy_max[0], busy_max[1], busy_max[2], busy_max[3]);
+    for (auto& thread : threads) {
+        if (thread.id < 0) continue;
+        std::fprintf(file, "cpu_thread role=%s name=%s core=%d seconds=%u,%u,%u,%u moves=%u\n",
+            role_names[static_cast<int>(thread.role)], thread.name[0] ? thread.name : "-", thread.core,
+            thread.seconds[0], thread.seconds[1], thread.seconds[2], thread.seconds[3], thread.moves);
+        thread.seconds = {}; thread.moves = 0;
+    }
+    busy_sum = {}; busy_max = {{-1,-1,-1,-1}}; report_samples = 0; clock_min = clock_max = 0;
+    pthread_mutex_unlock(&mutex);
 }
 std::string threadStatus() {
     pthread_mutex_lock(&mutex);

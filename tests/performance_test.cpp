@@ -183,6 +183,12 @@ int main(int argc, char** argv) {
     assert(td_pump_budget_us(128,false,false)==4000);
     assert(td_pump_budget_us(512,false,false)==6000);
     assert(td_pump_budget_us(4000,false,false)==8000);
+    // Startup flood before the first live chat list: a larger budget, but input still wins.
+    assert(td_pump_budget_us(32,false,false,true)==kTdStartupPumpUs);
+    assert(td_pump_budget_us(4000,false,false,true)==kTdStartupPumpUs);
+    assert(td_pump_budget_us(31,false,false,true)==2000);
+    assert(td_pump_budget_us(4000,true,false,true)==500);
+    assert(td_pump_budget_us(4000,false,true,true)==2000);
     assert(td_request_allowed(2,true,true,false));
     assert(td_request_allowed(1,true,true,false));
     assert(!td_request_allowed(1,false,true,false));

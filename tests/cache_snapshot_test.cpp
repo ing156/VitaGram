@@ -302,7 +302,33 @@ int main() {
         struct stat gone{}; assert(stat(VITAGRAM_DB_DIR "/ui-history/42.json", &gone));
         UiCache after_clear; after_clear.load(); assert(!after_clear.historyPending(42) && !after_clear.loadHistory());
     }
-    std::puts("Per-chat histories: legacy migration, lazy merge with live deletions, partial writes, wipe passed");
+    {   // A mass update is written in bounded passes; the cache is saved only after the last one.
+        UiCache::removeHistoryFiles();
+        UiCache mass; mass.load();
+        constexpr int chats = 40, per = static_cast<int>(UiCache::kHistoriesPerFlush);
+        for (int chat = 100; chat < 100 + chats; ++chat) {
+            const std::string update = R"({"@type":"updateNewMessage","message":{"id":1,"chat_id":)" + std::to_string(chat) +
+                                       R"(,"content":{"@type":"messageText","v":"m"}}})";
+            event(mass, update.c_str());
+        }
+        assert(mass.history_dirty_.size() == chats);
+        assert(mass.flush() && mass.history_dirty_.size() == chats - per && mass.saved_ != mass.revision_);
+        // A cancelled pass writes nothing and does not ask for an early retry.
+        assert(!mass.flush([](void*) { return false; }) && mass.history_dirty_.size() == chats - per);
+        assert(mass.flush() && mass.history_dirty_.size() == chats - 2 * per);
+        assert(!mass.flush() && mass.history_dirty_.empty() && mass.saved_ == mass.revision_);
+        // Memory keeps 20 histories: the evicted older chats were dirty removals, the newest are written.
+        for (int chat = 100; chat < 100 + chats; ++chat) {
+            const std::string file_path = std::string(VITAGRAM_DB_DIR "/ui-history/") + std::to_string(chat) + ".json";
+            struct stat st{};
+            if (chat < 100 + chats - 20) { assert(stat(file_path.c_str(), &st)); continue; }
+            auto* file = load_cache(file_path.c_str());
+            assert(file && json_object_size(file) == 1); json_decref(file);
+        }
+        assert(!mass.flush()); // Nothing left.
+        UiCache::removeHistoryFiles();
+    }
+    std::puts("Per-chat histories: legacy migration, lazy merge with live deletions, partial writes, wipe, bounded passes passed");
 
     ExitGesture exit;
     assert(!exit.update(false,true,true,false,100)); // Select first.

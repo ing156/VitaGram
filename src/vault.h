@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,10 +27,32 @@
 // What cannot be protected: file names, sizes and timestamps; plaintext that must exist for the
 // platform (a download in progress, a recording until TDLib has uploaded it, files the user
 // explicitly saved to the download folder); a console whose RAM or running app an attacker controls.
+//
+// In RAM (with memory_hygiene.h, crash_dump.h, process_modules.h): the master key is dropped as soon as the
+// session keys are derived from it; the session keys are kept XOR-masked with a random pad in a
+// separate heap block and unmasked only on the stack for one operation. That defeats scanning for
+// the database key's known hex form and dumps that captured only one of the two regions - not a
+// debugger that understands VitaGram.
 namespace vault {
+// Clears every buffer it releases, including the old one when the vector grows: an entered key
+// leaves no copies in freed heap memory.
+template <class T> struct WipingAllocator {
+    using value_type = T;
+    WipingAllocator() = default;
+    template <class U> WipingAllocator(const WipingAllocator<U>&) {}
+    T* allocate(size_t n) { return std::allocator<T>().allocate(n); }
+    void deallocate(T* p, size_t n) {
+        volatile unsigned char* bytes = reinterpret_cast<volatile unsigned char*>(p);
+        for (size_t i = 0; i < n * sizeof(T); ++i) bytes[i] = 0;
+        std::allocator<T>().deallocate(p, n);
+    }
+    template <class U> bool operator==(const WipingAllocator<U>&) const { return true; }
+    template <class U> bool operator!=(const WipingAllocator<U>&) const { return false; }
+};
+
 // The secret: for Method::Buttons each element is 0..7 (Up Down Left Right Cross Circle Triangle Square),
 // for Method::Text the UTF-8 bytes of the passphrase.
-using Pin = std::vector<uint8_t>;
+using Pin = std::vector<uint8_t, WipingAllocator<uint8_t>>;
 constexpr int kSymbols = 8;
 constexpr size_t kMinPin = 12, kMaxPin = 32;
 

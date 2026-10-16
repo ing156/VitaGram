@@ -147,7 +147,8 @@ inline bool wanted(const std::string& name, std::initializer_list<const char*> k
 }
 // Shapes of the kept objects. A file is the bulk of a sticker (~25 members of
 // local/remote state), but only these members are ever read.
-enum class Shape { Set, Item, Thumbnail, File, Local, Remote, ChatUpdate, LastMessage, Messages, Message, Content, Media, PhotoSize, AltVideo, MediaFile };
+enum class Shape { Set, Item, Thumbnail, File, Local, Remote, ChatUpdate, LastMessage, Messages, Message, Content, Media, PhotoSize, AltVideo, MediaFile,
+    UserUpdate, User, ProfilePhoto, ChatNew, Chat, ChatPhoto };
 inline Shape child_shape(Shape shape, const std::string& name) {
     switch (shape) {
     case Shape::Set: case Shape::Item:
@@ -156,6 +157,15 @@ inline Shape child_shape(Shape shape, const std::string& name) {
         break;
     case Shape::Thumbnail: if (name == "file") return Shape::File; break;
     case Shape::ChatUpdate: if (name == "last_message") return Shape::LastMessage; break;
+    case Shape::UserUpdate: if (name == "user") return Shape::User; break;
+    case Shape::User: if (name == "profile_photo") return Shape::ProfilePhoto; break;
+    case Shape::ProfilePhoto: if (name == "small") return Shape::File; break;
+    case Shape::ChatNew: if (name == "chat") return Shape::Chat; break;
+    case Shape::Chat:
+        if (name == "last_message") return Shape::LastMessage;
+        if (name == "photo") return Shape::ChatPhoto;
+        break;
+    case Shape::ChatPhoto: if (name == "small") return Shape::File; break;
     case Shape::Message: if (name == "content") return Shape::Content; break;
     // Typed media objects: only photo sizes, alternative videos and the file
     // objects inside them are narrowed; every other member stays whole.
@@ -198,6 +208,16 @@ inline bool keeps(Shape shape, const std::string& name) {
     case Shape::PhotoSize: return wanted(name, {"type", "width", "height", "photo"});
     case Shape::AltVideo: return wanted(name, {"codec", "width", "height", "video"});
     case Shape::MediaFile: return wanted(name, {"id", "size", "expected_size", "local", "remote"});
+    case Shape::UserUpdate: return wanted(name, {"@type", "@extra", "user"});
+    // Members parseUser, user_identity and the UI cache read; "type" and "status" stay whole.
+    case Shape::User: return wanted(name, {"@type", "id", "first_name", "last_name", "type", "status", "profile_photo"});
+    case Shape::ProfilePhoto: return wanted(name, {"@type", "id", "small"});
+    case Shape::ChatNew: return wanted(name, {"@type", "@extra", "chat"});
+    // Members chatFromJson, parseChat and the UI cache (compact_chat) read; "type",
+    // "permissions" and "positions" stay whole.
+    case Shape::Chat: return wanted(name, {"@type", "id", "type", "title", "photo", "permissions", "positions", "last_message",
+        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id"});
+    case Shape::ChatPhoto: return wanted(name, {"@type", "small"});
     }
     return false;
 }
@@ -311,5 +331,41 @@ inline json_t* compact_raw_messages(const std::string& text) {
     if (r.p != r.end || !type || std::strcmp(type, "messages") || !json_is_array(json_object_get(root, "messages"))) {
         json_decref(root); return nullptr;
     }
+    return root;
+}
+
+// updateUser (2-4 KB, ~200 at startup) cost ~4.4 ms each in Jansson on the Parser thread,
+// yet the client reads only the names, type, status and the small profile photo file.
+inline json_t* compact_raw_user_update(const std::string& text) {
+    using namespace td_sets_detail;
+    if (text.size() < 256 || text[0] != '{') return nullptr;
+    const std::string_view head(text.data(), 48);
+    if (head.find("\"updateUser\"") == std::string_view::npos) return nullptr;
+    td_unused_detail::Reader r{text.data(), text.data() + text.size()};
+    json_t* root = pick_object(r, Shape::UserUpdate);
+    if (!root) return nullptr;
+    r.ws();
+    const char* type = json_string_value(json_object_get(root, "@type"));
+    json_t* user = json_object_get(root, "user");
+    if (r.p != r.end || !type || std::strcmp(type, "updateUser") || !json_is_object(user) ||
+        !json_is_integer(json_object_get(user, "id"))) { json_decref(root); return nullptr; }
+    return root;
+}
+
+// updateNewChat (3-5 KB, ~140 at startup) cost ~7 ms each in Jansson: the full last
+// message, notification settings, reactions and the big photo are never read.
+inline json_t* compact_raw_new_chat(const std::string& text) {
+    using namespace td_sets_detail;
+    if (text.size() < 256 || text[0] != '{') return nullptr;
+    const std::string_view head(text.data(), 48);
+    if (head.find("\"updateNewChat\"") == std::string_view::npos) return nullptr;
+    td_unused_detail::Reader r{text.data(), text.data() + text.size()};
+    json_t* root = pick_object(r, Shape::ChatNew);
+    if (!root) return nullptr;
+    r.ws();
+    const char* type = json_string_value(json_object_get(root, "@type"));
+    json_t* chat = json_object_get(root, "chat");
+    if (r.p != r.end || !type || std::strcmp(type, "updateNewChat") || !json_is_object(chat) ||
+        !json_is_integer(json_object_get(chat, "id"))) { json_decref(root); return nullptr; }
     return root;
 }

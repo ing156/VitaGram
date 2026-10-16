@@ -91,6 +91,56 @@ static json_t* parse(const char* text) { json_error_t e{}; auto* r=json_loads(te
 static void event(MediaUploads& u, const char* text, int64_t now) { auto* r=parse(text); u.process(r,now); json_decref(r); }
 int main() {
     use_test_language();
+    // Exercise actual outgoing TDLib requests, including captions and partial batches.
+    {
+        const char* path = "attachment-caption.fixture";
+        FILE* fixture = std::fopen(path, "wb"); assert(fixture);
+        std::fputs("attachment", fixture); std::fclose(fixture);
+        TelegramClient attachments;
+        attachments.ready_ = attachments.worker_started_ = true;
+        const std::string caption = "Подпись \"текст\"\nSecond line";
+        auto check = [&](const std::vector<std::pair<std::string, int>>& files,
+                         bool expected_ok, size_t requests) {
+            attachments.outgoing_.clear();
+            assert(attachments.sendLocalFiles(files, 42, 7, caption) == expected_ok);
+            assert(attachments.outgoing_.size() == requests);
+            int captions = 0;
+            for (const auto& outgoing : attachments.outgoing_) {
+                auto* root = parse(outgoing.text.c_str());
+                assert(MediaUploads::number(root, "chat_id") == 42);
+                assert(MediaUploads::number(json_object_get(root, "topic_id"), "forum_topic_id") == 7);
+                auto check_content = [&](json_t* content) {
+                    auto* text = json_object_get(content, "caption");
+                    assert(MediaUploads::string(text, "@type") == "formattedText");
+                    const auto value = MediaUploads::string(text, "text");
+                    if (!value.empty()) { assert(value == caption); ++captions; }
+                };
+                if (MediaUploads::string(root, "@type") == "sendMessageAlbum") {
+                    auto* contents = json_object_get(root, "input_message_contents");
+                    assert(json_array_size(contents) >= 2);
+                    for (size_t i = 0; i < json_array_size(contents); ++i)
+                        check_content(json_array_get(contents, i));
+                } else {
+                    assert(MediaUploads::string(root, "@type") == "sendMessage");
+                    check_content(json_object_get(root, "input_message_content"));
+                    assert(MediaUploads::string(json_object_get(root, "@extra"), "kind") == "media_upload");
+                }
+                json_decref(root);
+            }
+            assert(captions == (requests ? 1 : 0));
+        };
+        for (int kind = 0; kind < 3; ++kind) {
+            check({{path, kind}}, true, 1);
+            check({{path, kind}, {path, kind}}, true, 1);
+            check({{"missing-caption.fixture", kind}, {path, kind}}, false, 1);
+        }
+        check({{path, 0}, {path, 1}, {path, 2}}, true, 2);
+        check({{"missing-caption.fixture", 0}, {path, 2}}, false, 1);
+        check({{"missing-caption.fixture", 0}, {"missing-caption.fixture", 1}}, false, 0);
+        attachments.worker_started_ = false;
+        assert(!std::remove(path));
+    }
+    std::puts("Attachment captions: photo/video/document, albums, mixed batches, missing files and topic passed");
     {
         TelegramClient localized;
         localized.ready_ = localized.worker_started_ = true;
@@ -354,6 +404,119 @@ int main() {
             return request.text.find("\"ignore_file_names\"") != std::string::npos; })); // One create per download.
         live.worker_started_ = false;
     }
+
+    // Navigation invalidates link/history replies, including leave-and-reopen
+    // of the same chat and switching to another topic in the same forum.
+    {
+        TelegramClient nav;
+        nav.ready_ = nav.worker_started_ = true;
+        nav.openChat(42, "Source");
+        auto link_reply = [&]() {
+            nav.outgoing_.clear();
+            assert(nav.openTelegramLink("https://t.me/example"));
+            auto* request = parse(nav.outgoing_.back().text.c_str());
+            auto* reply = parse(R"({"@type":"chat","id":99,"title":"Linked chat"})");
+            json_object_set(reply, "@extra", json_object_get(request, "@extra"));
+            json_decref(request);
+            return reply;
+        };
+        auto* old_link = link_reply();
+        nav.openChat(43, "Other"); nav.process(old_link);
+        assert(nav.currentChatId() == 43 && !nav.link_chat_opened_);
+        old_link = link_reply();
+        nav.leaveChat(); nav.openChat(43, "Other again"); nav.process(old_link);
+        assert(nav.currentChatId() == 43 && !nav.link_chat_opened_);
+        old_link = link_reply();
+        nav.topics_.push_back({}); nav.topics_[0].id = 7;
+        nav.openTopic(0); nav.process(old_link);
+        assert(nav.currentChatId() == 43 && nav.currentTopicId() == 7 && !nav.link_chat_opened_);
+        auto* history = parse(nav.outgoing_.back().text.c_str());
+        auto* late = parse(R"({"@type":"messages","messages":[{"id":55,"chat_id":43,"content":{"@type":"messageText","text":{"text":"Old topic"}}}]})");
+        json_object_set(late, "@extra", json_object_get(history, "@extra")); json_decref(history);
+        nav.backToTopics(); nav.process(late);
+        assert(nav.messages().empty() && !nav.history_pending_);
+        nav.openTopic(0);
+        nav.process(link_reply());
+        assert(nav.currentChatId() == 99 && nav.link_chat_opened_);
+        nav.worker_started_ = false;
+    }
+    std::puts("Navigation: stale links/history ignored after chat/topic changes; current link opens");
+
+    // Explicit document exports continue outside their original window and
+    // failed attempts are retryable; an old failure cannot cancel the retry.
+    {
+        TelegramClient docs;
+        docs.ready_ = docs.worker_started_ = true;
+        docs.openChat(42, "Files"); docs.outgoing_.clear();
+        auto* payload = parse(R"({"id":10,"chat_id":42,"content":{"@type":"messageDocument","document":{"file_name":"report.pdf","document":{"id":701,"size":2097152,"local":{"downloaded_size":0}}}}})");
+        auto item = docs.parseMessage(payload); json_decref(payload);
+        assert(item.document && item.document_size == 2097152);
+        docs.downloadDocument(item, "ux0:data/downloads");
+        auto* request = parse(docs.outgoing_.back().text.c_str());
+        auto error_reply = [&]() {
+            auto* reply = parse(R"({"@type":"error","message":"NETWORK_ERROR"})");
+            json_object_set(reply, "@extra", json_object_get(request, "@extra")); return reply;
+        };
+        docs.openChat(43, "Other");
+        docs.process(parse(R"({"@type":"updateFile","file":{"id":701,"size":2097152,"local":{"downloaded_size":1048576}}})"));
+        assert(docs.documentStatus() == tr("doc.downloading", {"50%"}));
+        docs.process(error_reply());
+        assert(docs.document_downloads_.empty() && !docs.pending_files_.count(701));
+        assert(docs.documentStatus() == tr("doc.download_failed", {"NETWORK_ERROR"}));
+        docs.downloadDocument(item, "ux0:data/downloads");
+        assert(docs.document_downloads_.count(701));
+        docs.process(error_reply());
+        assert(docs.document_downloads_.count(701) && docs.pending_files_.count(701));
+        json_decref(request);
+        docs.messages_ = docs.history_items_ = {item};
+        docs.process(parse(R"({"@type":"updateFile","file":{"id":701,"size":3145728,"local":{"downloaded_size":1048576}}})"));
+        assert(docs.messages_[0].document_size == 3145728 && docs.history_items_[0].document_size == 3145728);
+        assert(docs.takeSavedDocument().empty()); // Errors never offer installation.
+        auto spit = [](const char* path, const char* text) {
+            FILE* f = std::fopen(path, "wb"); assert(f);
+            assert(std::fwrite(text, 1, std::strlen(text), f) == std::strlen(text)); assert(std::fclose(f) == 0);
+        };
+        auto slurp = [](const std::string& path) {
+            FILE* f = std::fopen(path.c_str(), "rb"); assert(f);
+            char bytes[64]{}; size_t n = std::fread(bytes, 1, sizeof(bytes), f); std::fclose(f);
+            return std::string(bytes, n);
+        };
+        spit("ux0:data/export-source.vpk", "package bytes");
+        docs.process(parse(R"({"@type":"updateFile","file":{"id":701,"size":13,"local":{"path":"ux0:data/export-source.vpk","is_downloading_completed":true,"downloaded_size":13}}})"));
+        std::string exported = docs.takeSavedDocument();
+        assert(!exported.empty() && docs.takeSavedDocument().empty());
+        assert(slurp(exported) == "package bytes");
+        item.media_path = "ux0:data/export-source.vpk"; item.document_name = "cached.VPK";
+        docs.downloadDocument(item, "ux0:data/downloads");
+        exported = docs.takeSavedDocument();
+        assert(!exported.empty() && slurp(exported) == "package bytes");
+        // Saving again finds the identical export instead of writing "cached (1).VPK".
+        docs.downloadDocument(item, "ux0:data/downloads");
+        assert(docs.takeSavedDocument() == exported);
+        assert(docs.documentStatus() == tr("doc.exists", {exported}));
+        struct stat copy{};
+        const std::string duplicate = exported.substr(0, exported.size() - 4) + " (1).VPK";
+        assert(stat(duplicate.c_str(), &copy) != 0);
+        // Without a cached copy the export in the folder blocks a second download.
+        const size_t sent = docs.outgoing_.size();
+        item.media_path.clear(); item.document_size = 13; item.media_file_id = 702;
+        docs.downloadDocument(item, "ux0:data/downloads");
+        assert(docs.outgoing_.size() == sent && !docs.document_downloads_.count(702));
+        assert(docs.takeSavedDocument() == exported && docs.documentStatus() == tr("doc.exists", {exported}));
+        // A different file under the same name is still saved beside it.
+        spit("ux0:data/export-other.vpk", "other package");
+        item.media_path = "ux0:data/export-other.vpk";
+        docs.downloadDocument(item, "ux0:data/downloads");
+        const std::string other = docs.takeSavedDocument();
+        assert(other == duplicate && slurp(other) == "other package");
+        docs.downloadDocument(item, "ux0:data/downloads");
+        assert(docs.takeSavedDocument() == other);
+        docs.downloadDocument(item, "ux0:data/downloads");
+        docs.clearAccountMemory();
+        assert(docs.takeSavedDocument().empty());
+        docs.worker_started_ = false;
+    }
+    std::puts("Documents: size refresh, progress after navigation, download errors, stale retry failures and repeated exports passed");
 
     // Opening a chat drops chat-list avatar downloads: unsent ones leave the
     // queue, sent ones are cancelled if TDLib has not started them.
@@ -1017,9 +1180,10 @@ int main() {
     auto* link_request=parse(tg.outgoing_.back().text.c_str());
     assert(MediaUploads::string(link_request,"@type")=="searchPublicChat" &&
            MediaUploads::string(link_request,"username")=="example_channel");
-    json_decref(link_request);
     assert(!tg.openTelegramLink("https://t.me/joinchat/secret") && !tg.openTelegramLink("https://evil.test/t.me/example_channel"));
-    tg.process(parse(R"({"@type":"chat","id":991,"title":"Example","type":{"@type":"chatTypeSupergroup","supergroup_id":77},"@extra":{"kind":"public_link","generation":1}})"));
+    auto* link_result = parse(R"({"@type":"chat","id":991,"title":"Example","type":{"@type":"chatTypeSupergroup","supergroup_id":77}})");
+    json_object_set(link_result, "@extra", json_object_get(link_request, "@extra"));
+    json_decref(link_request); tg.process(link_result);
     assert(tg.takeLinkChatOpened() && tg.currentChatId()==991);
     assert(!tg.takeLinkChatOpened());
 

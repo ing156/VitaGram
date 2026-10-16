@@ -4,7 +4,7 @@
 
 **Telegram for PS Vita · Telegram для PS Vita**
 
-Current version / Текущая версия: **0.37.53**.
+Current version / Текущая версия: **0.37.73**.
 
 [English](#english) · [Русский](#russian) · [Build / Сборка](#building) · [Licenses / Лицензии](#licenses)
 
@@ -42,7 +42,8 @@ supported media and features that are not yet available.
   reactions and voting in polls, including quizzes and multiple-choice polls.
 - **Photos and files:** albums, attachment batches of up to 10 items, fullscreen
   photos with rotation and 1–5× zoom (touch or right stick up/down), left-stick panning
-  while zoomed, and saving files to a download folder.
+  while zoomed, and saving files to a download folder. Attachment review offers
+  Add text / Edit text; the shared text is sent once as a file or album caption.
 - **Stickers and GIFs:** static and animated stickers, recent/favorite/installed
   sticker sets, saved GIFs and GIF search.
 - **Audio and video:** supported media playback, progressive playback while downloading,
@@ -51,11 +52,36 @@ supported media and features that are not yet available.
   after two and four seconds. The time and cursor update while held, and releasing
   applies the target and restores the prior play/pause state. Tap or drag the
   progress track to seek, including while the controls are hidden.
-- **Interface:** native Vita keyboard, Cyrillic and color emoji, Light/Dark/VHBB
-  themes, font size and interface language settings. Hold D-pad up/down or the left
-  stick to scroll lists with acceleration. Settings → Scroll speed selects Normal,
+- **Interface:** native Vita keyboard or the localized in-app keyboard
+  (Settings → Keyboard → Keyboard type), Cyrillic and color emoji, Light/Dark/VHBB themes, font size
+  and interface language settings. Hold D-pad up/down or the left stick to scroll
+  lists with acceleration. Settings → Scroll speed selects Normal,
   Fast or Very fast: up to 1, 2 or 3 pages per 0.5 seconds. Normal is the default.
-  Dark is the initial theme.
+  Dark is the initial theme. The in-app message window supports line breaks and
+  sending with Send or Start; the system keyboard remains the default.
+  Hold a key for 300 ms to open alternatives, slide to a choice and release to insert.
+  Square deletes before the cursor, Triangle inserts a space, and L/R move the cursor.
+  Hold Square, the on-screen Delete key, or Cross on Delete to repeat deletion
+  after 350 ms, then every 60 ms. Releasing or leaving the key stops it.
+  With buttons, hold Cross and select with Left/Right; Circle cancels the choice.
+  Russian е offers ё and 4, ь offers ъ (also in uppercase); numbers 1–0 align to ц–х.
+  Comma/period beside the spacebar offer punctuation choices; ?123 shows all symbols.
+  Shift applies to one entered character; double-tap within 350 ms locks Caps Lock,
+  and another tap unlocks it. Messages start with a capital and capitalize after
+  sentence-ending punctuation plus whitespace or a newline. Search, credentials
+  and other exact-input fields do not use automatic capitalization.
+  Settings → Keyboard → Input languages selects the enabled languages. The default
+  is English plus the supported console language, or English alone. The language
+  key cycles enabled languages on a short press. Hold it for 300 ms to choose
+  from a popup carousel, slide or use Left/Right while holding Cross, then release.
+  Large sets scroll at the popup edges; Circle cancels selection.
+  The 15 Latin/Cyrillic profiles use language-specific
+  layouts, accents and case rules. Japanese, Korean and both Chinese variants use
+  the system IME for composition, preserving the current draft. The initial profile
+  follows the console language when enabled; an explicit choice is remembered until
+  the app closes. Input-language preferences survive restarts independently of the UI language.
+  Vault passphrases always use the in-app keyboard; controller hints are placed
+  directly on its keys. See [keyboard layouts](docs/keyboard-layouts.md).
 - **Connection and privacy:** MTProxy, SOCKS5 and HTTP CONNECT proxies, proxy-link
   and QR import, optional data encryption and automatic screen locking.
 - **Updates:** signed VPK packages from GitHub Releases, with manual and automatic
@@ -93,9 +119,11 @@ uses the corresponding font while that interface language is selected.
 are enabled by default and begin about a minute after launch. With a Telegram
 proxy enabled, only manual checking is available: updates connect to GitHub directly.
 
-Only signed packages are installed. VitaGram restarts after installation and
+GitHub updates install only signed packages. VitaGram restarts after installation and
 preserves settings and account data. If manual installation is needed, follow
 the instructions shown in settings.
+
+VPK files saved from chats can be installed directly after enabling **Settings → Allow VPK installation** (off by default). Each installation requires confirmation and a warning about console access. The saved package is kept on cancellation or failure. For a VitaGram VPK, the package is then handed directly to the separate updater: VitaGram closes, the updater installs it and launches VitaGram again. Local packages are explicitly trusted by the user; automatic GitHub updates still require release signatures. Packages are limited to 512 MiB unpacked.
 
 ### Privacy and local data
 
@@ -123,6 +151,14 @@ Downloaded files can briefly exist in plain form before sealing. Recordings,
 conversion scratch files, explicit exports and diagnostic logs are outside this
 protection. Encryption does not hide filenames or sizes and cannot protect data
 from software controlling the running console.
+
+While encryption is on, VitaGram also limits what the running session leaves in RAM:
+freed memory blocks up to 1 MiB are zeroed, the master key is not kept after
+unlocking, and session keys are stored masked. Crash dumps (`ux0:data/psp2core-*.psp2dmp`)
+contain decrypted memory; VitaGram's dumps are overwritten and deleted after unlocking
+unless a diagnostic log is enabled. Key-entry screens name plugins loaded into VitaGram
+from `tai/config.txt` (`*ALL` or `*VITAGRM01`): they can read the key and messages.
+Kernel plugins cannot be detected or stopped by the app.
 
 Without data encryption, console-derived keys protect the database/cache and
 obfuscate proxy credentials; OpenPSID is not a secret. Downloaded media remains
@@ -186,16 +222,43 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
   emoji-реакции и голосование в опросах, включая викторины и множественный выбор.
 - **Фото и файлы:** альбомы, отправка до 10 вложений за раз, полноэкранные фото
   с поворотом и масштабом 100–500% (жестом или правым стиком вверх/вниз), перемещением
-  левым стиком при увеличении, сохранение файлов в папку загрузок.
+  левым стиком при увеличении, сохранение файлов в папку загрузок. Перед отправкой
+  вложений пункт «Добавить текст» / «Изменить текст» открывает редактор; общий текст
+  отправляется один раз как подпись к файлу или альбому.
 - **Стикеры и GIF:** статичные и анимированные стикеры, недавние, избранные
   и установленные наборы, сохранённые GIF и поиск анимаций.
 - **Аудио и видео:** воспроизведение поддерживаемых медиа, просмотр во время
   загрузки, запись голоса и видеокружков с фронтальной или задней камеры.
-- **Интерфейс:** системная клавиатура Vita, кириллица и цветные emoji, темы
-  Светлая/Тёмная/VHBB, настройка размера шрифта и языка. Удержание стрелок вверх/вниз
-  или левого стика прокручивает списки с ускорением. «Настройки → Скорость прокрутки»:
+- **Интерфейс:** системная клавиатура Vita или локализованная встроенная клавиатура
+  («Настройки → Клавиатура»), кириллица и цветные emoji, темы Светлая/Тёмная/VHBB,
+  настройка размера шрифта и языка. Удержание стрелок вверх/вниз или левого стика прокручивает списки с ускорением. «Настройки → Скорость прокрутки»:
   «Норма», «Быстрая» и «Очень быстрая» — до 1, 2 и 3 страниц за 0,5 секунды.
-  По умолчанию выбрана «Норма», тема тёмная.
+  По умолчанию выбрана «Норма», тема тёмная. Встроенное окно сообщения поддерживает
+  переносы строк и отправку кнопкой «Отправить» или Start.
+  По умолчанию клавиатура системная. Удержание клавиши 300 мс открывает варианты:
+  сдвиньте палец к нужному и отпустите. □ удаляет символ перед курсором,
+  △ вставляет пробел, L/R перемещают курсор. Удержание □, экранной клавиши
+  удаления или × на ней повторяет удаление через 350 мс, затем каждые 60 мс.
+  Отпускание или уход с клавиши прекращает удаление. На кнопках — удерживайте × и выбирайте
+  стрелками влево/вправо; ○ отменяет выбор. У «е» доступны «ё» и «4», у «ь» — «ъ»,
+  в том числе в верхнем регистре. Цифры 1–0 расположены на «ц»–«х».
+  Запятая и точка рядом с пробелом также предлагают варианты; все символы — в ?123.
+  Shift действует на один введённый символ; двойное нажатие за 350 мс включает
+  Caps Lock, следующее отключает. В сообщениях заглавная буква ставится в начале,
+  после конца предложения с пробелом и после переноса строки. Поиск, пароли и
+  остальные поля точного ввода используют ручной регистр.
+  В «Настройки → Клавиатура» выбираются тип клавиатуры и языки ввода. По умолчанию
+  включены английский и поддерживаемый язык системы, иначе — только английский.
+  Короткое нажатие клавиши языка переключает на следующий включённый язык.
+  Удержание 300 мс открывает карусель: сдвиньте палец или выбирайте стрелками
+  влево/вправо при зажатой ×, затем отпустите; ○ отменяет выбор. Длинный список
+  прокручивается у краёв панели. Для 15 языков на латинице и кириллице доступны
+  свои раскладки, диакритика и правила регистра. Японский, корейский и оба китайских
+  варианта используют системный ввод с сохранением набранного текста. Начальная
+  раскладка соответствует языку системы, если он включён; ручной выбор запоминается
+  до закрытия приложения. Список языков сохраняется между запусками независимо от языка интерфейса.
+  Пароли хранилища всегда вводятся встроенной клавиатурой; подсказки управления
+  расположены прямо на её клавишах. [Список раскладок](docs/keyboard-layouts.md).
 - **Подключение и приватность:** MTProxy, SOCKS5 и HTTP CONNECT, импорт прокси
   по ссылке и QR-коду, необязательное шифрование данных и автоблокировка экрана.
 - **Обновления:** подписанные VPK из GitHub Releases, ручная и автоматическая проверка.
@@ -234,9 +297,11 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 При включённом прокси Telegram доступна только ручная проверка: обновления
 подключаются к GitHub напрямую.
 
-Устанавливаются только подписанные пакеты. После установки VitaGram перезапускается;
+При обновлении с GitHub устанавливаются только подписанные пакеты. После установки VitaGram перезапускается;
 настройки и данные аккаунта сохраняются. Если нужна ручная установка, следуйте
 инструкции в настройках.
+
+VPK из чатов можно устанавливать после включения **Настройки → Разрешить установку VPK** (по умолчанию выключено). Перед каждой установкой появляются подтверждение и предупреждение о доступе к консоли. При отмене или ошибке скачанный файл сохраняется. VPK самого VitaGram затем передаётся отдельному установщику без дополнительного вопроса о закрытии: клиент закрывается, установщик заменяет приложение и запускает его снова. Доверие к локальному пакету подтверждает пользователь; автоматические обновления с GitHub по-прежнему требуют подписи релиза. Поддерживаются пакеты размером до 512 МиБ после распаковки.
 
 ### Приватность и локальные данные
 
@@ -264,6 +329,15 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 временные файлы конвертации, явный экспорт и диагностические журналы не защищены
 этим режимом. Шифрование не скрывает имена и размеры файлов и не защищает от
 программ, контролирующих работающую консоль.
+
+При включённом шифровании VitaGram также сокращает следы сеанса в оперативной памяти:
+освобождаемые блоки памяти до 1 МиБ обнуляются, мастер-ключ после разблокировки
+не хранится, а сеансовые ключи хранятся в маскированном виде. Дампы падений
+(`ux0:data/psp2core-*.psp2dmp`) содержат расшифрованную память; дампы VitaGram
+перезаписываются и удаляются после разблокировки, если не включён диагностический журнал.
+Экраны ввода ключа показывают плагины, загруженные в VitaGram из `tai/config.txt`
+(`*ALL` или `*VITAGRM01`): они могут прочитать ключ и сообщения. Плагины ядра
+приложение обнаружить и остановить не может.
 
 Без шифрования данных ключи на основе идентификатора консоли защищают базу/кэши
 и обфусцируют реквизиты прокси; OpenPSID не является секретом. Загруженные медиа

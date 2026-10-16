@@ -1,6 +1,7 @@
 #pragma once
 #include "diag_log.h"
 #include "scroll_repeat.h"
+#include "keyboard_languages.h"
 #include "proxy_config.h"
 #include "secure_store.h"
 #include "vault.h"
@@ -16,6 +17,8 @@ struct AppSettings {
     int opacity = 75;       // percent of the surface PNGs (rows, message cards) over the wallpaper, 5% steps
     int avatar_shape = 0;   // 0 rounded square, 1 circle
     int scroll_speed = 0;   // Normal, Fast, Very fast: 2, 4, 6 pages per second.
+    std::vector<std::string> keyboard_languages; // Empty = English + supported console language.
+    bool custom_keyboard = false; // Use the in-app keyboard instead of the Vita IME.
     bool show_threads = false;
     bool gyroscope_enabled = true;
     bool show_archive = true;  // Archive tab in the chat list folders
@@ -25,6 +28,7 @@ struct AppSettings {
     bool spoilerHideChat() const { return (spoiler_reset & 1) != 0; }
     bool spoilerHideApp() const { return (spoiler_reset & 2) != 0; }
     bool recording_shortcuts = true; // L/R open the video/voice recording dialogs from chat history.
+    bool allow_vpk_install = false; // Explicit opt-in for installing packages downloaded from chats.
     bool check_updates = true; // look for a newer GitHub release shortly after startup
     // With the vault on: ask for the key again after this much inactivity (index into lockMinutes),
     // and after sleep or leaving the app with the PS button.
@@ -108,6 +112,15 @@ struct AppSettings {
         if (json_t* v = json_object_get(root, "scroll_speed"))
             if (json_is_integer(v) && json_integer_value(v) >= 0 && json_integer_value(v) < ScrollRepeat::kSpeedChoices)
                 scroll_speed = (int)json_integer_value(v);
+        if (json_t* v = json_object_get(root, "custom_keyboard"))
+            if (json_is_boolean(v)) custom_keyboard = json_is_true(v);
+        if (json_t* languages = json_object_get(root, "keyboard_languages")) {
+            if (json_is_array(languages)) {
+                for (size_t i = 0; i < json_array_size(languages); ++i)
+                    if (const char* code = json_string_value(json_array_get(languages, i))) keyboard_languages.emplace_back(code);
+                keyboard_languages = keyboard_languages::normalize(keyboard_languages);
+            }
+        }
         cache_storage = value("cache_storage", 0, 1);
         auto_lock = value("auto_lock", 3, kLockChoices - 1);
         if (json_t* v = json_object_get(root, "lock_on_leave"))
@@ -126,6 +139,8 @@ struct AppSettings {
         }
         if (json_t* v = json_object_get(root, "recording_shortcuts"))
             if (json_is_boolean(v)) recording_shortcuts = json_is_true(v);
+        if (json_t* v = json_object_get(root, "allow_vpk_install"))
+            if (json_is_boolean(v)) allow_vpk_install = json_is_true(v);
         show_threads = json_is_true(json_object_get(root, "show_threads"));
         if (json_t* v = json_object_get(root, "check_updates")) check_updates = json_is_true(v);
         if (json_t* v = json_object_get(root, "gyroscope_enabled"))
@@ -169,9 +184,15 @@ struct AppSettings {
         json_object_set_new(root, "opacity", json_integer(opacity));
         json_object_set_new(root, "avatar_shape", json_integer(avatar_shape));
         json_object_set_new(root, "scroll_speed", json_integer(scroll_speed));
+        json_object_set_new(root, "custom_keyboard", json_boolean(custom_keyboard));
+        json_t* languages = json_array();
+        for (const auto& code : keyboard_languages::normalize(keyboard_languages))
+            json_array_append_new(languages, json_string(code.c_str()));
+        json_object_set_new(root, "keyboard_languages", languages);
         json_object_set_new(root, "log_mask", json_integer(log_mask));
         json_object_set_new(root, "spoiler_reset", json_integer(spoiler_reset));
         json_object_set_new(root, "recording_shortcuts", json_boolean(recording_shortcuts));
+        json_object_set_new(root, "allow_vpk_install", json_boolean(allow_vpk_install));
         json_object_set_new(root, "check_updates", json_boolean(check_updates));
         json_object_set_new(root, "auto_lock", json_integer(auto_lock));
         json_object_set_new(root, "lock_on_leave", json_boolean(lock_on_leave));

@@ -133,7 +133,9 @@ diag.cached_waiting = Данные из кэша — ожидание Telegram
 
 # --- doc ---
 doc.already = Файл уже загружается
+doc.download_failed = Ошибка загрузки: {0}
 doc.downloading = Загрузка: {0}
+doc.exists = Уже сохранено: {0}
 doc.invalid_path = Неверный путь загрузки
 doc.save_failed = Не удалось сохранить файл
 doc.saved = Сохранено: {0}
@@ -489,6 +491,7 @@ topics.none = Нет доступных тем
 topics.title = Темы группы
 
 # --- unit ---
+unit.kb = {0} КБ
 unit.kib = {0} КиБ
 unit.mb = {0} МБ
 unit.mib = {0} МиБ
@@ -665,6 +668,7 @@ vault.no_memory = Не хватает памяти для вычисления �
 vault.unavailable = Этот ключ создан на другой консоли.
 vault.error = Не удалось сохранить ключ.
 vault.state_reset = Настройки шифрования изменены вне VitaGram. Шифрование остаётся включённым, все файлы будут проверены заново. Если вы не начинали отключать шифрование, возможно, кто-то получал доступ к вашей карте памяти.
+vault.plugins_warning = В VitaGram загружены плагины: {0}. Они могут прочитать вводимый ключ и ваши сообщения. Удалите недоверенные из tai/config.txt.
 vault.notice.footer = {cross} Продолжить
 vault.changed = Ключ изменён.
 vault.forgot.title = Стереть все данные?
@@ -735,6 +739,7 @@ vault.check.verify_bad = Повреждено или изменено файло
 vault.check.deleted = Удалено повреждённых файлов: {0}.
 service.message_pinned = Закреплено сообщение
 service.joined_by_link = Вступление по ссылке: {0}
+service.group_created = {0} создал(а) группу
 hint.attach = Select: вложение
 up.kind.image = Изображение
 up.kind.video = Видео
@@ -755,6 +760,8 @@ upload.review_title = Вложения: {0} / {1}
 upload.add_image = + Добавить изображение
 upload.add_video = + Добавить видео
 upload.add_file = + Добавить файл
+upload.add_text = Добавить текст
+upload.edit_text = Изменить текст
 upload.send = Отправить ({0})
 upload.file_info = {0} ({1}), уйдёт как файл
 upload.review_footer = {cross} Выбрать   {square} Отправить   {triangle} Убрать   {circle} Отмена
@@ -780,12 +787,14 @@ menu.reset_zoom = {triangle}  Сбросить масштаб
 menu.poll_choose = {cross}  Выбрать вариант
 menu.poll_send = {triangle}  Отправить ответ
 menu.poll_retract = {square}  Отозвать голос
-menu.prev_post = {dpad}  Предыдущий пост
-menu.next_post = {dpad}  Следующий пост
+menu.prev_post = L  Предыдущий пост
+menu.next_post = R  Следующий пост
 menu.prev_photo = L  Предыдущее фото
 menu.next_photo = R  Следующее фото
 menu.seek_back = L  Назад 10 с
+menu.seek_back_dpad = {dpad}  Назад 10 с
 menu.seek_forward = R  Вперёд 10 с
+menu.seek_forward_dpad = {dpad}  Вперёд 10 с
 reply.deleted = Сообщение недоступно
 forward.from = Переслано от
 forward.unknown = Пересланное сообщение
@@ -994,3 +1003,35 @@ upload.sort_name_asc = Имя А-Я
 upload.sort_name_desc = Имя Я-А
 upload.sort_size_asc = Сначала малые
 upload.sort_size_desc = Сначала большие
+
+# In-app text keyboard
+settings.keyboard = Клавиатура
+settings.keyboard_system = Системная
+settings.keyboard_custom = VitaGram
+keyboard.send = Отправить
+keyboard.help = {cross} Ввод   {square} Стереть   {triangle} Пробел   L/R Курсор   Start OK
+
+# Installation of downloaded application packages (opt-in).
+settings.allow_vpk_install = Разрешить установку VPK
+vpk.question = Установить скачанный пакет?\n{0}\nПриложение с таким же ID будет заменено.
+vpk.warning = {0} ({1})\nПриложение может получить полный доступ к консоли и личным данным. Устанавливайте только из доверенных источников. Продолжить?
+vpk.extracting = Подготовка пакета…
+vpk.installing = Установка…
+vpk.success = Установка завершена.
+vpk.failed = Ошибка установки: {0}
+vpk.invalid = Недопустимый или неподдерживаемый пакет приложения.
+vpk.self = Для обновления самого установщика используйте VitaShell.
+vpk.header_failed = Не удалось подготовить заголовок пакета.
+vpk.dialog_failed = Не удалось открыть диалог установки.
+vpk.thread_failed = Не удалось запустить поток установки.
+
+keyboard.language_help = {cross} Выбрать   {circle} Назад   Стрелки: язык
+keyboard.lang_ja = Японский
+keyboard.lang_ko = Корейский
+keyboard.lang_zh_hans = Китайский (упрощённый)
+keyboard.lang_zh_hant = Китайский (традиционный)
+
+# Keyboard preferences
+settings.keyboard_type = Тип клавиатуры
+settings.keyboard_languages = Языки ввода
+settings.keyboard_defaults = English + язык системы (по умолчанию)

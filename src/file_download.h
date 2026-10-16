@@ -2,6 +2,7 @@
 #include "vault.h"
 #include <psp2/io/stat.h>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 inline std::string normalized_download_dir(std::string path) {
@@ -47,19 +48,75 @@ inline bool ensure_download_directory(const std::string& directory) {
     return ensure_one(dir);
 }
 
-inline bool save_downloaded_file(const std::string& source, const std::string& directory,
-                                 const std::string& name, int file_id, std::string& result) {
-    std::string dir = normalized_download_dir(directory);
-    if (dir.empty()) return false;
-    if (!ensure_download_directory(dir)) return false;
+// Visits the existing export names in `dir`: the clean name, then its " (n)" alternatives. Returns the
+// first one `visit` accepts; otherwise `free` (optional) receives the first unused name.
+template <class Visit>
+inline std::string visit_download_names(const std::string& dir, const std::string& name, int file_id, Visit&& visit,
+                                        std::string* free = nullptr) {
     std::string clean = safe_download_name(name, file_id);
     std::string stem = clean, extension;
     size_t dot = clean.find_last_of('.');
     if (dot != std::string::npos && dot > 0) { stem = clean.substr(0, dot); extension = clean.substr(dot); }
     std::string target = dir + "/" + clean;
     SceIoStat info{};
-    for (int suffix = 1; sceIoGetstat(target.c_str(), &info) >= 0; ++suffix)
+    for (int suffix = 1; sceIoGetstat(target.c_str(), &info) >= 0; ++suffix) {
+        if (visit(target, info)) return target;
         target = dir + "/" + stem + " (" + std::to_string(suffix) + ")" + extension;
+    }
+    if (free) *free = target;
+    return {};
+}
+
+inline bool same_download_contents(const std::string& source, const std::string& saved) {
+    vault::Reader in;
+    FILE* out = in.open(source) ? std::fopen(saved.c_str(), "rb") : nullptr;
+    if (!out) return false;
+    char a[16384], b[16384];
+    bool same = true;
+    for (;;) {
+        int64_t count = in.read(a, sizeof(a));
+        if (count < 0) { same = false; break; }
+        if (std::fread(b, 1, (size_t)count, out) != (size_t)count || std::memcmp(a, b, (size_t)count)) { same = false; break; }
+        if (count == 0) { same = std::fgetc(out) == EOF; break; }
+    }
+    std::fclose(out);
+    return same;
+}
+
+// An earlier export of this document in `directory`, or "". With a cached `source` the contents
+// are compared; before a download TDLib gives no content hash, so an equal size under the same
+// name counts as the same file.
+inline std::string find_saved_download(const std::string& directory, const std::string& name, int file_id,
+                                       int64_t size, const std::string& source = {}) {
+    std::string dir = normalized_download_dir(directory);
+    if (dir.empty()) return {};
+    if (!source.empty()) {
+        vault::Reader in;
+        if (!in.open(source)) return {};
+        size = in.size();
+    }
+    if (size <= 0) return {};
+    return visit_download_names(dir, name, file_id, [&](const std::string& path, const SceIoStat& info) {
+        return !SCE_S_ISDIR(info.st_mode) && (int64_t)info.st_size == size &&
+               (source.empty() || same_download_contents(source, path));
+    });
+}
+
+// `existed` reports that an identical copy was already saved and nothing was written.
+inline bool save_downloaded_file(const std::string& source, const std::string& directory,
+                                 const std::string& name, int file_id, std::string& result, bool* existed = nullptr) {
+    if (existed) *existed = false;
+    std::string dir = normalized_download_dir(directory);
+    if (dir.empty()) return false;
+    if (!ensure_download_directory(dir)) return false;
+    std::string saved = find_saved_download(dir, name, file_id, 0, source);
+    if (!saved.empty()) {
+        if (existed) *existed = true;
+        result = saved;
+        return true;
+    }
+    std::string target;
+    visit_download_names(dir, name, file_id, [](const std::string&, const SceIoStat&) { return false; }, &target);
     // The cached copy may be sealed; the saved file is the user's own export and is written plain.
     vault::Reader in;
     if (!in.open(source)) return false;

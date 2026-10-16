@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdio>
 #include <string>
 
 namespace cpu_scheduler {
@@ -25,5 +26,9 @@ private:
 void init(); // UI, before starting workers; asynchronous CPU3 probe.
 void tick(); // UI; samples at most once per second.
 bool videoActive(); // Background storage must yield while video is decoding.
+// Startup flood: the Parser runs alone on CPU3 (CPU2 without it); other background threads avoid it.
+void pinParser(bool pinned);
 std::string threadStatus(); // UI; registered application-owned threads by role.
+// Performance log, any thread: per-core busy percent, ARM clock and per-thread cores since the last call.
+void writeReport(FILE* file);
 }

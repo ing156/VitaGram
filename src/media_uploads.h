@@ -195,9 +195,9 @@ private:
     }
     static std::string bytes(int64_t n) {
         char b[48];
-        if (n >= 1048576) { std::snprintf(b, sizeof(b), "%.2f", n / 1048576.0); return tr("unit.mib", {b}); }
-        std::snprintf(b, sizeof(b), "%.1f", n / 1024.0);
-        return tr("unit.kib", {b});
+        if (n >= 1000000) { std::snprintf(b, sizeof(b), "%.2f", n / 1000000.0); return tr("unit.mb", {b}); }
+        std::snprintf(b, sizeof(b), "%.1f", n / 1000.0);
+        return tr("unit.kb", {b});
     }
     static std::string seconds(int64_t micros) { return tr("unit.sec", {std::to_string(micros / 1000000)}); }
     static const char* kindKey(const Item& i) {
