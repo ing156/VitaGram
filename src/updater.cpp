@@ -102,6 +102,11 @@ Updater::Snapshot Updater::snapshot() const {
     return snap_;
 }
 
+bool Updater::allowsLocalInstall() const {
+    const Snapshot state = snapshot();
+    return !state.busy() && state.state != State::Installed && !hasPending(work_dir_, fallback_dir_);
+}
+
 void Updater::set(State state) {
     std::lock_guard<std::mutex> lock(mutex_);
     snap_.state = state;
@@ -328,6 +333,7 @@ const char kUpdaterTitle[] = "VGUPDATE1";
 const char kUpdaterVpk[] = "app0:updater/vitagram-updater.vpk";
 const char kUpdaterHead[] = "app0:updater/head.bin";
 const char kHandoffDir[] = "ux0:data/vitagram/update";
+const char kUpdateFallbackDir[] = "ux0:downloads/vitagram-update";
 const char kHandoffFile[] = "ux0:data/vitagram/update/handoff"; // where the updater app looks for it
 
 bool copy_file(const char* from, const std::string& to) {
@@ -345,6 +351,9 @@ bool copy_file(const char* from, const std::string& to) {
 }
 
 bool Updater::handoffConfirmedPackage(const std::string& package_dir, const HandoffText& text, std::string& detail) {
+    if (hasPending(kHandoffDir, kUpdateFallbackDir)) {
+        detail = "a signed update is already waiting for installation"; return false;
+    }
     std::string bytes;
     if (!read_small(package_dir + "/sce_sys/param.sfo", 1024 * 1024, bytes)) {
         detail = "cannot read local VitaGram package metadata"; return false;
@@ -392,8 +401,18 @@ bool Updater::prepareInstaller(const std::string& work_dir, std::string& detail)
         struct stat package_eboot;
         const long long expected = stat((package + "/eboot.bin").c_str(), &package_eboot) == 0 ? (long long)package_eboot.st_size : -1;
         if (installed) installed = promote_package(package, reason, updater_eboot.c_str(), expected);
+        if (installed) {
+            // The promoter has reported success with nothing installed (result.txt showed an empty reason):
+            // give the files a few seconds to appear, then say so instead of failing silently.
+            for (int waited = 0; waited < 50 && stat(updater_eboot.c_str(), &info) != 0; ++waited) sceKernelDelayThread(100 * 1000);
+            if (stat(updater_eboot.c_str(), &info) != 0) {
+                installed = false;
+                reason = "promoter reported success but " + updater_eboot + " is missing" + (reason.empty() ? "" : " (" + reason + ")");
+            }
+        }
         update::remove_tree(package);
         if (!installed || stat(updater_eboot.c_str(), &info) != 0) {
+            if (reason.empty()) reason = updater_eboot + " is missing";
             // Leave the updater's own VPK next to the update so it can be installed from VitaShell.
             const std::string target = work_dir + "/vitagram-updater.vpk";
             const bool copied = copy_file(kUpdaterVpk, target);
@@ -405,7 +424,12 @@ bool Updater::prepareInstaller(const std::string& work_dir, std::string& detail)
     return true;
 }
 
-bool Updater::prepareLocalInstaller(std::string& detail) { return prepareInstaller(kHandoffDir, detail); }
+bool Updater::prepareLocalInstaller(std::string& detail) {
+    if (hasPending(kHandoffDir, kUpdateFallbackDir)) {
+        detail = "a signed update is already waiting for installation"; return false;
+    }
+    return prepareInstaller(kHandoffDir, detail);
+}
 
 bool Updater::startInstaller(const std::string& work_dir, const std::string& package_dir, const HandoffText& text, std::string& detail) {
     if (!prepareInstaller(work_dir, detail)) return false;

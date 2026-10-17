@@ -139,6 +139,7 @@ doc.exists = Уже сохранено: {0}
 doc.invalid_path = Неверный путь загрузки
 doc.save_failed = Не удалось сохранить файл
 doc.saved = Сохранено: {0}
+doc.saving = Сохранение: {0}
 
 # --- folder ---
 folder.all = Все чаты

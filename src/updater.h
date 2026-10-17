@@ -58,6 +58,8 @@ public:
     // The extracted package must identify VitaGram. On success the caller must exit, not restart itself.
     static bool prepareLocalInstaller(std::string& detail);
     static bool handoffConfirmedPackage(const std::string& package_dir, const HandoffText& text, std::string& detail);
+    // A staged update still owns the installer after its download worker has finished.
+    bool allowsLocalInstall() const;
     Snapshot snapshot() const;
     const std::string& currentVersion() const { return current_; }
 

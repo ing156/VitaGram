@@ -104,6 +104,7 @@ doc.exists = Tallennettu jo: {0}
 doc.invalid_path = Virheellinen latauspolku
 doc.save_failed = Tiedostoa ei voitu tallentaa
 doc.saved = Tallennettu: {0}
+doc.saving = Tallennetaan: {0}
 folder.all = Kaikki keskustelut
 folder.default = Kansio
 folder.archive = Arkistoidut

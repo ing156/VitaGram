@@ -139,6 +139,7 @@ doc.exists = Already saved: {0}
 doc.invalid_path = Invalid download path
 doc.save_failed = Could not save the file
 doc.saved = Saved: {0}
+doc.saving = Saving: {0}
 
 # --- folder ---
 folder.all = All chats

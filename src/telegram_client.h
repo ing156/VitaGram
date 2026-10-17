@@ -37,6 +37,7 @@ struct ChatItem {
     int64_t last_message_id = 0;
     int unread_count = 0;
     bool marked_unread = false;
+    int64_t last_read_inbox = 0; // Server read position; the open chat starts at the first message after it.
     std::string title;
     int32_t avatar_file_id = 0;
     std::string avatar_path;
@@ -66,6 +67,9 @@ struct ChatFolderItem {
 // A link inside MessageItem::text: UTF-8 byte range [begin, end) taken from TDLib text entities.
 struct LinkSpan { int begin = 0, end = 0; std::string url; };
 
+enum TextStyle { TextBold=1, TextItalic=2, TextUnderline=4, TextStrike=8, TextSpoiler=16, TextCode=32, TextQuote=64 };
+struct StyleSpan { int begin, end; unsigned style; };
+
 struct MessageItem {
     PollData poll;
     struct Reaction { std::string emoji; int count = 0; bool chosen = false; int64_t custom_emoji_id = 0; };
@@ -78,6 +82,7 @@ struct MessageItem {
     bool outgoing = false;
     DeliveryState delivery = DeliveryState::Sent;
     std::string send_error;
+    std::vector<StyleSpan> styles;
     i18n::Text text;
     i18n::Text media_label;
     bool pin_message = false;
@@ -133,6 +138,7 @@ struct MessageItem {
     int comment_count = 0;
     int64_t comments_message_id = 0;
     std::vector<LinkSpan> link_spans;   // valid only when they index `text` (plain text/caption messages)
+    std::string preview_url, preview_site, preview_title, preview_description;
     void refreshLanguage() {
         text.refresh(); media_label.refresh(); audio_title.refresh();
         voice_error.refresh(); animation_error.refresh(); reply_text.refresh();
@@ -189,6 +195,7 @@ public:
     void loadOlder();
     int historyPercent() const { return history_done_ ? 100 : std::min(99, (int)history_items_.size() * 100 / history_target_); }
     bool historyLoading() const { return current_chat_id_ && !history_done_; }
+    bool historyAnchorPending() const { return history_anchor_ != 0; }
     const i18n::Text& historyError() const { return history_error_; }
 
     bool ready() const { return ready_; }
@@ -226,6 +233,7 @@ public:
     const std::vector<ChatItem>& chats() const { return chats_; }
     const std::vector<MessageItem>& messages() const { return messages_; }
     void downloadDocument(const MessageItem& message, const std::string& directory);
+    bool hasSavedDocuments() const { return !saved_documents_.empty(); }
     std::string takeSavedDocument() {
         if (saved_documents_.empty()) return {};
         std::string path = std::move(saved_documents_.front());
@@ -463,6 +471,7 @@ private:
     bool connection_ready_ = false;
     void resetListRequests(int64_t now);
     void recoverListRequests(int64_t now);
+    void resumeListRequests(int64_t now);
     size_t selected_chat_count_ = 0;
     void sendListRequest(const char* method, const char* kind, int64_t chat_id = 0);
     void parseFolders(void* update);
@@ -595,6 +604,9 @@ private:
     bool history_pending_ = false, history_done_ = true, history_end_ = false;
     int history_target_ = 60;
     int64_t history_cursor_ = 0;
+    int64_t history_anchor_ = 0; // Read position of the chat being opened; 0 when no jump is pending.
+    void resolveHistoryAnchor();
+    bool historyAnchorSeeking() const;
     i18n::Text history_error_;
     void requestHistoryPage();
     void showTopicsList(); // Forum: invalidate history, show the topic list.
@@ -631,9 +643,23 @@ private:
     ChatItem chatFromJson(void* chat_obj) const;
     std::vector<MessageItem> messages_;
     std::unordered_set<int32_t> pending_files_;
-    struct DocumentDownload { std::string directory, name; unsigned generation; };
+    struct DocumentDownload { std::string directory, name; unsigned generation; bool exporting = false; };
     unsigned document_download_generation_ = 0;
     std::unordered_map<int32_t, DocumentDownload> document_downloads_;
+    struct DocumentExport { int32_t id; unsigned generation; std::string source, directory, name; };
+    struct DocumentExportResult { int32_t id; unsigned generation; std::string path; bool ok, existed; };
+    // Queues cross UI/Storage under queue_mutex_; document_downloads_ stays on UI.
+    std::deque<DocumentExport> document_exports_;
+    std::deque<DocumentExportResult> document_export_results_;
+    int32_t document_export_id_ = 0; // queue_mutex_; current copy progress.
+    int document_export_percent_ = 0;
+    pthread_t document_export_worker_{};
+    bool document_export_started_ = false;
+    std::atomic<bool> document_export_stopping_{false};
+    void queueDocumentExport(int32_t id, const std::string& source);
+    void applyDocumentExports();
+    void stopDocumentExports();
+    static void* documentExportEntry(void* self);
     i18n::Text document_status_;
     std::deque<std::string> saved_documents_; // Successful explicit exports, consumed by the UI.
     std::unordered_set<int32_t> list_avatar_files_; // Chat-list avatars requested from TDLib.

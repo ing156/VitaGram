@@ -15,6 +15,7 @@
 #include "media_load_view.h"
 #include "media_seek.h"
 #include "text_layout_cache.h"
+#include "text_font.h"
 #include "image_decoder.h"
 #include "image_retry.h"
 #include "gif_diagnostics.h"
@@ -788,6 +789,7 @@ struct PostReaction { std::string text; int width; bool chosen; int64_t custom_e
 struct LineLink { int begin, end; std::string url; };
 struct PostLine {
     std::string text, url;
+    std::vector<StyleSpan> styles;
     std::vector<LineLink> links;   // inline links; url holds the first one for the keyboard
     bool transcript = false;       // belongs to the transcription block (revealed with an animation)
     bool comments = false;         // the comments row of a channel post (text holds its label)
@@ -827,6 +829,48 @@ static std::vector<std::vector<LineLink>> map_links_to_lines(const std::string& 
     return result;
 }
 
+static std::vector<std::vector<StyleSpan>> map_styles(const MessageItem& message, const std::vector<std::string>& lines) {
+    std::vector<LinkSpan> spans;
+    for (const auto& span : message.styles) spans.push_back({span.begin, span.end, std::to_string(span.style)});
+    const auto mapped = map_links_to_lines(message.text, lines, spans);
+    std::vector<std::vector<StyleSpan>> result(lines.size());
+    for (size_t i = 0; i < lines.size(); ++i)
+        for (const auto& span : mapped[i]) result[i].push_back({span.begin, span.end, (unsigned)std::stoul(span.url)});
+    return result;
+}
+
+static int scaled_px(int value);
+
+static void draw_formatted_line(vita2d_pgf* font, int x, int baseline, const PostLine& line,
+                                unsigned ink, unsigned accent, bool revealed) {
+    std::vector<int> cuts{0, (int)line.text.size()};
+    for (const auto& span : line.styles) { cuts.push_back(span.begin); cuts.push_back(span.end); }
+    for (const auto& span : line.links) { cuts.push_back(span.begin); cuts.push_back(span.end); }
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    for (size_t i = 1; i < cuts.size(); ++i) {
+        int begin = cuts[i-1], end = cuts[i];
+        unsigned style = 0; bool link = false;
+        for (const auto& span : line.styles) if (span.begin <= begin && span.end >= end) style |= span.style;
+        for (const auto& span : line.links) if (span.begin <= begin && span.end >= end) link = true;
+        const auto part = line.text.substr(begin, end-begin);
+        const int width = rich_text_width(font, 0.68f, part.c_str());
+        const unsigned color = link || (!line.url.empty() && line.links.empty()) ? accent : ink;
+        if ((style & TextSpoiler) && !revealed) {
+            vita2d_draw_rectangle(x, baseline-scaled_px(16), width, scaled_px(18), ink);
+        } else {
+            if (style & TextCode) vita2d_draw_rectangle(x, baseline-scaled_px(18), width, scaled_px(22), scale_alpha(accent, 0.18f));
+            if (style & TextQuote) vita2d_draw_rectangle(x-5, baseline-scaled_px(18), 2, scaled_px(22), accent);
+            TextFont::style = style & 3;
+            draw_text(font, x, baseline, part, color, 0.68f);
+            TextFont::style = 0;
+            if (link || (style & TextUnderline)) vita2d_draw_rectangle(x, baseline+3, width, 1, color);
+            if (style & TextStrike) vita2d_draw_rectangle(x, baseline-scaled_px(7), width, 1, color);
+        }
+        x += width;
+    }
+}
+
 // Link under a horizontal touch position; falls back to the line's first link, as tapping a line always did.
 static std::string post_link_at(vita2d_pgf* font, const PostLine& line, int touch_x, int x = 38) {
     int cursor = x, position = 0;
@@ -844,25 +888,13 @@ static void draw_comments_row(vita2d_pgf* font, float x, float y, float w, float
                               unsigned int ink, unsigned int accent);
 static void draw_post_line(vita2d_pgf* font, int x, int baseline, const PostLine& line,
                            unsigned int ink, unsigned int accent, TelegramClient& tg,
-                           TextureCache& textures, bool pause_media) {
+                           TextureCache& textures, bool pause_media, bool revealed) {
     if (line.comments) {
         draw_comments_row(font, (float)x - 8, (float)baseline - 19, 900, (float)post_pitch() - 2, line.text, ink, accent);
         return;
     }
     if (line.reactions.empty()) {
-        if (line.links.empty()) { draw_text(font, x, baseline, line.text, line.url.empty() ? ink : accent, 0.68f); return; }
-        // Inline links: accent colour with an underline, the rest of the line in the normal text colour.
-        int position = 0;
-        auto segment = [&](int begin, int end, bool link) {
-            if (end <= begin) return;
-            const std::string part = line.text.substr(begin, end - begin);
-            const int width = rich_text_width(font, 0.68f, part.c_str());
-            draw_text(font, x, baseline, part, link ? accent : ink, 0.68f);
-            if (link) vita2d_draw_rectangle(x, baseline + 3, width, 1, accent);
-            x += width;
-        };
-        for (const auto& link : line.links) { segment(position, link.begin, false); segment(link.begin, link.end, true); position = link.end; }
-        segment(position, (int)line.text.size(), false);
+        draw_formatted_line(font, x, baseline, line, ink, accent, revealed);
         return;
     }
     if (!pause_media) tg.ensureMessageReactionMedia();
@@ -1159,8 +1191,39 @@ static void draw_comments_row(vita2d_pgf* font, float x, float y, float w, float
     }
 }
 // Height of one message card including the gap below it; shared by drawing and hit testing.
+static int link_preview_height(const MessageItem& message) {
+    if (message.preview_url.empty()) return 0;
+    return 16 + history_pitch() * (1 + (message.preview_title.empty() ? 0 : 2) +
+        (message.preview_description.empty() ? 0 : 2)) + (message.media_file_id > 0 ? 138 : 0);
+}
+static void draw_link_preview(vita2d_pgf* font, const MessageItem& message, TextureCache& textures,
+                              int x, int y, int width, unsigned int ink, unsigned int accent) {
+    const int height = link_preview_height(message);
+    if (!height || y >= 544 || y + height < 60) return;
+    rounded_rect(x, y, width, height, scale_alpha(accent, 0.12f));
+    vita2d_draw_rectangle(x, y, 3, height, accent);
+    int baseline = y + history_pitch();
+    draw_text(font, x + 12, baseline, fit_text(font, message.preview_site.empty() ? message.preview_url : message.preview_site,
+        width - 24, 0.55f), accent, 0.55f);
+    for (const auto* text : {&message.preview_title, &message.preview_description}) {
+        if (text->empty()) continue;
+        auto lines = wrap_text(font, clip(*text, 2048), width - 24);
+        if (lines.size() > 2) {
+            lines.resize(2);
+            lines.back() = fit_text(font, lines.back() + "...", width - 24, 0.68f);
+        }
+        for (size_t row = 0; row < lines.size(); ++row)
+            draw_text(font, x + 12, baseline + (row + 1) * history_pitch(), lines[row], ink, 0.68f);
+        baseline += 2 * history_pitch();
+    }
+    if (message.media_file_id > 0) {
+        auto* image = textures.get(message.media_path);
+        if (image) draw_texture_fit(image, x + 12, baseline + 8, width - 24, 130);
+        else draw_text(font, x + 12, baseline + 50, "...", accent, 0.68f);
+    }
+}
 static bool message_has_media(const MessageItem& message) {
-    return !message.photos.empty() || message.media_file_id > 0 || message.animation;
+    return message.preview_url.empty() && (!message.photos.empty() || message.media_file_id > 0 || message.animation);
 }
 // Body lines shown in a card (at most two), wrapped exactly as the card draws them.
 static std::vector<std::string> message_body_lines(vita2d_pgf* font, const MessageItem& message) {
@@ -1178,7 +1241,7 @@ static int message_body_end(const MessageItem& message, size_t line_count) {
     return std::max(text_end + 19, message_has_media(message) ? 61 : (message.voice && !message.audio) ? 72 : 0);
 }
 static int message_time_row(const MessageItem& message, size_t line_count) {
-    return message_body_end(message, line_count) + (message.media_label.empty() ? 0 : 22) + kTimeGap;
+    return message_body_end(message, line_count) + link_preview_height(message) + (message.media_label.empty() ? 0 : 22) + kTimeGap;
 }
 // The card shrinks to its text: one-line messages are short, two-line ones taller.
 static int message_height(vita2d_pgf* font, const MessageItem& message, bool group) {
@@ -1278,6 +1341,7 @@ static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& mes
     }
     const auto wrapped = wrap_text(font, message.text, 840);
     const auto mapped = map_links_to_lines(message.text, wrapped, message.link_spans);
+    const auto styles = map_styles(message, wrapped);
     for (size_t k = 0; k < wrapped.size(); ++k) {
         const std::string& line = wrapped[k];
         std::string target;
@@ -1285,6 +1349,7 @@ static std::vector<PostLine> post_lines(vita2d_pgf* font, const MessageItem& mes
         for (const auto& url : message.links) if (line.find(url) != std::string::npos) { target = url; ++matches; }
         PostLine entry(line, mapped[k].empty() ? (matches == 1 ? target : "") : mapped[k].front().url);
         entry.links = mapped[k];
+        entry.styles = styles[k];
         result.push_back(std::move(entry));
     }
     // Links drawn inline are not repeated; the rest (e.g. hidden in rich messages) keep their own tappable rows.
@@ -1365,7 +1430,10 @@ static void draw_post_date(vita2d_pgf* font, const MessageItem& message, int scr
     draw_text(font, 494-width/2, kPostDateTop+16-scroll, label, color, 0.5f);
 }
 static int post_scroll_max(const MessageItem& message, size_t lines) {
-    return std::max(0, post_text_top(message) + std::max(0, (int)lines - 1) * post_pitch() + kPanelBottomPad + 10 - 544);
+    return std::max(0, post_text_top(message) + std::max(0, (int)lines - 1) * post_pitch() + kPanelBottomPad + 10 + link_preview_height(message) - 544);
+}
+static int post_preview_top(const MessageItem& message, size_t lines) {
+    return post_text_top(message) + std::max(0, (int)lines - 1) * post_pitch() + kPanelBottomPad;
 }
 
 static i18n::Text open_web_link(const std::string& url) {
@@ -1461,6 +1529,10 @@ static void update_screen(vita2d_pgf* font, int percent) {
     }
     vita2d_wait_rendering_done();
 }
+
+// newlib reserves a fixed heap at startup (default 128 MB). TDLib ran out of it during a large
+// download (uncaught bad_alloc) while ~60 MB of user memory outside the heap stayed unused.
+extern "C" unsigned int _newlib_heap_size_user = 160 * 1024 * 1024;
 
 int main() {
     pthread_init();
@@ -2086,8 +2158,8 @@ int main() {
         performance::SlowScope slow_ui(performance::SlowPhase::Ui,"frame_ui");
         ui_diagnostics::Stage ui_stage(ui_diagnostics::Phase::Frame);
         performance::SlowScope pre_input(performance::SlowPhase::Ui,"pre_input");
-        if (!kb.active() && !recorder.active() && !circle_recorder.active() &&
-            !updater.snapshot().busy() && !confirm_leave && !unsupported_video_prompt &&
+        if (tg.hasSavedDocuments() && !kb.active() && !recorder.active() && !circle_recorder.active() &&
+            updater.allowsLocalInstall() && !confirm_leave && !unsupported_video_prompt &&
             !spoiler_prompt && pending_web_link.empty() && !seek_open) {
             const std::string saved = tg.takeSavedDocument();
             if (!saved.empty() && settings.allow_vpk_install && vpk::filename(saved)) {
@@ -2266,11 +2338,11 @@ int main() {
         performance::SlowScope post_pump(performance::SlowPhase::Ui,"post_pump");
         if (!startup_ready_measured && tg.ready()) {
             startup_ready_measured = true;
-            performance::observe(performance::Metric::StartupReady, performance::now()-startup_time);
+            performance::observeAlways(performance::Metric::StartupReady, performance::now()-startup_time);
         }
         if (!startup_live_list_measured && tg.liveListShown()) {
             startup_live_list_measured = true;
-            performance::observe(performance::Metric::StartupLiveList, performance::now()-startup_time);
+            performance::observeAlways(performance::Metric::StartupLiveList, performance::now()-startup_time);
         }
         if (!startup_window_closed && (tg.liveListShown() || sceKernelGetSystemTimeWide() >= startup_clock_until)) {
             if (startup_clock_raised) scePowerSetArmClockFrequency(startup_clock_base);
@@ -2752,9 +2824,15 @@ int main() {
                             }
                     } else {
                         auto lines = post_lines(font, post);
+                        const int preview_top = post_preview_top(post, lines.size()) - post_text_scroll;
                         int relative = touch_y - (post_text_top(post)-19-post_text_scroll);
                         int line = relative / post_pitch();
-                        if (relative >= 0 && line < (int)lines.size() && lines[line].comments) open_comments();
+                        if (!post.preview_url.empty() && touch_x >= 38 && touch_x < 922 &&
+                            touch_y >= preview_top && touch_y < preview_top + link_preview_height(post))
+                            browser_error = open_link(post.preview_url);
+                        else if (relative >= 0 && line < (int)lines.size() && lines[line].comments) open_comments();
+                        else if (relative >= 0 && line < (int)lines.size() && !spoiler_visibility.revealed(tg.currentChatId(), post.id) &&
+                            std::any_of(lines[line].styles.begin(), lines[line].styles.end(), [](const StyleSpan& span) { return span.style & TextSpoiler; })) pressed |= SCE_CTRL_CROSS;
                         else if (relative >= 0 && line < (int)lines.size() && !lines[line].url.empty())
                             browser_error = open_link(post_link_at(font, lines[line], touch_x));
                     }
@@ -2773,8 +2851,8 @@ int main() {
         }
 
         if (tg.currentChatId() != 0 && !tg.messages().empty()) {
-            if (message_index < 0) message_index = (int)tg.messages().size() - 1;
-            message_index = std::max(0, std::min(message_index, (int)tg.messages().size() - 1));
+            if (message_index < 0 && !tg.historyAnchorPending()) message_index = (int)tg.messages().size() - 1;
+            message_index = std::max(0, std::min(message_index < 0 ? 0 : message_index, (int)tg.messages().size() - 1));
             photo_index = std::max(0, std::min(photo_index, (int)tg.messages()[message_index].photos.size() - 1));
         }
 
@@ -2822,10 +2900,10 @@ int main() {
             if (accept) {
                 reveal_spoiler(shown[message_index]);
                 spoiler_prompt = false;
-                if (!shown[message_index].photos.empty()) {
+                if (shown[message_index].spoiler && !shown[message_index].photos.empty()) {
                     tg.ensureFullPhoto((size_t)message_index, (size_t)photo_index);
                     photo_open = true; photo_view.begin();
-                } else if (shown[message_index].video) toggle_video = true;
+                } else if (shown[message_index].spoiler && shown[message_index].video) toggle_video = true;
             } else if (cancel) spoiler_prompt = false;
             pressed = 0; tap = false;
         }
@@ -3483,6 +3561,11 @@ int main() {
                         spoiler_prompt_message = messages[message_index].id;
                         pressed &= ~(SCE_CTRL_CROSS | SCE_CTRL_TRIANGLE); toggle_video = false;
                     }
+                    if ((pressed & SCE_CTRL_CROSS) && !spoiler_visibility.revealed(tg.currentChatId(), messages[message_index].id) &&
+                        std::any_of(messages[message_index].styles.begin(), messages[message_index].styles.end(), [](const StyleSpan& span) { return span.style & TextSpoiler; })) {
+                        spoiler_prompt = true; spoiler_prompt_chat = tg.currentChatId(); spoiler_prompt_message = messages[message_index].id;
+                        pressed &= ~SCE_CTRL_CROSS;
+                    }
                     auto lines = post_lines(font, messages[message_index]);
                     if ((pressed & SCE_CTRL_CROSS) && messages[message_index].voice) toggle_voice = true;
                     if ((pressed & SCE_CTRL_CROSS) && messages[message_index].video) toggle_video = true;
@@ -3501,6 +3584,7 @@ int main() {
                         if (messages[message_index].video && !messages[message_index].video_note) video_fullscreen = true;
                         else if (link_line < (int)lines.size() && !lines[link_line].url.empty())
                             browser_error = open_link(lines[link_line].url);
+                        else if (!current.preview_url.empty()) browser_error = open_link(current.preview_url);
                     }
                     if ((pressed & SCE_CTRL_CROSS) && count) {
                         if (spoiler_locked(messages[message_index])) {
@@ -4186,10 +4270,23 @@ int main() {
                     int y = 170 + (row-first)*55;
                     skin_row(26, y, 908, 50, row==poll_index, row==poll_index ? selected : separator, true);
                     bool checked = std::find(poll_choices.begin(), poll_choices.end(), index)!=poll_choices.end();
-                    std::string label = std::string(checked ? "[x] " : "[ ] ") + option.text;
+                    const float cx = 52.f, cy = y + 21.f;
+                    if (checked) {
+                        vita2d_draw_fill_circle(cx, cy, 16, scale_alpha(accent, 0.08f));
+                        vita2d_draw_fill_circle(cx, cy, 13, scale_alpha(accent, 0.16f));
+                        vita2d_draw_fill_circle(cx, cy, 10, scale_alpha(accent, 0.24f));
+                        vita2d_draw_fill_circle(cx, cy, 6, accent);
+                        vita2d_draw_fill_circle(cx - 1.5f, cy - 2, 2, RGBA8(255,255,255,210));
+                    }
+                    for (int a = 0; a < 32; ++a) {
+                        const float angle = a * 6.2831853f / 32, next = (a + 1) * 6.2831853f / 32;
+                        vita2d_draw_line(cx + 9 * std::cos(angle), cy + 9 * std::sin(angle),
+                                         cx + 9 * std::cos(next), cy + 9 * std::sin(next), checked ? accent : muted);
+                    }
+                    std::string label = option.text;
                     if (option.chosen) label += tr("poll.your_answer");
                     if (option.correct) label += tr("poll.correct");
-                    draw_text(font, 38, y+21, fit_text(font, label, 870, 0.57f), ink, 0.57f);
+                    draw_text(font, 76, y+26, fit_text(font, label, 832, 0.57f), ink, 0.57f);
                     if (poll.results || poll.closed || poll.answered()) {
                         vita2d_draw_rectangle(38, y+39, 650.0f*option.percent/100, 4, accent);
                         draw_text(font, 710, y+43, std::to_string(option.percent)+"% • "+std::to_string(option.votes), muted, 0.48f);
@@ -4386,7 +4483,11 @@ int main() {
                     if (baseline < 38) continue;
                     if (baseline-22 >= 544) break;
                     const float fade = lines[line].transcript ? tr_reveal : 1.f;
-                    draw_post_line(font, 38, baseline, lines[line], scale_alpha(ink, fade), scale_alpha(accent, fade), tg, textures, decode_cooldown);
+                    draw_post_line(font, 38, baseline, lines[line], scale_alpha(ink, fade), scale_alpha(accent, fade), tg, textures, decode_cooldown, spoiler_visibility.revealed(tg.currentChatId(), message.id));
+                }
+                if (!message.preview_url.empty()) {
+                    if (!decode_cooldown) tg.ensureMessageMedia((size_t)message_index);
+                    draw_link_preview(font, message, textures, 38, post_preview_top(message, lines.size()) - post_text_scroll, 884, ink, accent);
                 }
                 vita2d_disable_clipping();
                 int maximum = post_scroll_max(message, lines.size());
@@ -4427,11 +4528,11 @@ int main() {
                     bool show_sender = tg.currentChatIsGroup() && !m.outgoing;
                     std::string sender = show_sender ? fit_text(font, tg.senderName(m), 654, 0.55f) : "";
                     bool selected_message = i == message_index;
-                    std::string preview_path = m.document ? "" : !m.photos.empty() ? m.photos.front().thumbnail_path : m.media_path;
+                    std::string preview_path = m.document || !m.preview_url.empty() ? "" : !m.photos.empty() ? m.photos.front().thumbnail_path : m.media_path;
                     const bool spoiler_hidden = spoiler_locked(m);
                     vita2d_texture* media = textures.get(preview_path, spoiler_hidden ? kMaskBlur : m.video_note ? kMaskRoundThumb : kMaskNone);
                     if (!media) media = textures.get(m.media_fallback, spoiler_hidden ? kMaskBlur : kMaskNone);
-                    bool has_media = !m.photos.empty() || m.media_file_id > 0 || m.animation;
+                    bool has_media = message_has_media(m);
                     int media_width = has_media ? 108 : 0;
                     int max_text_width = 680 - media_width;
                     auto lines = wrap_text(font, clip(m.text, 2048), max_text_width);
@@ -4445,6 +4546,7 @@ int main() {
                     for (const auto& line : lines) text_width = std::max(text_width, rich_text_width(font, 0.68f, line.c_str()));
                     text_width = std::max(text_width, rich_text_width(font, 0.52f, media_label.c_str()) + (m.document ? 17 : 0));
                     int bubble_width = std::min(712, text_width + media_width + 32);
+                    if (!m.preview_url.empty()) bubble_width = std::max(400, bubble_width);
                     if (m.has_comments)   // room for the badge left of the timestamp
                         bubble_width = std::max(bubble_width, std::min(712, comments_badge_width(font, m) + rich_text_width(font, 0.52f, message_time(m).c_str()) + (m.outgoing ? 46 : 16) + 40));
                     if (show_sender) bubble_width = std::max(bubble_width, rich_text_width(font, 0.55f, sender.c_str()) + 58);
@@ -4535,8 +4637,12 @@ int main() {
                         draw_text(font, bubble_x + bubble_width - 16 - rich_text_width(font, 0.52f, length), y + label_row, length, muted, 0.52f);
                     }
                     int text_x = bubble_x + 16 + media_width;
-                    for (size_t row = 0; row < lines.size(); ++row)
-                        draw_text(font, text_x, y+20+grow+(int)row*history_pitch(), lines[row], ink, 0.68f);
+                    const auto styles = map_styles(m, lines);
+                    for (size_t row = 0; row < lines.size(); ++row) {
+                        PostLine line(lines[row], ""); line.styles = styles[row];
+                        draw_formatted_line(font, text_x, y+20+grow+(int)row*history_pitch(), line, ink, accent,
+                            spoiler_visibility.revealed(tg.currentChatId(), m.id));
+                    }
                     if (!m.media_label.empty()) {
                         int label_x = text_x;
                         if (m.document) {
@@ -4548,6 +4654,7 @@ int main() {
                         }
                         draw_text(font, label_x, y + label_row, media_label, muted, 0.52f);
                     }
+                    draw_link_preview(font, m, textures, bubble_x + 10, y + label_row - 4, bubble_width - 20, ink, accent);
                     std::string timestamp = message_time(m);
                     int time_right = bubble_x + bubble_width - (m.outgoing ? 46 : 16);
                     draw_text(font, time_right - rich_text_width(font, 0.52f, timestamp.c_str()), y+time_row, timestamp, muted, 0.52f);

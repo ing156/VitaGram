@@ -104,6 +104,7 @@ doc.exists = Bereits gespeichert: {0}
 doc.invalid_path = Ungültiger Download-Pfad
 doc.save_failed = Datei konnte nicht gespeichert werden
 doc.saved = Gespeichert: {0}
+doc.saving = Speichern: {0}
 folder.all = Alle Chats
 folder.default = Ordner
 folder.archive = Archiviert

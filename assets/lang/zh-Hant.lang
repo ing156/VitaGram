@@ -104,6 +104,7 @@ doc.exists = 已儲存：{0}
 doc.invalid_path = 下載路徑無效
 doc.save_failed = 無法儲存檔案
 doc.saved = 已儲存：{0}
+doc.saving = 正在儲存: {0}
 folder.all = 所有聊天
 folder.default = 資料夾
 folder.archive = 已封存

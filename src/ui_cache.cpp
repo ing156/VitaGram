@@ -69,7 +69,7 @@ bool completed_file(json_t* file) {
 }
 json_t* compact_chat(json_t* chat) {
     json_t* result = json_object();
-    for (const char* key : {"@type", "id", "title", "type", "positions", "photo", "last_read_outbox_message_id"})
+    for (const char* key : {"@type", "id", "title", "type", "positions", "photo", "last_read_outbox_message_id", "last_read_inbox_message_id"})
         set_copy(result, key, json_object_get(chat, key));
     return result;
 }
@@ -176,7 +176,7 @@ json_t* startup_copy(json_t* source, size_t per_list = UiCache::kStartupRowsPerL
         }
         if (shown) json_decref(shown);
         for (const char* field : {"@type", "id", "title", "type", "positions", "permissions", "last_read_outbox_message_id",
-                                  "unread_count", "is_marked_as_unread"})
+                                  "last_read_inbox_message_id", "unread_count", "is_marked_as_unread"})
             set_copy(chat, field, json_object_get(row.chat, field));
         if (const int64_t last = number(json_object_get(row.chat, "last_message"), "id"))
             json_object_set_new(chat, "last_message", json_pack("{s:I}", "id", (json_int_t)last));

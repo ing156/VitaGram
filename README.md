@@ -4,7 +4,7 @@
 
 **Telegram for PS Vita · Telegram для PS Vita**
 
-Current version / Текущая версия: **0.37.73**.
+Current version / Текущая версия: **0.37.83**.
 
 [English](#english) · [Русский](#russian) · [Build / Сборка](#building) · [Licenses / Лицензии](#licenses)
 
@@ -38,8 +38,9 @@ supported media and features that are not yet available.
 
 - **Chats:** private conversations, groups, channels, Telegram folders, archive,
   search, forum topics and channel comments. Chat lists, history and media are cached.
-- **Messages:** text, replies, forwarding, permission-aware deletion, standard emoji
+- **Messages:** bold, italic, underline, strikethrough, code/quote highlighting and text spoilers (open the message, then press Cross or tap the hidden line to confirm reveal). Text, replies, forwarding, permission-aware deletion, standard emoji
   reactions and voting in polls, including quizzes and multiple-choice polls.
+  Links with Telegram preview data show a card with the site, title, description and image.
 - **Photos and files:** albums, attachment batches of up to 10 items, fullscreen
   photos with rotation and 1–5× zoom (touch or right stick up/down), left-stick panning
   while zoomed, and saving files to a download folder. Attachment review offers
@@ -218,8 +219,9 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 
 - **Чаты:** личная переписка, группы, каналы, папки Telegram, архив, поиск,
   темы форумных групп и комментарии каналов. Списки чатов, история и медиа кэшируются.
-- **Сообщения:** текст, ответы, пересылка, удаление с проверкой прав, обычные
+- **Сообщения:** жирный текст, курсив, подчёркивание, зачёркивание, выделение кода/цитат и текстовые спойлеры (откройте сообщение и нажмите × либо коснитесь скрытой строки для подтверждения). Текст, ответы, пересылка, удаление с проверкой прав, обычные
   emoji-реакции и голосование в опросах, включая викторины и множественный выбор.
+  Ссылки с данными предпросмотра от Telegram показывают карточку сайта с заголовком, описанием и изображением.
 - **Фото и файлы:** альбомы, отправка до 10 вложений за раз, полноэкранные фото
   с поворотом и масштабом 100–500% (жестом или правым стиком вверх/вниз), перемещением
   левым стиком при увеличении, сохранение файлов в папку загрузок. Перед отправкой

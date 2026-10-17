@@ -104,6 +104,7 @@ doc.exists = Zaten kaydedildi: {0}
 doc.invalid_path = Geçersiz indirme yolu
 doc.save_failed = Dosya kaydedilemedi
 doc.saved = Kaydedildi: {0}
+doc.saving = Kaydediliyor: {0}
 folder.all = Tüm sohbetler
 folder.default = Klasör
 folder.archive = Arşivlenenler

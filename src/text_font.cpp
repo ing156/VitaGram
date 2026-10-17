@@ -1,6 +1,7 @@
 #include "text_font.h"
 #include "utf8_decode.h"
 #include <vita2d.h>
+#include FT_SYNTHESIS_H
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -22,15 +23,19 @@ void TextFont::reset() {
 }
 
 TextFont::Glyph* TextFont::glyph(uint32_t code, unsigned size) {
-    const uint64_t key = (uint64_t(size) << 32) | code;
+    const uint64_t key = (uint64_t(style & 3) << 56) | (uint64_t(size) << 32) | code;
     auto found = glyphs_.find(key);
     if (found != glyphs_.end()) return &found->second;
     const FT_UInt index = FT_Get_Char_Index(face_, code);
-    if (FT_Load_Glyph(face_, index, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL)) return nullptr;
+    if (FT_Load_Glyph(face_, index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL)) return nullptr;
+    const auto advance = face_->glyph->advance.x;
+    if (style & 2) FT_GlyphSlot_Oblique(face_->glyph);
+    if (style & 1) FT_GlyphSlot_Embolden(face_->glyph);
+    if (FT_Render_Glyph(face_->glyph, FT_RENDER_MODE_NORMAL)) return nullptr;
     const auto slot = face_->glyph;
     Glyph value;
     value.index = index;
-    value.advance = slot->advance.x;
+    value.advance = advance;
     value.left = slot->bitmap_left;
     value.top = slot->bitmap_top;
     value.width = static_cast<int>(slot->bitmap.width);
@@ -47,7 +52,10 @@ void TextFont::upload(Glyph& glyph) {
     if (!glyph.width || !glyph.height || glyph.page >= 0) return;
     const int width = glyph.width + 2 * padding, height = glyph.height + 2 * padding;
     if (width > atlas_size || height > atlas_size) return;
-    if (FT_Load_Glyph(face_, glyph.index, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL)) return;
+    if (FT_Load_Glyph(face_, glyph.index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL)) return;
+    if (style & 2) FT_GlyphSlot_Oblique(face_->glyph);
+    if (style & 1) FT_GlyphSlot_Embolden(face_->glyph);
+    if (FT_Render_Glyph(face_->glyph, FT_RENDER_MODE_NORMAL)) return;
     const FT_Bitmap& bitmap = face_->glyph->bitmap;
     if (bitmap.pixel_mode != FT_PIXEL_MODE_GRAY && bitmap.pixel_mode != FT_PIXEL_MODE_MONO) return;
     for (size_t i = 0; i <= pages_.size(); ++i) {

@@ -104,6 +104,7 @@ doc.exists = Déjà enregistré : {0}
 doc.invalid_path = Chemin de téléchargement non valide
 doc.save_failed = Impossible d'enregistrer le fichier
 doc.saved = Enregistré : {0}
+doc.saving = Enregistrement: {0}
 folder.all = Toutes les discussions
 folder.default = Dossier
 folder.archive = Archivées

@@ -104,6 +104,7 @@ doc.exists = Ya guardado: {0}
 doc.invalid_path = Ruta de descarga no válida
 doc.save_failed = No se pudo guardar el archivo
 doc.saved = Guardado: {0}
+doc.saving = Guardando: {0}
 folder.all = Todos los chats
 folder.default = Carpeta
 folder.archive = Archivados

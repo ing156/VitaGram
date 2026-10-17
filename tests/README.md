@@ -269,6 +269,8 @@ The vault suite checks persistence and malformed values of the keyboard preferen
 
 Transfer tests also cover delayed Telegram links after chat/topic changes and reopening the same chat, stale topic history, document size updates, download progress after navigation and retries with late errors from an earlier attempt.
 
+Document export tests cover background saving and duplicate comparison with blocked storage while the UI pump continues, repeated completion events, copy progress, cancellation cleanup and account reset.
+
 `bash tests/run-vpk-tests.sh` checks package metadata bounds, rejected title IDs and patch packages, content-ID matching, and homebrew header checksums under ASan/UBSan. Transfer tests check completed export notifications, cached exports and clearing pending offers on logout; vault tests check the default-off installation preference. Native message dialogs and actual installation still need a PS Vita.
 
 Keyboard localization tests cover all 19 shipped catalogs: 15 in-app profiles and
@@ -306,3 +308,7 @@ and simultaneous deletion sources.
 Passphrase rendering checks verify on-key controller badges, cursor hints inside
 the spacebar, no separate shortcut-help strip, and no exposed passphrase in
 either the full keyboard or the vault keyboard-only drawing mode.
+
+`bash tests/run-updater-lifecycle-tests.sh` runs the production updater and separate updater app with mocked HTTPS, graphics and Vita system calls. It checks signed download/staging, signature revalidation at startup, helper installation, application installation/relaunch, cleanup, fallback storage and failures. Telegram VPK installation must remain blocked while a signed update is busy or staged, including pending markers left in either storage folder; explicit local handoff remains available after completion. Test packages use a temporary signing key; the production release key and verifier are unchanged. Actual device promotion still needs a PS Vita.
+
+Transfer tests cover overlapping text styles, UTF-16 offsets after emoji and invalid entity ranges. Text formatting and spoiler controls require visual verification on Vita.

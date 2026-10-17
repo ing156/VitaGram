@@ -104,6 +104,7 @@ doc.exists = Allerede lagret: {0}
 doc.invalid_path = Ugyldig nedlastingsbane
 doc.save_failed = Filen kunne ikke lagres
 doc.saved = Lagret: {0}
+doc.saving = Lagrer: {0}
 folder.all = Alle samtaler
 folder.default = Mappe
 folder.archive = Arkiverte

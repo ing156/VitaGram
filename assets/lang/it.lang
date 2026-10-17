@@ -104,6 +104,7 @@ doc.exists = Già salvato: {0}
 doc.invalid_path = Percorso di download non valido
 doc.save_failed = Impossibile salvare il file
 doc.saved = Salvato: {0}
+doc.saving = Salvataggio: {0}
 folder.all = Tutte le chat
 folder.default = Cartella
 folder.archive = Archiviate

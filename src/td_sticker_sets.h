@@ -148,7 +148,7 @@ inline bool wanted(const std::string& name, std::initializer_list<const char*> k
 // Shapes of the kept objects. A file is the bulk of a sticker (~25 members of
 // local/remote state), but only these members are ever read.
 enum class Shape { Set, Item, Thumbnail, File, Local, Remote, ChatUpdate, LastMessage, Messages, Message, Content, Media, PhotoSize, AltVideo, MediaFile,
-    UserUpdate, User, ProfilePhoto, ChatNew, Chat, ChatPhoto };
+    UserUpdate, User, ProfilePhoto, ChatNew, Chat, ChatPhoto, Preview, PreviewType };
 inline Shape child_shape(Shape shape, const std::string& name) {
     switch (shape) {
     case Shape::Set: case Shape::Item:
@@ -170,7 +170,12 @@ inline Shape child_shape(Shape shape, const std::string& name) {
     // Typed media objects: only photo sizes, alternative videos and the file
     // objects inside them are narrowed; every other member stays whole.
     case Shape::Content:
+        if (name == "link_preview") return Shape::Preview;
         if (wanted(name, {"photo", "animation", "video", "video_note", "voice_note", "audio", "document", "sticker"})) return Shape::Media;
+        break;
+    case Shape::Preview: if (name == "type") return Shape::PreviewType; break;
+    case Shape::PreviewType:
+        if (wanted(name, {"photo", "cover", "thumbnail", "video", "animation", "audio", "document", "video_note"})) return Shape::Media;
         break;
     case Shape::Media:
         if (name == "thumbnail") return Shape::Thumbnail;
@@ -203,7 +208,9 @@ inline bool keeps(Shape shape, const std::string& name) {
         "is_outgoing", "is_channel_post", "sending_state", "self_destruct_type", "interaction_info", "topic_id", "reply_to", "forward_info", "content"});
     // Content is read widely, so it is kept except for bulky members nothing reads.
     // "waveform" stays: voice messages draw it (about 100 bytes of 5-bit samples).
-    case Shape::Content: return !wanted(name, {"minithumbnail", "outline", "link_preview", "link_preview_options"});
+    case Shape::Content: return !wanted(name, {"minithumbnail", "outline"});
+    case Shape::Preview: return wanted(name, {"url", "site_name", "title", "description", "type"});
+    case Shape::PreviewType: return wanted(name, {"@type", "photo", "cover", "thumbnail", "video", "animation", "audio", "document", "video_note"});
     case Shape::Media: return !wanted(name, {"minithumbnail", "outline", "has_stickers", "supports_streaming", "is_animation"});
     case Shape::PhotoSize: return wanted(name, {"type", "width", "height", "photo"});
     case Shape::AltVideo: return wanted(name, {"codec", "width", "height", "video"});
@@ -216,7 +223,7 @@ inline bool keeps(Shape shape, const std::string& name) {
     // Members chatFromJson, parseChat and the UI cache (compact_chat) read; "type",
     // "permissions" and "positions" stay whole.
     case Shape::Chat: return wanted(name, {"@type", "id", "type", "title", "photo", "permissions", "positions", "last_message",
-        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id"});
+        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id", "last_read_inbox_message_id"});
     case Shape::ChatPhoto: return wanted(name, {"@type", "small"});
     }
     return false;

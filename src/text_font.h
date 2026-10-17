@@ -11,6 +11,7 @@ struct vita2d_texture;
 // and its memory buffer are owned by TextFace and must outlive this cache.
 class TextFont {
 public:
+    inline static unsigned style = 0; // Synthetic bold/italic for the current UI text run.
     explicit TextFont(FT_Face face) : face_(face) {}
     ~TextFont();
     TextFont(const TextFont&) = delete;

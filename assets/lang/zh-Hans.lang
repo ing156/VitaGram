@@ -104,6 +104,7 @@ doc.exists = 已保存：{0}
 doc.invalid_path = 下载路径无效
 doc.save_failed = 无法保存文件
 doc.saved = 已保存：{0}
+doc.saving = 正在保存: {0}
 folder.all = 所有聊天
 folder.default = 文件夹
 folder.archive = 已归档

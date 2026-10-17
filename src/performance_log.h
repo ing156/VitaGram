@@ -8,6 +8,8 @@
 #ifdef __vita__
 #include <psp2/power.h>
 #include <psp2/kernel/sysmem.h>
+#include <malloc.h>
+extern "C" unsigned int _get_vita_heap_size(void);
 #include "cpu_scheduler.h"
 #endif
 
@@ -53,9 +55,10 @@ inline bool flush(const char* path, const char* previous, const char* version, i
 #ifdef __vita__
             SceKernelFreeMemorySizeInfo memory{}; memory.size = sizeof(memory);
             const int memory_result = sceKernelGetFreeMemorySize(&memory);
-            std::fprintf(file, "device cpu_mhz=%d bus_mhz=%d gpu_mhz=%d battery_temp_centi_c=%d memory_result=%d free_user=%d free_cdram=%d free_phycont=%d cdram_images=%lld cdram_glyphs=%lld cdram_video=%lld\n",
+            const struct mallinfo heap = mallinfo(); // newlib heap is a fixed block; free_user does not see it
+            std::fprintf(file, "device cpu_mhz=%d bus_mhz=%d gpu_mhz=%d battery_temp_centi_c=%d memory_result=%d free_user=%d free_cdram=%d free_phycont=%d heap_used=%d heap_free=%d cdram_images=%lld cdram_glyphs=%lld cdram_video=%lld\n",
                 scePowerGetArmClockFrequency(), scePowerGetBusClockFrequency(), scePowerGetGpuClockFrequency(),
-                scePowerGetBatteryTemp(), memory_result, memory.size_user, memory.size_cdram, memory.size_phycont,
+                scePowerGetBatteryTemp(), memory_result, memory.size_user, memory.size_cdram, memory.size_phycont, (int)heap.uordblks, (int)(_get_vita_heap_size() - heap.uordblks),
                 (long long)cdram_images.load(), (long long)cdram_glyphs.load(), (long long)cdram_video.load());
             cpu_scheduler::writeReport(file);
 #endif

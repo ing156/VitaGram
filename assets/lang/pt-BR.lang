@@ -104,6 +104,7 @@ doc.exists = Já salvo: {0}
 doc.invalid_path = Caminho de download inválido
 doc.save_failed = Não foi possível salvar o arquivo
 doc.saved = Salvo: {0}
+doc.saving = Salvando: {0}
 folder.all = Todas as conversas
 folder.default = Pasta
 folder.archive = Arquivadas

@@ -90,6 +90,16 @@ int main(int argc, char** argv) {
             if (size == 25 && baseline.empty()) { baseline = drawings; baseline_width = width; }
             else if (size == 25) { equal(baseline, drawings); assert(width == baseline_width); }
         }
+        for (unsigned style : {1u, 2u, 3u}) {
+            TextFont::style = style;
+            drawings.clear();
+            assert(font.render(34, 102, 0xffffffff, 25, text, true) == baseline_width);
+            assert(!drawings.empty());
+        }
+        TextFont::style = 0;
+        drawings.clear();
+        font.render(34, 102, 0xffffffff, 25, text, true);
+        equal(baseline, drawings);
         font.reset(); assert(live_pages == 0);
         font.render(0, 0, 0, 34, text, false);
         drawings.clear();

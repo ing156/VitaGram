@@ -24,7 +24,7 @@
 
 namespace {
 // Base text size in pixels at 100%; each UI element applies its own scale.
-constexpr int kBaseFontSizePx = 30;
+constexpr int kBaseFontSizePx = 32;
 FT_Library library = nullptr;
 FT_Face face = nullptr;
 // Faces retain their in-memory font buffers until the raster cache is released.

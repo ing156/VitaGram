@@ -104,6 +104,7 @@ doc.exists = Já guardado: {0}
 doc.invalid_path = Caminho de transferência inválido
 doc.save_failed = Não foi possível guardar o ficheiro
 doc.saved = Guardado: {0}
+doc.saving = A guardar: {0}
 folder.all = Todas as conversas
 folder.default = Pasta
 folder.archive = Arquivadas

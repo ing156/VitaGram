@@ -104,6 +104,7 @@ doc.exists = 이미 저장됨: {0}
 doc.invalid_path = 다운로드 경로가 올바르지 않습니다
 doc.save_failed = 파일을 저장하지 못했습니다
 doc.saved = 저장됨: {0}
+doc.saving = 저장 중: {0}
 folder.all = 모든 채팅
 folder.default = 폴더
 folder.archive = 보관됨

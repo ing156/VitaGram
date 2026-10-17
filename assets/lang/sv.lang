@@ -104,6 +104,7 @@ doc.exists = Redan sparad: {0}
 doc.invalid_path = Ogiltig nedladdningssökväg
 doc.save_failed = Det gick inte att spara filen
 doc.saved = Sparad: {0}
+doc.saving = Sparar: {0}
 folder.all = Alla chattar
 folder.default = Mapp
 folder.archive = Arkiverade

@@ -104,6 +104,7 @@ doc.exists = Al opgeslagen: {0}
 doc.invalid_path = Ongeldig downloadpad
 doc.save_failed = Bestand kon niet worden opgeslagen
 doc.saved = Opgeslagen: {0}
+doc.saving = Opslaan: {0}
 folder.all = Alle chats
 folder.default = Map
 folder.archive = Gearchiveerd

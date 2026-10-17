@@ -74,19 +74,24 @@ bool promote_package(const std::string& package_dir, std::string& detail, const 
     struct Attempt { const char* name; bool with_rif; };
     std::string failures;
     bool ok = false;
+    // Codes of the last attempt, kept for diagnostics: callers check the installed files afterwards and
+    // need to know what the promoter said when it reported success but nothing was installed.
+    int last_state_rc = 0, last_state = 0, last_result = 0, waited_ms = 0;
     for (const Attempt& attempt : {Attempt{"promote", false}, Attempt{"promote+rif", true}}) {
         const char* stage = attempt.name;
         if (attempt.with_rif) rc = scePromoterUtilityPromotePkgWithRif(package_dir.c_str(), 1);
         else rc = scePromoterUtilityPromotePkg(package_dir.c_str(), 0);
         if (rc >= 0) {
             stage = "result";
-            for (int waited = 0; waited < 12000; ++waited) { // up to 120 s, until the promoter is idle again
-                int state = 0;
-                if (scePromoterUtilityGetState(&state) < 0 || state == 0) break;
+            for (waited_ms = 0; waited_ms < 120000; waited_ms += 10) { // up to 120 s, until the promoter is idle again
+                last_state = 0;
+                last_state_rc = scePromoterUtilityGetState(&last_state);
+                if (last_state_rc < 0 || last_state == 0) break;
                 sceKernelDelayThread(10 * 1000);
             }
             int result = 0;
             rc = scePromoterUtilityGetResult(&result);
+            last_result = rc < 0 ? rc : result;
             if (rc >= 0) rc = result;
             if (rc < 0 && installed_eboot && expected_size >= 0) {
                 struct stat info;
@@ -97,7 +102,15 @@ bool promote_package(const std::string& package_dir, std::string& detail, const 
                 }
             }
         }
-        if (rc >= 0) { ok = true; break; }
+        if (rc >= 0) {
+            ok = true;
+            if (detail.empty()) {
+                std::snprintf(text, sizeof(text), "%s ok: result 0x%08X, state %d (rc 0x%08X) after %d ms", stage,
+                              (unsigned)last_result, last_state, (unsigned)last_state_rc, waited_ms);
+                detail = text; // diagnostics only
+            }
+            break;
+        }
         std::snprintf(text, sizeof(text), "%s%s %s: 0x%08X", failures.empty() ? "" : "; ", attempt.with_rif ? "with rif," : "plain,", stage, rc);
         failures += text;
     }

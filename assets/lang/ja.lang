@@ -104,6 +104,7 @@ doc.exists = 保存済み: {0}
 doc.invalid_path = ダウンロード先のパスが正しくありません
 doc.save_failed = ファイルを保存できませんでした
 doc.saved = 保存しました: {0}
+doc.saving = 保存中: {0}
 folder.all = すべてのチャット
 folder.default = フォルダー
 folder.archive = アーカイブ

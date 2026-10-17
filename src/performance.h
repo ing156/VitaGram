@@ -36,7 +36,7 @@ enum class Metric {
     RequestWait, ReceiveGap, Receive, Send, QueueLock,
     MediaResolve, MediaLock, MediaFlush, UiRemember, UiLock, UiFlush,
     AudioCancel, AudioStop, AudioEncode, VideoCancel, VideoEncode,
-    PlayerStop, QrStop, FontsInit, NetworkInit, CacheRestore, StartupUi, StartupReady, StartupLiveList, StartupLiveReceived,
+    PlayerStop, QrStop, FontsInit, NetworkInit, CacheRestore, StartupUi, StartupReady, StartupLiveList, StartupLiveReceived, StartupLiveQueue,
     UiSnapshot, UiWrite,
     TdActor, TdPoll, TdSocketRead, TdSocketWrite, TdFactorize, TdDhCheck, TdDns,
     TdFileIo, TdLogWrite, TdSocketConnect, MediaValidate, CacheApply,
@@ -51,7 +51,7 @@ constexpr const char* names[] = {
     "request_wait_us", "receive_gap_us", "receive_us", "send_us", "queue_lock_us",
     "media_resolve_us", "media_lock_us", "media_flush_us", "ui_remember_us", "ui_lock_us", "ui_flush_us",
     "audio_cancel_us", "audio_stop_us", "audio_encode_us", "video_cancel_us", "video_encode_us",
-    "player_stop_us", "qr_stop_us", "fonts_init_us", "network_init_us", "cache_restore_us", "startup_ui_us", "startup_ready_us", "startup_live_list_us", "startup_live_received_us",
+    "player_stop_us", "qr_stop_us", "fonts_init_us", "network_init_us", "cache_restore_us", "startup_ui_us", "startup_ready_us", "startup_live_list_us", "startup_live_received_us", "startup_live_queue_us",
     "ui_snapshot_us", "ui_write_us",
     "td_actor_us", "td_poll_us", "td_socket_read_us", "td_socket_write_us", "td_factorize_us", "td_dh_check_us", "td_dns_us",
     "td_file_io_us", "td_log_write_us", "td_socket_connect_us", "media_validate_us", "cache_apply_us",
@@ -119,6 +119,13 @@ public:
         window_.metrics[static_cast<size_t>(m)].add(static_cast<uint64_t>(us));
         pthread_mutex_unlock(&mutex_);
     }
+    // One-shot values (startup milestones) must not be lost to the trylock under load.
+    void observeAlways(Metric m, int64_t us) {
+        if (!enabled || us < 0) return;
+        pthread_mutex_lock(&mutex_);
+        window_.metrics[static_cast<size_t>(m)].add(static_cast<uint64_t>(us));
+        pthread_mutex_unlock(&mutex_);
+    }
     void queues(uint64_t incoming, uint64_t bytes, uint64_t parsed, uint64_t wire_bytes, uint64_t outgoing) {
         if (!enabled) return;
         if (pthread_mutex_trylock(&mutex_)) { dropped_.fetch_add(1, std::memory_order_relaxed); return; }
@@ -164,6 +171,7 @@ inline Collector& collector() { static Collector instance; return instance; }
 // Application start on the now() clock; startup metrics from other threads measure from it.
 inline std::atomic<int64_t>& startup_origin() { static std::atomic<int64_t> origin{0}; return origin; }
 inline void observe(Metric m, int64_t us) { if (enabled) collector().observe(m, us); }
+inline void observeAlways(Metric m, int64_t us) { if (enabled) collector().observeAlways(m, us); }
 class Scope {
 public:
     explicit Scope(Metric m) : metric_(m), start_(enabled ? now() : 0) {}

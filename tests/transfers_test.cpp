@@ -17,10 +17,12 @@
 #include "telegram_client.h"
 #undef private
 #include "td_event_queue.h"
+#include "td_sticker_sets.h"
 #include "performance.h"
 #include "account_cleanup.h"
 #include "sticker_preview.h"
 #include "transient_status.h"
+#include "file_download.h"
 #include <unistd.h>
 #include "cpu_scheduler.h"
 #include <psp2/io/stat.h>
@@ -31,7 +33,14 @@ int64_t sceKernelGetSystemTimeWide() {
 }
 int sceKernelDelayThread(unsigned us) { std::this_thread::sleep_for(std::chrono::microseconds(us)); return 0; }
 int sceIoGetstat(const char* p, SceIoStat* out) { struct stat s{}; int rc = stat(p, &s); out->st_size=s.st_size; out->st_mode=s.st_mode; return rc; }
-int sceIoMkdir(const char* p, int m) { return mkdir(p, m); }
+static std::atomic<bool> export_blocked{false}, export_entered{false}, export_released{false};
+int sceIoMkdir(const char* p, int m) {
+    if (export_blocked && !std::strcmp(p, "ux0:data/downloads")) {
+        export_entered = true;
+        while (!export_released) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return mkdir(p, m);
+}
 namespace cpu_scheduler {
 Thread::Thread(Role):id_(0) {} Thread::~Thread() {}
 Media::Media(Role r):role_(r) {} Media::~Media() {}
@@ -91,6 +100,72 @@ static json_t* parse(const char* text) { json_error_t e{}; auto* r=json_loads(te
 static void event(MediaUploads& u, const char* text, int64_t now) { auto* r=parse(text); u.process(r,now); json_decref(r); }
 int main() {
     use_test_language();
+    {
+        TelegramClient client;
+        auto* raw = parse(R"({"id":90,"content":{"@type":"messageText","text":{"text":"😀Тест","entities":[{"offset":2,"length":4,"type":{"@type":"textEntityTypeBold"}},{"offset":2,"length":4,"type":{"@type":"textEntityTypeSpoiler"}},{"offset":99,"length":1,"type":{"@type":"textEntityTypeItalic"}}]}}})");
+        auto item = client.parseMessage(raw);
+        assert(item.styles.size() == 2);
+        assert(item.styles[0].begin == 4 && item.styles[0].end == 12 && item.styles[0].style == TextBold);
+        assert(item.styles[1].begin == 4 && item.styles[1].end == 12 && item.styles[1].style == TextSpoiler);
+        const char* kinds[] = {"Bold", "Italic", "Underline", "Strikethrough", "Spoiler", "Code", "Pre", "PreCode", "BlockQuote", "ExpandableBlockQuote"};
+        const unsigned flags[] = {TextBold, TextItalic, TextUnderline, TextStrike, TextSpoiler, TextCode, TextCode, TextCode, TextQuote, TextQuote};
+        auto* entities = json_object_get(json_object_get(json_object_get(raw, "content"), "text"), "entities");
+        for (size_t i = 0; i < 10; ++i) {
+            json_array_clear(entities);
+            const auto kind = std::string("textEntityType") + kinds[i];
+            json_array_append_new(entities, json_pack("{s:i,s:i,s:{s:s}}", "offset", 2, "length", 4, "type", "@type", kind.c_str()));
+            const auto styled = client.parseMessage(raw);
+            assert(styled.styles.size() == 1 && styled.styles[0].style == flags[i]);
+        }
+        json_decref(raw);
+    }
+    {
+        TelegramClient previews;
+        const std::string content = R"({"@type":"messageText","text":{"text":"https://example.org","entities":[{"offset":0,"length":19,"type":{"@type":"textEntityTypeUrl"}}]},"link_preview":{"url":"https://example.org","site_name":"Example","title":"Article","description":{"text":"Описание"},"type":{"@type":"linkPreviewTypeArticle","photo":{"sizes":[{"width":320,"height":180,"photo":{"id":71,"local":{"path":"preview.jpg","is_downloading_completed":true}}}]}}}})";
+        auto* compact = compact_raw_messages("{\"@type\":\"messages\",\"messages\":[{\"id\":1,\"chat_id\":42,\"content\":" + content + "}],\"pad\":\"" + std::string(2048, 'x') + "\"}");
+        assert(compact);
+        auto* message = json_array_get(json_object_get(compact, "messages"), 0);
+        auto item = previews.parseMessage(message);
+        assert(item.text == "https://example.org" && item.link_spans.size() == 1 && item.links.size() == 1);
+        assert(item.preview_url == "https://example.org" && item.preview_site == "Example");
+        assert(item.preview_title == "Article" && item.preview_description == "Описание");
+        assert(item.media_file_id == 71 && item.media_path == "preview.jpg" && item.photos.empty() && !item.animation);
+        UiCache cache;
+        cache.rememberMessages(compact);
+        auto* cached = cache.history(42);
+        assert(previews.parseMessage(json_object_get(cached, "1")).preview_title == "Article");
+        json_decref(cached);
+        previews.history_items_.push_back(item);
+        previews.messages_.push_back(item);
+        auto* file = parse(R"({"id":71,"local":{"path":"new-preview.jpg","is_downloading_completed":true}})");
+        previews.updateFile(file);
+        json_decref(file);
+        assert(previews.messages_[0].media_path == "new-preview.jpg");
+        auto* body = json_object_get(message, "content");
+        auto* preview = json_object_get(body, "link_preview");
+        auto* video = parse(R"({"@type":"linkPreviewTypeVideo","video":{"video":{"id":99},"thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"file":{"id":72,"local":{"is_downloading_completed":false}}}}})");
+        json_object_set_new(preview, "type", video);
+        item = previews.parseMessage(message);
+        assert(item.media_file_id == 72 && item.media_path.empty() && !item.animation && item.animation_file_id == 0);
+        json_object_del(preview, "type");
+        item = previews.parseMessage(message);
+        assert(!item.preview_url.empty() && item.media_file_id == 0);
+        json_object_set_new(body, "link_preview_options", json_pack("{s:b}", "is_disabled", 1));
+        item = previews.parseMessage(message);
+        assert(item.preview_url.empty() && item.media_file_id == 0 && item.text == "https://example.org");
+        json_object_del(body, "link_preview_options");
+        json_object_set_new(preview, "url", json_string("javascript:alert(1)"));
+        assert(previews.parseMessage(message).preview_url.empty());
+        json_decref(compact);
+        previews.current_chat_id_ = 42;
+        previews.worker_started_ = true;
+        previews.process(parse(R"({"@type":"updateMessageContent","chat_id":42,"message_id":1,"new_content":{"@type":"messageText","text":{"text":"updated"}}})"));
+        assert(!previews.outgoing_.empty());
+        auto* request = parse(previews.outgoing_.back().text.c_str());
+        assert(!std::strcmp(json_string_value(json_object_get(request, "@type")), "getMessage"));
+        json_decref(request);
+        previews.worker_started_ = false;
+    }
     // Exercise actual outgoing TDLib requests, including captions and partial batches.
     {
         const char* path = "attachment-caption.fixture";
@@ -481,18 +556,44 @@ int main() {
             char bytes[64]{}; size_t n = std::fread(bytes, 1, sizeof(bytes), f); std::fclose(f);
             return std::string(bytes, n);
         };
+        auto saved_export = [&]() {
+            const auto deadline = sceKernelGetSystemTimeWide() + 3000000;
+            while (!docs.hasSavedDocuments() && sceKernelGetSystemTimeWide() < deadline) {
+                docs.applyDocumentExports(); sceKernelDelayThread(1000);
+            }
+            return docs.takeSavedDocument();
+        };
         spit("ux0:data/export-source.vpk", "package bytes");
+        export_blocked = true; export_entered = false; export_released = false;
         docs.process(parse(R"({"@type":"updateFile","file":{"id":701,"size":13,"local":{"path":"ux0:data/export-source.vpk","is_downloading_completed":true,"downloaded_size":13}}})"));
-        std::string exported = docs.takeSavedDocument();
+        const auto deadline = sceKernelGetSystemTimeWide() + 3000000;
+        while (!export_entered && sceKernelGetSystemTimeWide() < deadline) sceKernelDelayThread(1000);
+        assert(export_entered && docs.document_downloads_.at(701).exporting);
+        // A blocked storage device must not block event handling or the UI pump.
+        const auto before = sceKernelGetSystemTimeWide();
+        docs.pump(true);
+        docs.process(parse(R"({"@type":"updateFile","file":{"id":701,"local":{"path":"ux0:data/export-source.vpk","is_downloading_completed":true}}})"));
+        assert(sceKernelGetSystemTimeWide() - before < 100000);
+        assert(docs.document_exports_.empty()); // Repeated completion does not queue another export.
+        assert(docs.takeSavedDocument().empty());
+        export_released = true; export_blocked = false;
+        std::string exported = saved_export();
         assert(!exported.empty() && docs.takeSavedDocument().empty());
         assert(slurp(exported) == "package bytes");
         item.media_path = "ux0:data/export-source.vpk"; item.document_name = "cached.VPK";
         docs.downloadDocument(item, "ux0:data/downloads");
-        exported = docs.takeSavedDocument();
+        exported = saved_export();
         assert(!exported.empty() && slurp(exported) == "package bytes");
-        // Saving again finds the identical export instead of writing "cached (1).VPK".
+        // Saving again compares the identical export on Storage, not UI.
+        export_blocked = true; export_entered = false; export_released = false;
         docs.downloadDocument(item, "ux0:data/downloads");
-        assert(docs.takeSavedDocument() == exported);
+        const auto compare_deadline = sceKernelGetSystemTimeWide() + 3000000;
+        while (!export_entered && sceKernelGetSystemTimeWide() < compare_deadline) sceKernelDelayThread(1000);
+        assert(export_entered && docs.document_downloads_.at(701).exporting);
+        docs.pump(true);
+        assert(docs.takeSavedDocument().empty());
+        export_released = true; export_blocked = false;
+        assert(saved_export() == exported);
         assert(docs.documentStatus() == tr("doc.exists", {exported}));
         struct stat copy{};
         const std::string duplicate = exported.substr(0, exported.size() - 4) + " (1).VPK";
@@ -507,14 +608,39 @@ int main() {
         spit("ux0:data/export-other.vpk", "other package");
         item.media_path = "ux0:data/export-other.vpk";
         docs.downloadDocument(item, "ux0:data/downloads");
-        const std::string other = docs.takeSavedDocument();
+        const std::string other = saved_export();
         assert(other == duplicate && slurp(other) == "other package");
         docs.downloadDocument(item, "ux0:data/downloads");
-        assert(docs.takeSavedDocument() == other);
+        assert(saved_export() == other);
         docs.downloadDocument(item, "ux0:data/downloads");
         docs.clearAccountMemory();
         assert(docs.takeSavedDocument().empty());
         docs.worker_started_ = false;
+        const std::string big(150000, 'x');
+        spit("ux0:data/export-large.bin", big.c_str());
+        std::string partial;
+        int64_t copied = 0;
+        assert(!save_downloaded_file("ux0:data/export-large.bin", "ux0:data/downloads", "partial.bin", 800,
+            partial, nullptr, [&] { return copied < 65536; },
+            [&](int64_t done, int64_t total) { assert(done > copied && total == 150000); copied = done; }));
+        assert(copied == 65536 && partial.empty() && stat("ux0:data/downloads/partial.bin", &copy) != 0);
+        assert(stat("ux0:data/downloads/.vitagram-800.part", &copy) != 0);
+        copied = 0;
+        assert(save_downloaded_file("ux0:data/export-large.bin", "ux0:data/downloads", "complete.bin", 800,
+            partial, nullptr, {},
+            [&](int64_t done, int64_t total) { assert(done > copied && total == 150000); copied = done;
+                assert(stat("ux0:data/downloads/complete.bin", &copy) != 0); }));
+        assert(copied == 150000 && stat(partial.c_str(), &copy) == 0 && copy.st_size == 150000);
+        int calls = 0;
+        assert(!save_downloaded_file("ux0:data/export-source.vpk", "ux0:data/downloads", "cancelled.vpk", 800,
+            partial, nullptr, [&] { return ++calls < 4; }));
+        assert(partial.empty() && stat("ux0:data/downloads/cancelled.vpk", &copy) != 0);
+        // A cancelled duplicate comparison must not fall through to writing another copy.
+        calls = 0;
+        assert(!save_downloaded_file("ux0:data/export-source.vpk", "ux0:data/downloads", "cached.VPK", 800,
+            partial, nullptr, [&] { return ++calls < 3; }));
+        assert(partial.empty() && stat("ux0:data/downloads/cached (2).VPK", &copy) != 0);
+        assert(!save_downloaded_file("missing-source", "ux0:data/downloads", "missing.vpk", 800, partial));
     }
     std::puts("Documents: size refresh, progress after navigation, download errors, stale retry failures and repeated exports passed");
 
@@ -630,12 +756,17 @@ int main() {
         list.process(stale_chat);
         assert(list.known_chats_.empty() && list.chats_[0].title == "Still visible");
         list.process(parse(R"({"@type":"updateConnectionState","state":{"@type":"connectionStateReady"}})"));
-        assert(!list.refresh_pending_ && !list.chats_pending_);
+        assert(list.refresh_pending_ && list.chats_pending_); // Fresh requests survive reconnection.
         unsigned connected_generation = list.list_generation_;
         list.process(parse(R"({"@type":"updateConnectionState","state":{"@type":"connectionStateReady"}})"));
         assert(list.list_generation_ == connected_generation);
         list.outgoing_.clear(); list.pump();
-        assert(list.refresh_pending_ && list.chats_pending_ && !list.outgoing_.empty());
+        assert(list.refresh_pending_ && list.chats_pending_ && list.outgoing_.empty());
+        const int64_t stuck_now = sceKernelGetSystemTimeWide();
+        list.chats_request_deadline_ = stuck_now + 5000000; list.refresh_deadline_ = stuck_now + 5000000;
+        unsigned stuck_generation = list.list_generation_;
+        list.resumeListRequests(stuck_now);
+        assert(!list.chats_pending_ && !list.refresh_pending_ && list.list_generation_ == stuck_generation + 1);
         list.worker_started_ = false;
     }
     {
@@ -1444,12 +1575,16 @@ int main() {
         index.remember(chat); json_decref(chat);
         auto* snapshot = index.startupSnapshot(); index.saveStartup(snapshot); json_decref(snapshot);
         storage_entered = false; storage_released = false; full_cache_blocked = true;
-        TelegramClient fast; assert(fast.restoreCacheAsync());
+        TelegramClient fast; fast.live_list_received_ = true; assert(fast.restoreCacheAsync());
         auto deadline = sceKernelGetSystemTimeWide() + 3000000;
-        while ((!storage_entered || !fast.canBrowse()) && sceKernelGetSystemTimeWide() < deadline) {
+        while (!fast.canBrowse() && sceKernelGetSystemTimeWide() < deadline) {
             fast.pump(); sceKernelDelayThread(1000);
         }
-        const bool first_screen = storage_entered && fast.canBrowse() && !storage_released;
+        const bool shown_while_blocked = fast.canBrowse() && !storage_released;
+        while (!storage_entered && sceKernelGetSystemTimeWide() < deadline) {
+            fast.pump(); sceKernelDelayThread(1000);
+        }
+        const bool first_screen = shown_while_blocked && storage_entered;
         storage_released = true;
         assert(first_screen && fast.chats_[0].title == "Fast index");
         fast.stopWorker(); full_cache_blocked = false;
@@ -1627,6 +1762,38 @@ int main() {
         avatars.publishChats(); assert(avatars.chats_[0].avatar_path.empty()); // Removed photo.
     }
     std::puts("Startup avatars: shown from the index, kept through live metadata and downloads, cleared on removal passed");
+    {
+        // Server read position: parsed, updated by read-inbox updates without touching the open history, and kept in the cache.
+        TelegramClient reader;
+        reader.applyRestoredCache(parse(R"({"chats":{"8":{"id":8,"title":"R","positions":[{"list":{"@type":"chatListMain"},"order":10}],"unread_count":4,"last_read_inbox_message_id":120,"last_message":{"id":200}}},"users":{}})"));
+        reader.publishChats();
+        assert(reader.chats_.size() == 1 && reader.chats_[0].last_read_inbox == 120);
+        reader.process(parse(R"({"@type":"updateNewChat","chat":{"id":8,"title":"R","positions":[{"list":{"@type":"chatListMain"},"order":10}],"unread_count":4,"last_read_inbox_message_id":150,"last_message":{"id":200}}})"));
+        assert(reader.known_chats_.size() == 1 && reader.known_chats_[0].last_read_inbox == 150);
+        reader.current_chat_id_ = 8; reader.history_items_.push_back(MessageItem{}); reader.history_items_.back().id = 999;
+        reader.process(parse(R"({"@type":"updateChatReadInbox","chat_id":8,"last_read_inbox_message_id":180,"unread_count":2})"));
+        assert(reader.known_chats_[0].last_read_inbox == 180 && reader.known_chats_[0].unread_count == 2);
+        assert(reader.history_items_.size() == 1 && reader.history_items_[0].id == 999);
+        reader.process(parse(R"({"@type":"updateChatIsMarkedAsUnread","chat_id":8,"is_marked_as_unread":true})"));
+        assert(reader.known_chats_[0].last_read_inbox == 180);
+        reader.current_chat_id_ = 0; reader.history_items_.clear();
+        TelegramClient cached; cached.applyRestoredCache(parse(R"({"chats":{"8":{"id":8,"title":"R","positions":[{"list":{"@type":"chatListMain"},"order":10}],"unread_count":2,"last_read_inbox_message_id":180,"last_message":{"id":300}}},"users":{}})"));
+        cached.publishChats();
+        assert(cached.chats_.size() == 1 && cached.chats_[0].last_read_inbox == 180);
+        // Open at the read position: the anchor stays set until the boundary is loaded, then the first message after it is jumped to.
+        TelegramClient open;
+        open.ready_ = true;
+        open.known_chats_.push_back(cached.chats_[0]);
+        open.openChat(8, i18n::Text{});
+        assert(open.history_anchor_ == 180 && open.historyAnchorSeeking());
+        open.history_items_.clear();
+        for (int64_t id : {170, 190, 200}) { MessageItem item; item.id = id; open.history_items_.push_back(item); }
+        open.rebuildHistory(false);
+        open.resolveHistoryAnchor();
+        assert(open.history_anchor_ == 0 && open.message_jump_ == 190);
+        assert(open.takeMessageJump() == 190);
+    }
+    std::puts("Chat read position: parsed, live-updated, cached and used as the open anchor passed");
 
     // GIF requests through the real client handler, not just the catalog parser.
     {

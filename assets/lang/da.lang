@@ -104,6 +104,7 @@ doc.exists = Allerede gemt: {0}
 doc.invalid_path = Ugyldig downloadsti
 doc.save_failed = Filen kunne ikke gemmes
 doc.saved = Gemt: {0}
+doc.saving = Gemmer: {0}
 folder.all = Alle chats
 folder.default = Mappe
 folder.archive = Arkiverede

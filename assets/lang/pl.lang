@@ -104,6 +104,7 @@ doc.exists = Już zapisano: {0}
 doc.invalid_path = Nieprawidłowa ścieżka pobierania
 doc.save_failed = Nie udało się zapisać pliku
 doc.saved = Zapisano: {0}
+doc.saving = Zapisywanie: {0}
 folder.all = Wszystkie czaty
 folder.default = Folder
 folder.archive = Zarchiwizowane

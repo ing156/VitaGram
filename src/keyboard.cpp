@@ -90,7 +90,7 @@ void Keyboard::openSystem(const std::string& title, bool secret, const std::stri
     param_.textBoxMode = secret ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
     // No predictive text or suggestions for secrets, so the system keyboard has nothing to learn from
     // a passphrase; automatic capitalization would also change what the user typed.
-    param_.option = secret ? (SCE_IME_OPTION_NO_ASSISTANCE | SCE_IME_OPTION_NO_AUTO_CAPITALIZATION) : (message_ ? SCE_IME_OPTION_MULTILINE : 0);
+    param_.option = secret ? (SCE_IME_OPTION_NO_ASSISTANCE | SCE_IME_OPTION_NO_AUTO_CAPITALIZATION) : 0;
     param_.title = title_; param_.maxTextLength = MaxTextLength;
     param_.initialText = initial_; param_.inputTextBuffer = input_;
     active_ = sceImeDialogInit(&param_) >= 0;
