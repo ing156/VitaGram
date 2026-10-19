@@ -62,62 +62,64 @@ const PaletteCore = (() => {
     for (const key of ['border','focus']) if (Object.hasOwn(borders,key)) p[key] = borders[key];
     return resolve(p, defaults);
   }
-  function parse(text, defaults) {
-    if (new TextEncoder().encode(text).length > 8192) throw Error('JSON больше 8 КиБ.');
-    const input = JSON.parse(text);
-    if (!input || Array.isArray(input) || typeof input !== 'object') throw Error('Нужен JSON-объект цветов.');
+  const message=(text,...values)=>text.replace(/\{(\d+)\}/g,(_,index)=>values[Number(index)]??'');
+  function json(text,t) {try{return JSON.parse(text);}catch{throw Error(t('Некорректный JSON.'));}}
+  function parse(text, defaults, t=message) {
+    if (new TextEncoder().encode(text).length > 8192) throw Error(t('JSON больше 8 КиБ.'));
+    const input = json(text,t);
+    if (!input || Array.isArray(input) || typeof input !== 'object') throw Error(t('Нужен JSON-объект цветов.'));
     const seen = new Set();
     for (const match of text.matchAll(/"((?:[^"\\]|\\.)*)"\s*:/g)) {
       const key = JSON.parse('"' + match[1] + '"');
-      if (seen.has(key)) throw Error('Повторяющаяся роль: ' + key);
+      if (seen.has(key)) throw Error(t('Повторяющаяся роль: {0}', key));
       seen.add(key);
     }
     for (const [key,value] of Object.entries(input)) {
-      if (!Object.hasOwn(defaults.dark,key)) throw Error('Неизвестная роль: ' + key);
-      if (typeof value !== 'string' || !/^#[\da-f]{6}$/i.test(value)) throw Error(key + ': нужен цвет #RRGGBB.');
+      if (!Object.hasOwn(defaults.dark,key)) throw Error(t('Неизвестная роль: {0}', key));
+      if (typeof value !== 'string' || !/^#[\da-f]{6}$/i.test(value)) throw Error(t('{0}: нужен цвет #RRGGBB.',key));
       input[key] = value.toUpperCase();
     }
-    for (const key of basic) if (!Object.hasOwn(input,key)) throw Error('Отсутствует роль: ' + key);
+    for (const key of basic) if (!Object.hasOwn(input,key)) throw Error(t('Отсутствует роль: {0}',key));
     return resolve(input, defaults);
   }
-  function parseCatalog(text) {
-    if (new TextEncoder().encode(text).length>2*1024*1024) throw Error('Каталог больше 2 МиБ.');
-    const input=JSON.parse(text);
+  function parseCatalog(text, t=message) {
+    if (new TextEncoder().encode(text).length>2*1024*1024) throw Error(t('Каталог больше 2 МиБ.'));
+    const input=json(text,t);
     if (!input || Array.isArray(input) || typeof input!=='object' || !Array.isArray(input.colors) ||
-        !input.colors.length || input.colors.length>10000) throw Error('Нужен объект с массивом colors: от 1 до 10000 цветов.');
+        !input.colors.length || input.colors.length>10000) throw Error(t('Нужен объект с массивом colors: от 1 до 10000 цветов.'));
     const field=(value,fallback,max)=>{
       if(value===undefined)return fallback;
-      if(typeof value!=='string' || value.length>max)throw Error('Некорректное текстовое поле каталога.');
+      if(typeof value!=='string' || value.length>max)throw Error(t('Некорректное текстовое поле каталога.'));
       return value;
     };
     const colors=input.colors.map((color,index)=>{
       if(!color || typeof color!=='object' || Array.isArray(color) || typeof color.hex!=='string' ||
-         !/^#[\da-f]{6}$/i.test(color.hex))throw Error('Цвет '+(index+1)+': нужен hex #RRGGBB.');
+         !/^#[\da-f]{6}$/i.test(color.hex))throw Error(t('Цвет {0}: нужен hex #RRGGBB.',index+1));
       const code=field(color.code, String(index+1),128);
       return {code,name:field(color.name,code,256),hex:color.hex.toUpperCase()};
     });
-    const name=field(input.brand,field(input.name,'Мой каталог',128),128).trim() || 'Мой каталог';
-    return {name,colors,note:field(input.note,'Локальный каталог пользователя.',4096),
+    const name=field(input.brand,field(input.name,t('Мой каталог'),128),128).trim() || t('Мой каталог');
+    return {name,colors,note:field(input.note,t('Локальный каталог пользователя.'),4096),
       license:field(input.license,'',512),source:field(input.source,'',2048)};
   }
-  function filename(name) {
+  function filename(name, t=message) {
     if (!name || name.startsWith('.') || name !== name.trim() || name.endsWith('.') || /[<>:"/\\|?*\x00-\x1f\x7f]/.test(name))
-      throw Error('Название не должно содержать служебные символы, крайние пробелы или точки.');
-    if (new TextEncoder().encode(name).length > 96) throw Error('Название длиннее 96 байт UTF-8. Сократите его.');
-    if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name)) throw Error('Это имя зарезервировано Windows.');
+      throw Error(t('Название не должно содержать служебные символы, крайние пробелы или точки.'));
+    if (new TextEncoder().encode(name).length > 96) throw Error(t('Название длиннее 96 байт UTF-8. Сократите его.'));
+    if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name)) throw Error(t('Это имя зарезервировано Windows.'));
     return name + '.json';
   }
-  function issues(p) {
+  function issues(p, t=message) {
     const result = [];
     for (const ink of ['text','muted']) for (const back of ['background','surface','surface_secondary','hover','selected','menu','date']) {
       const ratio = contrast(p[ink],p[back]);
-      if (ratio < 4.5) result.push(`${ink} / ${back}: ${ratio.toFixed(2)}:1 (нужно 4.5:1)`);
+      if (ratio < 4.5) result.push(t('{0} / {1}: {2}:1 (нужно {3}:1)',ink,back,ratio.toFixed(2),'4.5'));
     }
     for (const ink of ['header_text',...battery]) for (const back of ['header_top','header_bottom']) {
       const ratio = contrast(p[ink],p[back]);
-      if (ratio < 3) result.push(`${ink} / ${back}: ${ratio.toFixed(2)}:1 (нужно 3:1)`);
+      if (ratio < 3) result.push(t('{0} / {1}: {2}:1 (нужно {3}:1)',ink,back,ratio.toFixed(2),'3'));
     }
-    if (contrast(p.accent,p.surface) < 3) result.push('Акцент сливается с поверхностью: нужно 3:1.');
+    if (contrast(p.accent,p.surface) < 3) result.push(t('Акцент сливается с поверхностью: нужно 3:1.'));
     return result;
   }
   function serialize(p) {

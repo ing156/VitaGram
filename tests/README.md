@@ -57,7 +57,8 @@ recovery at the next successful scene. Uses installed VitaSDK headers (set `VITA
 if needed), with GXM calls mocked; actual GPU recovery requires a PS Vita check.
 
 `python3 scripts/build-palette-editor.py && node tests/palette_editor_test.js`
-checks the offline Windows/Linux editor bundle, JSON/name limits, duplicate keys,
+checks the offline Windows/Linux editor bundle, all 19 locales, translation keys and
+placeholders, browser language selection, JSON/name limits, duplicate keys,
 all exported patterns, contrast and palette round trips. Optional Playwright UI
 checks cover import/download, Unicode filenames, catalogue selection, all preview
 screens and battery states, local catalogue import/replacement and invalid-file

@@ -1,4 +1,4 @@
-/* Uses src/ui_layout.h, the packaged Noto font, RU strings and native PNG masks. */
+/* Uses src/ui_layout.h, the packaged Noto font, localized strings and native PNG masks. */
 function texture(name) {
   const entry=data.manifest.assets[name], key=entry.layers.map(layer=>palette[layer.role]).join('');
   if(textures.get(name)?.key===key)return textures.get(name).canvas;
@@ -37,7 +37,7 @@ function tr(key,...values) {
 }
 function fontScale(){return parseInt($('font-size').value,10)/100;}
 function fontSize(scale){return Math.max(1,Math.floor(L.font_base*scale*fontScale()+.5));}
-function font(scale){context.font=`${fontSize(scale)}px "VitaGram Noto",sans-serif`;context.textBaseline='alphabetic';}
+function font(scale){context.font=`${fontSize(scale)}px "VitaGram Noto","VitaGram CJK ${language}",sans-serif`;context.textBaseline='alphabetic';}
 function controllerBounds(index) {
   const name=controllerNames[index],rect=data.manifest.assets['ps_buttons_atlas.png'].sprites[name];
   const layers=data.manifest.assets['buttons/'+name+'.png'].layers;
@@ -98,7 +98,7 @@ function header(settings=false,chat=false) {
   const title=settings?tr('settings.title'):chat?'Vita Community':'VitaGram '+data.version;
   const x=chat?50:20,scale=.65,y=L.header_baseline;
   text(title,x,y,scale,palette.header_text,320-x);
-  const network='В сети';text(network,480-textWidth(network,scale)/2,y,scale,palette.header_text,300);
+  const network=tr('net.online');text(network,480-textWidth(network,scale)/2,y,scale,palette.header_text,300);
   const state=Number($('battery').value),charge=['5%','25%','50%','75%','100%','75%'][state],clock='17:22';
   const clockX=948-textWidth(clock,scale)-1,separatorX=clockX-8-textWidth('|',scale),chargeX=separatorX-8-textWidth(charge,scale);
   icon(['battery_0','battery_25','battery_50','battery_75','battery_100','battery_charging'][state],chargeX-26,8,20);
@@ -116,15 +116,15 @@ function searchBar() {
 }
 function drawChats() {
   searchBar();
-  const tabs=['Все чаты','Контакты','Vita','Моё','Рабочие'];
+  const tabs=[t('Все чаты'),t('Контакты'),'Vita',t('Моё'),t('Рабочие')];
   clipped(10,69+L.search_shift,940,44,()=>tabs.forEach((name,index)=>{
     const x=L.list_left+index*L.folder_step;
     nine(index===0?'tab_active':'tab_normal',x,L.content_top+L.search_shift,L.folder_width,L.folder_height);
     text(name,x+10,96+L.search_shift,.65,palette.text,164);
     if(index===0)context.drawImage(texture('fixed/active_indicator_128x4.png'),x+24,105+L.search_shift,136,4);
   }));
-  const names=['Vita Community','VitaGram · Новости','Чат Ports Collection','PS Vita — вопросы','Old Sparky',
-    'VitaGram · Задачи','Дизайн и палитры','ToDoVitaGram','RetroGG'];
+  const names=['Vita Community',t('VitaGram · Новости'),t('Чат Ports Collection'),t('PS Vita — вопросы'),'Old Sparky',
+    t('VitaGram · Задачи'),t('Дизайн и палитры'),'ToDoVitaGram','RetroGG'];
   const pitch=Math.floor((L.height-L.chat_top_folders)/L.chat_rows_folders),inner=pitch-2;
   clipped(L.list_left,L.chat_top_folders,L.list_width,L.height-L.chat_top_folders,()=>names.forEach((name,index)=>{
     const y=L.chat_top_folders+1+index*pitch,focused=index===2;
@@ -142,7 +142,7 @@ function drawChats() {
 }
 function drawSettings() {
   const keys=['language','retention','cache_size','theme','user_colors','font_size','show_threads','batch','download_dir'];
-  const values=[tr('settings.language_auto','Русский'),tr('settings.days','30'),tr('unit.mb','512'),$('name').value,tr('common.enabled'),
+  const values=[tr('settings.language_auto',t('Русский')),tr('settings.days','30'),tr('unit.mb','512'),$('name').value,tr('common.enabled'),
     $('font-size').value,tr('common.no'),'64','ux0:downloads/vitagram'];
   clipped(20,L.settings_top,920,L.settings_viewport,()=>{
     for(let row=0;row<9;row++) {
@@ -189,12 +189,12 @@ function drawDelivery(x,y,read) {
 }
 function drawHistory() {
   const scale=Math.max(1,fontScale()/1.2),pitch=Math.round(22*scale),grow=pitch-22;
-  const day='17 октября 2026',dayWidth=textWidth(day,.55)+24;
+  const day=t('17 октября 2026'),dayWidth=textWidth(day,.55)+24;
   nine('date_chip',480-dayWidth/2,L.history_top,dayWidth,22);text(day,492-dayWidth/2,L.history_top+16,.55,palette.muted);
-  const messages=[{lines:['Привет! Посмотри новую палитру.'],time:'17:18'},
-    {lines:['Оттенки хорошо сочетаются.','Проверим рамки и читаемость текста.'],outgoing:true,time:'17:19'},
-    {lines:['В меню темы цвета сохранятся.'],time:'17:20',focused:true},
-    {lines:['Отправлю JSON после проверки.'],outgoing:true,time:'17:21',read:true}];
+  const messages=[{lines:[t('Привет! Посмотри новую палитру.')],time:'17:18'},
+    {lines:[t('Оттенки хорошо сочетаются.'),t('Проверим рамки и читаемость текста.')],outgoing:true,time:'17:19'},
+    {lines:[t('В меню темы цвета сохранятся.')],time:'17:20',focused:true},
+    {lines:[t('Отправлю JSON после проверки.')],outgoing:true,time:'17:21',read:true}];
   messages[0].sender='Vita Community';
   messages[1].replyTo=messages[0];
   const quoteHeight=L.quote_padding+Math.round(L.quote_content_height*scale);
@@ -242,7 +242,7 @@ function drawPopup(attach=false) {
 }
 function drawSearch() {
   searchBar();
-  const names=['Vita Community','VitaGram · Новости','Vita Homebrew'];
+  const names=['Vita Community',t('VitaGram · Новости'),'Vita Homebrew'];
   for(let index=0;index<names.length;index++) {
     const y=L.search_top+index*L.search_row;nine(index===0?'row_focused':'row',20,y,920,L.search_row-4);
     avatar(32,y+4,32);text(names[index],76,y+27,.68,palette.text,640);text(tr('search.kind_group'),800,y+26,.5,palette.muted,126);
@@ -250,11 +250,11 @@ function drawSearch() {
   strip(tr('search.title'));text(tr('search.footer'),84,526,.55,palette.text,780);
 }
 function drawPoll() {
-  const day='17 октября 2026  17:20',width=textWidth(day,.55)+28;
+  const day=t('17 октября 2026')+'  17:20',width=textWidth(day,.55)+28;
   nine('date_chip',480-width/2,L.history_top,width,22);text(day,494-width/2,L.history_top+16,.5,palette.muted);
-  text('Какой цвет выбрать?',32,102,.7);
+  text(t('Какой цвет выбрать?'),32,102,.7);
   text(tr('poll.kind.poll')+tr('poll.anonymous')+tr('poll.single'),32,158,.52,palette.muted);
-  ['Яркий красный','Электрический синий','Графитовый'].forEach((label,index)=>{
+  [t('Яркий красный'),t('Электрический синий'),t('Графитовый')].forEach((label,index)=>{
     const y=L.poll_top+index*L.poll_step,checked=index===0,cx=52,cy=y+21;
     nine(checked?'row_focused':'row',L.poll_left,y,L.poll_width,L.poll_height);
     if(checked) {
@@ -339,7 +339,7 @@ function drawRadial() {
   centered(tr('radial.left'),g.x-57,g.y-30,.54,c.ink);centered(tr('radial.right'),g.x+57,g.y-30,.54,c.ink);
   for(const side of [-1,1]){const x=g.x+side*85,y=g.y-36;box(x-1,y-5,2,13,1,c.accent);tri([x-5,y+4],[x+5,y+4],[x,y+10],c.accent);}
   box(g.x-94,g.y-8,188,48,7,c.accent);box(g.x-92.5,g.y-6.5,185,45,5.5,rgba(palette.surface,218/255));
-  if(radialReply){centered('Vita Community',g.x,g.y+11,.5,c.ink,172);centered('Привет! Посмотри палитру.',g.x,g.y+30,.43,c.muted,168);}
+  if(radialReply){centered('Vita Community',g.x,g.y+11,.5,c.ink,172);centered(t('Привет! Посмотри палитру.'),g.x,g.y+30,.43,c.muted,168);}
   else centered(tr('radial.message_hint'),g.x,g.y+22,.57,c.muted,172);
   box(g.x-16,g.y+58,32,24,4,c.accent);tri([g.x-10,g.y+80],[g.x-10,g.y+88],[g.x-2,g.y+80],c.accent);
   box(g.x-10,g.y+65,20,3,.5,c.glyph);box(g.x-10,g.y+71,14,3,.5,c.glyph);

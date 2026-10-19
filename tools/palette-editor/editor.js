@@ -3,6 +3,25 @@ const data = JSON.parse(document.getElementById('data').textContent);
 const C = PaletteCore, $ = id => document.getElementById(id);
 const defaults = data.manifest.palettes;
 const L = data.layout;
+let language=StudioI18n.choose(navigator.languages || [navigator.language],Object.keys(data.languages));
+try {const saved=localStorage.getItem('vitagram-studio-language');if(Object.hasOwn(data.languages,saved))language=saved;} catch {}
+const t=(message,...values)=>StudioI18n.text(data.translations,language,message,...values);
+let statusMessage=['Загрузка масок…'];
+function status(message,...values) {statusMessage=[message,...values];$('status').textContent=t(...statusMessage);}
+function localize() {
+  document.documentElement.lang=language;$('language').value=language;
+  data.strings={...data.languages.en,...data.languages[language]};
+  document.body.style.fontFamily=data.cjk_fonts[language]?
+    `"Segoe UI","VitaGram CJK ${language}",system-ui,sans-serif`:'"Segoe UI",system-ui,sans-serif';
+  for(const element of document.querySelectorAll('[data-i18n]'))element.textContent=t(element.dataset.i18n);
+  for(const attr of ['aria-label','placeholder'])for(const element of document.querySelectorAll('[data-i18n-'+attr+']'))
+    element.setAttribute(attr,t(element.getAttribute('data-i18n-'+attr)));
+  for(let i=0;i<$('preset').options.length;i++)$('preset').options[i].textContent=t(data.presets[i].name);
+  for(const theme of data.themes)theme.name=(theme.brand?theme.brand+' / ':'')+data.strings['settings.theme_'+theme.base];
+  $('status').textContent=t(...statusMessage);
+  if(palette){render();catalog();}
+}
+
 const labels = {background:'Основной фон',surface:'Поверхности',text:'Основной текст',muted:'Вторичный текст',accent:'Акцент',
   header_top:'Шапка · верх',header_bottom:'Шапка · низ',surface_secondary:'Вторичная поверхность',hover:'Наведение',menu:'Меню',
   selected:'Выделение',focus:'Рамка выделения',divider:'Разделитель',border:'Обычная рамка',shadow:'Тени',date:'Дата',progress:'Шкала',
@@ -19,7 +38,7 @@ const context = $('preview').getContext('2d');
 
 function render() {
   palette = C.adapt(palette);
-  $('mode').textContent = C.luminance(palette.background) < C.luminance(palette.text) ? 'Тёмная' : 'Светлая';
+  $('mode').textContent = C.luminance(palette.background) < C.luminance(palette.text) ? t('Тёмная') : t('Светлая');
   const scroll=$('roles').scrollTop;
   $('roles').replaceChildren();
   for (const key of editable) {
@@ -27,22 +46,22 @@ function render() {
     button.dataset.role=key;
     button.setAttribute('aria-pressed',key===role?'true':'false');
     const swatch=document.createElement('span');swatch.className='swatch';swatch.style.background=palette[key];
-    const caption=document.createElement('span');caption.textContent=labels[key] || key;
+    const caption=document.createElement('span');caption.textContent=t(labels[key] || key);
     const hex=document.createElement('small');hex.textContent=palette[key];caption.append(hex);button.append(swatch,caption);
     button.onclick=()=>{role=key;render();catalog();};$('roles').append(button);
   }
   $('roles').scrollTop=scroll;
-  $('role-title').textContent=labels[role];$('color').value=palette[role];$('hex').value=palette[role];
+  $('role-title').textContent=t(labels[role]);$('color').value=palette[role];$('hex').value=palette[role];
   $('pattern').replaceChildren();
   for (const key of C.basic) {
     const button=document.createElement('button');button.style.background=palette[key];button.textContent=palette[key];
-    button.title=labels[key];button.setAttribute('aria-label',labels[key]+' '+palette[key]);
+    button.title=t(labels[key]);button.setAttribute('aria-label',t(labels[key])+' '+palette[key]);
     button.onclick=()=>{role=key;render();catalog();};$('pattern').append(button);
   }
-  const issues=C.issues(palette);$('checks').classList.toggle('warning',issues.length>0);$('checks').replaceChildren();
-  if (!issues.length) $('checks').textContent='✓ Контраст текста, значков и батареи проверен.';
+  const issues=C.issues(palette,t);$('checks').classList.toggle('warning',issues.length>0);$('checks').replaceChildren();
+  if (!issues.length) $('checks').textContent=t('✓ Контраст текста, значков и батареи проверен.');
   else {
-    $('checks').textContent='Низкий контраст — проверьте цвета перед экспортом.';
+    $('checks').textContent=t('Низкий контраст — проверьте цвета перед экспортом.');
     const list=document.createElement('ul');
     for (const issue of issues) {const li=document.createElement('li');li.textContent=issue;list.append(li);}
     $('checks').append(list);
@@ -51,17 +70,17 @@ function render() {
 }
 function nameStatus() {
   const count=new TextEncoder().encode($('name').value).length;
-  $('name-size').textContent=`${count} / 96 байт UTF-8 · .json добавится автоматически`;
-  try {C.filename($('name').value);$('name').setCustomValidity('');}
+  $('name-size').textContent=t('{0} / 96 байт UTF-8 · .json добавится автоматически',count);
+  try {C.filename($('name').value,t);$('name').setCustomValidity('');}
   catch(error){$('name').setCustomValidity(error.message);}
 }
 function setColor(value, key = role) {
-  if (!/^#[\da-f]{6}$/i.test(value)) {$('status').textContent='Введите цвет в формате #RRGGBB.';return;}
+  if (!/^#[\da-f]{6}$/i.test(value)) {status('Введите цвет в формате #RRGGBB.');return;}
   role=key;
   if (role==='border'||role==='focus') borders[role]=value.toUpperCase();
   palette={...palette,[role]:value.toUpperCase()};
   if ($('auto').checked && C.basic.includes(role)) palette=C.derive(palette,defaults,borders);
-  dirty=true;$('status').textContent='Цвет обновлён. Изменения ещё не сохранены.';render();
+  dirty=true;status('Цвет обновлён. Изменения ещё не сохранены.');render();
 }
 function catalog() {
   const entry=data.catalogs[Number($('catalog').value)];
@@ -69,8 +88,8 @@ function catalog() {
   const query=$('search').value.trim().toLocaleLowerCase();
   const filtered=entry.colors.filter(color=>[color.name,color.code,color.hex].some(value=>String(value).toLocaleLowerCase().includes(query)));
   $('catalog-colors').replaceChildren();
-  $('catalog-count').textContent=`Найдено ${filtered.length} · показано ${Math.min(120,filtered.length)} · назначение: ${labels[role]}`;
-  $('catalog-note').textContent=[entry.note,entry.license?'Лицензия: '+entry.license:'',entry.source?'Источник: '+entry.source:''].filter(Boolean).join(' · ');
+  $('catalog-count').textContent=t('Найдено {0} · показано {1} · назначение: {2}',filtered.length,Math.min(120,filtered.length),t(labels[role]));
+  $('catalog-note').textContent=[entry.note,entry.license?t('Лицензия: {0}',entry.license):'',entry.source?t('Источник: {0}',entry.source):''].filter(Boolean).join(' · ');
   for (const color of filtered.slice(0,120)) {
     const button=document.createElement('button');button.className='chip';button.title=`${color.name} · ${color.code} · ${color.hex}`;
     const paint=document.createElement('span');paint.className='paint';paint.style.background=color.hex;
@@ -80,29 +99,41 @@ function catalog() {
   }
 }
 function choosePreset(index) {
-  const preset=data.presets[index];palette=C.resolve(preset.colors,defaults);$('name').value=preset.name;
+  const preset=data.presets[index];palette=C.resolve(preset.colors,defaults);$('name').value=t(preset.name);
   borders={};
-  dirty=false;$('status').textContent='Паттерн загружен. Настройте цвета и сохраните тему.';render();
+  dirty=false;status('Паттерн загружен. Настройте цвета и сохраните тему.');render();
 }
 async function start() {
+  $('language').replaceChildren(...Object.entries(data.language_names).map(([code,name])=>new Option(name,code)));
+  localize();
+  $('language').onchange=()=>{
+    language=$('language').value;
+    try {localStorage.setItem('vitagram-studio-language',language);} catch {}
+    localize();
+  };
   const face=new FontFace('VitaGram Noto','url(data:font/ttf;base64,'+data.font+')');
   document.fonts.add(await face.load());
+  await Promise.all(Object.entries(data.cjk_fonts).map(async([code,encoded])=>{
+    const font=new FontFace('VitaGram CJK '+code,'url(data:font/woff;base64,'+encoded+')');
+    document.fonts.add(await font.load());
+  }));
   $('font-license').textContent=data.font_license;
+  $('cjk-license').textContent=data.cjk_license;
   $('app-license').textContent=data.app_license;
   $('catalog-license').textContent=data.catalog_license;
   const used=new Set(Object.keys(data.manifest.assets).filter(name=>name.startsWith('9slice/')||name.startsWith('fixed/')||name.endsWith('atlas.png')||name==='corner_buttons.png'));
   const paths=new Set([...used].flatMap(name=>data.manifest.assets[name].layers.map(layer=>layer.mask)));
   await Promise.all([...paths].map(path=>new Promise((resolve,reject)=>{
-    const image=new Image();image.onload=()=>{images.set(path,image);resolve();};image.onerror=()=>reject(Error('Не удалось загрузить маску: '+path));
+    const image=new Image();image.onload=()=>{images.set(path,image);resolve();};image.onerror=()=>reject(Error(t('Не удалось загрузить маску: {0}',path)));
     image.src='data:image/png;base64,'+data.images[path];
   })));
-  data.presets.forEach((preset,index)=>$('preset').add(new Option(preset.name,index)));
+  data.presets.forEach((preset,index)=>$('preset').add(new Option(t(preset.name),index)));
   data.catalogs.forEach((catalog,index)=>$('catalog').add(new Option(catalog.name,index)));
   const initial=data.presets.findIndex(preset=>preset.name==='black-red');$('preset').value=String(initial<0?1:initial);
   choosePreset(Number($('preset').value));catalog();
   for(const id of ['preset','import','export','import-catalog']) $(id).disabled=false;
   $('preset').onchange=()=>{
-    if (dirty && !confirm('Заменить несохранённую палитру выбранным паттерном?')) {
+    if (dirty && !confirm(t('Заменить несохранённую палитру выбранным паттерном?'))) {
       $('preset').selectedIndex=-1;return;
     }
     choosePreset(Number($('preset').value));
@@ -128,38 +159,38 @@ async function start() {
   $('catalog-file').onchange=async()=>{
     const file=$('catalog-file').files[0];if(!file)return;
     try {
-      if(file.size>2*1024*1024)throw Error('Каталог больше 2 МиБ.');
-      const entry=C.parseCatalog(await file.text());
+      if(file.size>2*1024*1024)throw Error(t('Каталог больше 2 МиБ.'));
+      const entry=C.parseCatalog(await file.text(),t);
       let index=data.catalogs.findIndex(item=>item.localFile===file.name);
-      if(index<0){if(data.catalogs.length>=16)throw Error('Открыто 16 каталогов; перезагрузите мастер для нового набора.');index=data.catalogs.length;}
+      if(index<0){if(data.catalogs.length>=16)throw Error(t('Открыто 16 каталогов; перезагрузите мастер для нового набора.'));index=data.catalogs.length;}
       entry.localFile=file.name;data.catalogs[index]=entry;
       $('catalog').replaceChildren();
       data.catalogs.forEach((item,i)=>$('catalog').add(new Option(item.name+(item.localFile?' · '+item.localFile:''),i)));
       $('catalog').value=String(index);$('search').value='';catalog();
-      $('status').textContent='Каталог загружен локально: '+entry.colors.length+' цветов. Выберите цвет для текущей роли.';
-    } catch(error){$('status').textContent='Ошибка каталога: '+error.message;}
+      status('Каталог загружен локально: {0} цветов. Выберите цвет для текущей роли.',entry.colors.length);
+    } catch(error){status('Ошибка каталога: {0}',error.message);}
   };
   $('import').onclick=()=>{$('file').value='';$('file').click();};
   $('file').onchange=async()=>{
     const file=$('file').files[0];if(!file)return;
     try {
-      if(file.size>8192)throw Error('JSON больше 8 КиБ.');
-      const next=C.parse(await file.text(),defaults);
-      if(dirty&&!confirm('Заменить несохранённую палитру импортированным файлом?'))return;
+      if(file.size>8192)throw Error(t('JSON больше 8 КиБ.'));
+      const next=C.parse(await file.text(),defaults,t);
+      if(dirty&&!confirm(t('Заменить несохранённую палитру импортированным файлом?')))return;
       palette=next;borders={border:next.border,focus:next.focus};$('name').value=file.name.replace(/\.json$/i,'');dirty=false;
-      $('preset').selectedIndex=-1;$('status').textContent='JSON загружен. Имя файла станет названием темы на Vita.';render();
-    } catch(error){$('status').textContent='Ошибка: '+error.message;}
+      $('preset').selectedIndex=-1;status('JSON загружен. Имя файла станет названием темы на Vita.');render();
+    } catch(error){status('Ошибка: {0}',error.message);}
   };
   $('export').onclick=()=>{
     try {
-      const filename=C.filename($('name').value), text=C.serialize(palette);
-      C.parse(text,defaults);
+      const filename=C.filename($('name').value,t), text=C.serialize(palette);
+      C.parse(text,defaults,t);
       const url=URL.createObjectURL(new Blob([text],{type:'application/json;charset=utf-8'}));
       const link=document.createElement('a');link.href=url;link.download=filename;link.click();
       setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;
-      $('status').textContent=`Сохранён ${filename}. Скопируйте в ux0:data/vitagram/palletes/ и перезапустите VitaGram.`;
-    } catch(error){$('status').textContent='Ошибка: '+error.message;$('name').reportValidity();}
+      status('Сохранён {0}. Скопируйте в ux0:data/vitagram/palletes/ и перезапустите VitaGram.',filename);
+    } catch(error){status('Ошибка: {0}',error.message);$('name').reportValidity();}
   };
   window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
 }
-start().catch(error=>{$('status').textContent='Ошибка запуска: '+error.message;});
+start().catch(error=>{status('Ошибка запуска: {0}',error.message);});

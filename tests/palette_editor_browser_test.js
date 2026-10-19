@@ -12,7 +12,7 @@ const output=process.env.EDITOR_TEST_OUTPUT || '/tmp/vitagram-editor-test';
   fs.mkdirSync(output,{recursive:true});
   const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
   try {
-    const page=await browser.newPage({viewport:{width:1450,height:1050},deviceScaleFactor:1});
+    const page=await browser.newPage({viewport:{width:1450,height:1050},deviceScaleFactor:1,locale:'ru-RU'});
     const errors=[],network=[];
     page.on('pageerror',error=>errors.push(error.message));
     page.on('request',request=>{if(/^https?:/.test(request.url()))network.push(request.url());});
@@ -177,7 +177,79 @@ const output=process.env.EDITOR_TEST_OUTPUT || '/tmp/vitagram-editor-test';
     assert.match(await page.locator('#status').innerText(),/96 байт/);
     await page.setViewportSize({width:800,height:1000});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    const englishPage=await browser.newPage({locale:'en-US',viewport:{width:1450,height:1050}});
+    englishPage.on('pageerror',error=>errors.push(error.message));
+    englishPage.on('request',request=>{if(/^https?:/.test(request.url()))network.push(request.url());});
+    await englishPage.goto(page.url());
+    await englishPage.waitForFunction(()=>!document.getElementById('export').disabled);
+    assert.equal(await englishPage.locator('html').getAttribute('lang'),'en');
+    assert.equal(await englishPage.locator('#export').textContent(),'Save theme');
+    assert.match(await englishPage.locator('[data-role="accent"]').innerText(),/Accent/);
+    assert.match(await englishPage.locator('#checks').textContent(),/contrast checked/);
+    await englishPage.locator('#auto').uncheck();
+    await englishPage.locator('#hex').fill('#456789');await englishPage.click('#apply');
+    await englishPage.locator('#name').fill('Моя палитра');
+    await englishPage.locator('#catalog-file').setInputFiles({name:'Каталог.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify({brand:'Мои цвета',colors:[{name:'Синий',hex:'#123456'}]}))});
+    await englishPage.waitForFunction(()=>document.getElementById('status').textContent.startsWith('Catalogue loaded locally'));
+    const state=()=>englishPage.evaluate(()=>({colors:C.serialize(palette),name:$('name').value,dirty,role,catalog:$('catalog').value,catalogCount:data.catalogs.length}));
+    const beforeLanguage=await state();
+    for(const code of ['ru','en']) {
+      await englishPage.selectOption('#language',code);
+      assert.deepEqual(await state(),beforeLanguage);
+      assert.equal(await englishPage.locator('html').getAttribute('lang'),code);
+      assert.match(await englishPage.locator('#catalog option:checked').textContent(),/Мои цвета/);
+    }
+    await englishPage.locator('#file').setInputFiles({name:'bad.json',mimeType:'application/json',buffer:Buffer.from('{bad')});
+    await englishPage.waitForFunction(()=>document.getElementById('status').textContent==='Error: Invalid JSON.');
+    const captions=await englishPage.evaluate(()=>{
+      const original=window.text,seen=[];window.text=(...args)=>{seen.push(args[0]);return original(...args);};
+      for(const option of $('view').options){$('view').value=option.value;preview();}
+      window.text=original;return seen;
+    });
+    assert(captions.includes('Settings')&&captions.includes('Online')&&captions.includes('All chats'));
+    assert(!captions.some(value=>/[А-Яа-яЁё]/.test(value)&&!['Моя палитра','Мои цвета'].includes(value)));
+    const downloadEvent=englishPage.waitForEvent('download');await englishPage.click('#export');
+    const englishDownload=await downloadEvent;assert.equal(englishDownload.suggestedFilename(),'Моя палитра.json');
+    const englishExport=path.join(output,'english-export.json');await englishDownload.saveAs(englishExport);
+    assert.equal(fs.readFileSync(englishExport,'utf8'),beforeLanguage.colors);
+    assert.equal(await englishPage.locator('#language option').count(),19);
+    const savedState=await state();
+    await englishPage.setViewportSize({width:800,height:1000});
+    for(const code of await englishPage.locator('#language option').evaluateAll(options=>options.map(option=>option.value))) {
+      await englishPage.selectOption('#language',code);
+      assert.deepEqual(await state(),savedState);
+      assert(await englishPage.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),code);
+      const localized=await englishPage.evaluate(()=>{
+        const expected=message=>language==='ru'?message:data.translations[language][message];
+        for(const element of document.querySelectorAll('[data-i18n]')) {
+          if(['status','radial-mode'].includes(element.id))continue;
+          if(element.textContent!==expected(element.dataset.i18n))return false;
+        }
+        for(const option of $('view').options){$('view').value=option.value;preview();}
+        return $('export').textContent===t('Сохранить тему')&&C.serialize(palette).length>0;
+      });
+      assert(localized,code);
+    }
+    await englishPage.selectOption('#language','ja');
+    assert(await englishPage.evaluate(()=>document.fonts.check('25px "VitaGram CJK ja"')));
+    await englishPage.screenshot({path:path.join(output,'editor-i18n-ja.png'),fullPage:true});
+    await englishPage.selectOption('#language','ru');await englishPage.reload();
+    await englishPage.waitForFunction(()=>!document.getElementById('export').disabled);
+    assert.equal(await englishPage.locator('html').getAttribute('lang'),'ru');
+    assert.equal(await englishPage.locator('#export').textContent(),'Сохранить тему');
+    await englishPage.screenshot({path:path.join(output,'editor-i18n-ru.png'),fullPage:true});
+    await englishPage.selectOption('#language','en');
+    await englishPage.screenshot({path:path.join(output,'editor-i18n-en.png'),fullPage:true});
+    await englishPage.close();
+    const blocked=await browser.newPage({locale:'fr-FR'});
+    blocked.on('pageerror',error=>errors.push(error.message));
+    await blocked.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw Error('Storage blocked');}}));
+    await blocked.goto(page.url());await blocked.waitForFunction(()=>!document.getElementById('export').disabled);
+    assert.equal(await blocked.locator('html').getAttribute('lang'),'fr');
+    await blocked.selectOption('#language','zh-Hant');
+    assert.equal(await blocked.locator('#export').textContent(),'儲存主題');
+    await blocked.close();
     assert.deepEqual(errors,[]);assert.deepEqual(network,[]);
-    console.log('Browser: 6 patterns, 9 native views, notification/radio/delivery colors, unified colors, JSON, private catalogue imports and zero network passed');
+    console.log('Browser: 6 patterns, 9 native views, notification/radio/delivery colors, unified colors, JSON, private catalogue imports, 19 locales, state preservation and zero network passed');
   } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

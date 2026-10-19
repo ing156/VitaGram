@@ -42,7 +42,7 @@ supported media and features that are not yet available.
   all theme `.json` files directly into `ux0:data/vitagram/palletes/`, restart,
   and select a theme by filename in Settings. Up to 64 valid files are loaded;
   subfolders, ZIP archives and single colour-catalogue JSON files are not imported. Use [Palette Studio in your browser](https://ing156.github.io/VitaGram/) to edit
-  colors, preview the interface and download a JSON theme. An
+  colors, preview the interface and download a JSON theme. The studio supports all 19 app languages. An
   [offline HTML edition and publishing instructions](tools/palette-editor/README.md)
   are also available. The web address becomes available after GitHub Pages is enabled.
 
@@ -249,7 +249,8 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
   перезапустите приложение и выберите тему по имени файла в настройках.
   Загружаются до 64 корректных файлов; вложенные папки, ZIP и единый JSON-каталог
   цветов не импортируются. [Откройте мастер дизайна в браузере](https://ing156.github.io/VitaGram/),
-  настройте цвета, проверьте предпросмотр и скачайте JSON темы. Доступны также
+  настройте цвета, проверьте предпросмотр и скачайте JSON темы. Мастер поддерживает
+  все 19 языков приложения. Доступны также
   [автономный HTML и инструкция публикации](tools/palette-editor/README.md).
   Веб-адрес заработает после включения GitHub Pages.
 
