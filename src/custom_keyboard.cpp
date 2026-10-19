@@ -6,28 +6,50 @@
 #include "i18n.h"
 #include "media_render.h"
 #include "ui_skin.h"
+#include "ui_color.h"
+#include <array>
+#include <cmath>
 #include <psp2/ctrl.h>
+#include <psp2/touch.h>
 #include <algorithm>
 #include <vector>
 #include <cstdlib>
 
 namespace {
 struct Colors {
-    unsigned background, panel, key, utility, active, ink, muted, accent, on_accent, separator;
+    unsigned background, panel, key, utility, active, ink, muted, accent, on_accent, separator, focus, header_ink;
+    unsigned key_ink, utility_ink, active_ink, key_muted, utility_muted, active_muted;
 };
 
 Colors colors(bool dark) {
-    Colors c;
-    c.background = dark ? RGBA8(20, 24, 30, 255) : RGBA8(242, 245, 249, 255);
-    c.panel = dark ? RGBA8(30, 35, 43, 255) : RGBA8(226, 232, 240, 255);
-    c.key = dark ? RGBA8(48, 55, 65, 255) : RGBA8(255, 255, 255, 255);
-    c.utility = dark ? RGBA8(39, 48, 61, 255) : RGBA8(207, 219, 235, 255);
-    c.active = dark ? RGBA8(63, 91, 124, 255) : RGBA8(184, 213, 248, 255);
-    c.ink = dark ? RGBA8(233, 239, 247, 255) : RGBA8(35, 45, 59, 255);
-    c.muted = dark ? RGBA8(164, 178, 197, 255) : RGBA8(91, 108, 131, 255);
-    c.accent = dark ? RGBA8(168, 203, 255, 255) : RGBA8(34, 103, 202, 255);
-    c.on_accent = dark ? RGBA8(15, 46, 87, 255) : RGBA8(255, 255, 255, 255);
-    c.separator = dark ? RGBA8(63, 73, 88, 255) : RGBA8(193, 204, 219, 255);
+    dark = ui_skin::is_dark(dark);
+    const std::array<unsigned,11> roles{{
+        ui_skin::color("background", dark ? RGBA8(7,26,52,255) : RGBA8(237,245,253,255)),
+        ui_skin::color("menu", dark ? RGBA8(8,28,54,255) : RGBA8(245,250,255,255)),
+        ui_skin::color("surface", dark ? RGBA8(17,43,75,255) : RGBA8(255,255,255,255)),
+        ui_skin::color("surface_secondary", dark ? RGBA8(23,55,89,255) : RGBA8(227,240,252,255)),
+        ui_skin::color("selected", dark ? RGBA8(16,92,180,255) : RGBA8(201,231,255,255)),
+        ui_skin::color("text", dark ? RGBA8(242,247,255,255) : RGBA8(16,42,80,255)),
+        ui_skin::color("muted", dark ? RGBA8(201,217,237,255) : RGBA8(73,100,133,255)),
+        ui_skin::color("accent", dark ? RGBA8(20,154,255,255) : RGBA8(8,126,234,255)),
+        ui_skin::color("border", dark ? RGBA8(48,86,123,255) : RGBA8(193,218,241,255)),
+        ui_skin::color("focus", dark ? RGBA8(54,186,255,255) : RGBA8(8,140,250,255)),
+        ui_skin::color("header_text", dark ? RGBA8(242,247,255,255) : RGBA8(16,42,80,255))
+    }};
+    static std::array<unsigned,11> previous{};
+    static Colors c{};
+    if (roles != previous) {
+        previous = roles;
+        c.background=roles[0]; c.panel=roles[1]; c.key=roles[2]; c.utility=roles[3]; c.active=roles[4];
+        c.ink=roles[5]; c.muted=roles[6]; c.accent=roles[7]; c.separator=roles[8]; c.focus=roles[9]; c.header_ink=roles[10];
+        c.on_accent=ui_color::on(c.accent);
+        c.key_ink=ui_color::tone(c.ink,c.key,c.key,4.5);
+        c.utility_ink=ui_color::tone(c.ink,c.utility,c.utility,4.5);
+        c.active_ink=ui_color::tone(c.ink,c.active,c.active,4.5);
+        c.key_muted=ui_color::tone(c.muted,c.key,c.key,4.5);
+        c.utility_muted=ui_color::tone(c.muted,c.utility,c.utility,4.5);
+        c.active_muted=ui_color::tone(c.muted,c.active,c.active,4.5);
+    }
     return c;
 }
 
@@ -45,13 +67,36 @@ void triangle(float cx, float cy, float r, int direction, unsigned color) {
     }
 }
 
-// Opaque rounded key bases keep a visible rim even when the PNG has transparent edges.
+// Dense cached corners and a one-pixel alpha fringe keep every key/popup contour smooth.
 void rounded_key_base(float x, float y, float w, float h, float radius, unsigned color) {
-    vita2d_draw_rectangle(x + radius, y, w - 2 * radius, h, color);
-    vita2d_draw_rectangle(x, y + radius, w, h - 2 * radius, color);
-    for (float cx : {x + radius, x + w - radius})
-        for (float cy : {y + radius, y + h - radius})
-            vita2d_draw_fill_circle(cx, cy, radius, color);
+    constexpr int steps=16, points=4*(steps+1), fan_count=points+2, fringe_count=2*(points+1);
+    struct Normal { float x,y; };
+    static const auto normals=[] {
+        std::array<Normal,points> result{};
+        for (int corner=0;corner<4;++corner) for (int step=0;step<=steps;++step) {
+            const float angle=(-90+corner*90+step*90.f/steps)*3.14159265358979323846f/180;
+            result[corner*(steps+1)+step]={std::cos(angle),std::sin(angle)};
+        }
+        return result;
+    }();
+    radius=std::max(0.f,std::min(radius,std::min(w,h)/2));
+    auto* fan=static_cast<vita2d_color_vertex*>(vita2d_pool_memalign((fan_count+fringe_count)*sizeof(vita2d_color_vertex),4));
+    if (!fan) return;
+    auto* fringe=fan+fan_count;
+    fan[0]={x+w/2,y+h/2,0.5f,color};
+    for (int i=0;i<points;++i) {
+        const int corner=i/(steps+1);
+        const float cx=x+(corner<2?w-radius:radius),cy=y+(corner==0 || corner==3?radius:h-radius);
+        fan[i+1]={cx+normals[i].x*radius,cy+normals[i].y*radius,0.5f,color};
+    }
+    fan[fan_count-1]=fan[1];
+    for (int i=0;i<=points;++i) {
+        const int index=i%points;
+        fringe[2*i]=fan[index+1];
+        fringe[2*i+1]={fringe[2*i].x+normals[index].x,fringe[2*i].y+normals[index].y,0.5f,color & 0x00FFFFFFu};
+    }
+    vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLE_FAN,fan,fan_count);
+    vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLE_STRIP,fringe,fringe_count);
 }
 
 void draw_symbol(int symbol, float cx, float cy, float r, unsigned color, unsigned background) {
@@ -86,7 +131,7 @@ void shortcut_badge(vita2d_pgf* font, int button, int right, int top, unsigned c
         const float scale = std::min(16.0f / sprite.vh, width / sprite.vw);
         vita2d_draw_texture_tint_part_scale(sprite.texture,
             right - (sprite.vx + sprite.vw)*scale, top - sprite.vy*scale,
-            sprite.x, sprite.y, sprite.w, sprite.h, scale, scale, color);
+            sprite.x, sprite.y, sprite.w, sprite.h, scale, scale, ui_skin::kWhite);
     } else if (button <= 3) {
         const int symbols[] = {6, 7, 4, 5}; // Triangle, Square, Cross, Circle.
         draw_symbol(symbols[button], right - 7, top + 7, 5, color, fill);
@@ -108,6 +153,56 @@ size_t count_chars(const std::string& text) {
 }
 
 struct CustomKeyboard::Impl {
+    bool split_layout = false;
+    struct Gesture {
+        bool captured = false, armed = false;
+        int single_id = -1, left_id = -1, right_id = -1;
+        int left_x = 0, left_y = 0, right_x = 0, right_y = 0;
+        uint64_t single_since = 0, since = 0;
+    } gesture;
+    // Reserve a chord until every finger lifts, including its final one-finger tail.
+    bool split_gesture(const SceTouchData& touches, uint64_t now) {
+        if (!touches.reportNum) {
+            const bool captured = gesture.captured;
+            gesture = Gesture{};
+            return captured;
+        }
+        if (!gesture.captured && touches.reportNum == 1) {
+            if (gesture.single_id != touches.report[0].id) {
+                gesture.single_id = touches.report[0].id; gesture.single_since = now;
+            }
+            return false;
+        }
+        if (!gesture.captured) {
+            gesture.captured = true; gesture.since = now;
+            if (touches.reportNum != 2 || (gesture.single_id >= 0 &&
+                (now < gesture.single_since || now - gesture.single_since > 180000))) return true;
+            const auto& a = touches.report[touches.report[0].x < touches.report[1].x ? 0 : 1];
+            const auto& b = touches.report[touches.report[0].x < touches.report[1].x ? 1 : 0];
+            gesture.left_id=a.id; gesture.right_id=b.id;
+            gesture.left_x=a.x/2; gesture.left_y=a.y/2; gesture.right_x=b.x/2; gesture.right_y=b.y/2;
+            gesture.armed = a.id != b.id && gesture.left_y >= 250 && gesture.right_y >= 250 &&
+                gesture.left_y < 544 && gesture.right_y < 544 && std::abs(gesture.left_y-gesture.right_y) <= 100 &&
+                (split_layout ? gesture.left_x < 400 && gesture.right_x > 560 :
+                 gesture.left_x >= 240 && gesture.left_x < 480 && gesture.right_x > 480 && gesture.right_x <= 720);
+            return true;
+        }
+        if (touches.reportNum != 2 || now < gesture.since || now-gesture.since > 1500000) gesture.armed = false;
+        if (!gesture.armed) return true;
+        const SceTouchReport *left=nullptr, *right=nullptr;
+        for (unsigned i=0;i<touches.reportNum;++i) {
+            if (touches.report[i].id == gesture.left_id) left=&touches.report[i];
+            if (touches.report[i].id == gesture.right_id) right=&touches.report[i];
+        }
+        if (!left || !right || std::abs(left->y/2-gesture.left_y)>48 || std::abs(right->y/2-gesture.right_y)>48) {
+            gesture.armed=false; return true;
+        }
+        const int direction=split_layout ? -1 : 1;
+        if (direction*(gesture.left_x-left->x/2)>=56 && direction*(right->x/2-gesture.right_x)>=56) {
+            split_layout=!split_layout; gesture.armed=false;
+        }
+        return true;
+    }
     KeyboardCase casing;
     bool symbols = false, cancel = false, auto_capitalize = true;
     std::string code = "en";
@@ -141,7 +236,9 @@ struct CustomKeyboard::Impl {
     bool secret = false, message = false, was_touching = false;
     int row = 0, col = 0;
     bool touch_mode = false, feedback_down = false;
-    Key feedback{};
+    Key feedback{}, pending_touch{};
+    bool pending_touch_active = false;
+    uint64_t pending_touch_since = 0;
     uint64_t clock = 0, feedback_until = 0;
     void show_press(const Key& key) {
         feedback = key;
@@ -346,6 +443,19 @@ struct CustomKeyboard::Impl {
             add(112, Act::Ok, tr(message ? "keyboard.send" : "vault.kb.ok"));
         }
         grid.push_back(std::move(line));
+        if (split_layout) {
+            constexpr int side_width=384, gap=8;
+            size_t largest=0;
+            for (size_t r=0;r+1<grid.size();++r) largest=std::max(largest,(grid[r].size()+1)/2);
+            const int width=std::min(64,(side_width-(int(largest)-1)*gap)/int(largest));
+            for (size_t r=0;r+1<grid.size();++r) {
+                const size_t middle=(grid[r].size()+1)/2;
+                for (size_t k=0;k<grid[r].size();++k) {
+                    auto& key=grid[r][k];key.w=width;
+                    key.x=k<middle ? 16+int(k)*(width+gap) : 944-int(grid[r].size()-k)*(width+gap)+gap;
+                }
+            }
+        }
         row = std::max(0, std::min(row, (int)grid.size() - 1));
         col = std::max(0, std::min(col, (int)grid[row].size() - 1));
     }
@@ -391,8 +501,28 @@ struct CustomKeyboard::Impl {
         }
         return false;
     }
-    Result handle(unsigned pressed, unsigned held, bool touch_down, int tx, int ty, uint64_t now) {
+    Result handle(unsigned pressed, unsigned held, bool touch_down, int tx, int ty, uint64_t now, const SceTouchData* touches) {
         clock = now;
+        if (touches && split_gesture(*touches,now)) {
+            hold=Hold{}; deletion=DeleteRepeat{}; pending_touch_active=false;
+            feedback_down=false; feedback_until=0; was_touching=false;
+            geometry();
+            return pressed & (SCE_CTRL_SELECT | SCE_CTRL_CIRCLE) ? Result::Cancelled : Result::None;
+        }
+        if (pending_touch_active) {
+            const auto key=pending_touch;
+            const bool inside=tx>=key.x && tx<key.x+key.w && ty>=key.y && ty<key.y+key.h;
+            if (pressed || (touch_down && !inside) || now<pending_touch_since) pending_touch_active=false;
+            else if (!touch_down) {
+                pending_touch_active=false; was_touching=false; feedback_down=false;
+                const bool submit=press(key);
+                geometry();
+                return cancel ? Result::Cancelled : submit ? Result::Submitted : Result::None;
+            } else if (key.act==Act::Delete && now-pending_touch_since>=DeleteRepeat::delay) {
+                pending_touch_active=false; start_delete(DeleteSource::Touch,key);
+                deletion.next=now+DeleteRepeat::interval;
+            } else return Result::None;
+        }
         feedback_down = touch_mode ? touch_down && tx >= feedback.x && tx < feedback.x + feedback.w &&
             ty >= feedback.y && ty < feedback.y + feedback.h : (held & SCE_CTRL_CROSS) != 0;
         geometry();
@@ -455,7 +585,11 @@ struct CustomKeyboard::Impl {
                     const Key& key = grid[r][k];
                     if (tx >= key.x && tx < key.x + key.w && ty >= key.y && ty < key.y + key.h) {
                         row = r; col = k;
-                        activate(key, true);
+                        // Immediate touch actions commit on release, so a second finger can claim the gesture.
+                        if (touches && !((key.act==Act::Char || key.act==Act::Language) && !key.alternatives.empty())) {
+                            pending_touch=key; pending_touch_active=true; pending_touch_since=now;
+                            touch_mode=true; show_press(key);
+                        } else activate(key, true);
                     }
                 }
         }
@@ -468,21 +602,22 @@ struct CustomKeyboard::Impl {
         const Colors c = colors(dark);
         const bool shifted = casing.upper(context());
         if (!keyboard_only) {
-            vita2d_draw_rectangle(0, 0, 960, 544, c.background);
+            if (!ui_skin::background()) vita2d_draw_rectangle(0, 0, 960, 544, c.background);
+            const bool header = ui_skin::header();
             const int title_width = rich_text_width(font, 0.74f, title.c_str());
             const float title_scale = title_width > 728 ? 0.74f * 728 / title_width : 0.74f;
-            rich_text_draw(font, 28, 33, c.ink, title_scale, title.c_str());
+            rich_text_draw(font, 28, 28, header ? c.header_ink : c.ink, title_scale, title.c_str());
             // A quiet layout badge keeps the active language visible while typing.
             const std::string layout_label = layout().badge + (symbols ? " / ?123" : casing.caps() ? " / CAPS" : shifted ? " / ABC" : " / abc");
-            rounded_key_base(784, 10, 148, 32, 16, c.utility);
-            rich_text_draw(font, 858 - rich_text_width(font, 0.48f, layout_label.c_str()) / 2, 32, c.ink, 0.48f, layout_label.c_str());
+            rounded_key_base(784, 4, 148, 28, 10, c.utility);
+            rich_text_draw(font, 858 - rich_text_width(font, 0.48f, layout_label.c_str()) / 2, 25, c.utility_ink, 0.48f, layout_label.c_str());
             if (!secret) {
                 const std::string help = tr("keyboard.help");
                 const int help_width = rich_text_width(font, 0.44f, help.c_str());
                 const float help_scale = help_width > 904 ? 0.44f * 904 / help_width : 0.44f;
                 rich_text_draw(font, 28, 63, c.muted, help_scale, help.c_str());
-                rounded_key_base(20, 78, 920, 164, 18, c.panel);
-                rounded_key_base(22, 80, 916, 160, 16, c.key);
+                rounded_key_base(20, 78, 920, 164, 12, c.separator);
+                rounded_key_base(22, 80, 916, 160, 10, c.key);
                 std::vector<std::string> lines(1);
                 size_t cursor_line = 0;
                 int cursor_width = 0;
@@ -508,11 +643,11 @@ struct CustomKeyboard::Impl {
                 const size_t first = cursor_line > 4 ? cursor_line - 4 : 0;
                 const size_t last = std::min(lines.size(), first + 5);
                 for (size_t i = first; i < last; ++i)
-                    rich_text_draw(font, 36, 106 + (i-first)*26, c.ink, 0.65f, lines[i].c_str());
+                    rich_text_draw(font, 36, 106 + (i-first)*26, c.key_ink, 0.65f, lines[i].c_str());
                 if ((clock / 500000) % 2 == 0 || clock < feedback_until)
                     vita2d_draw_rectangle(38 + cursor_width, 87 + (cursor_line-first)*26, 2, 22, c.accent);
                 const std::string counter = std::to_string(count_chars(text));
-                rich_text_draw(font, 912 - rich_text_width(font, 0.42f, counter.c_str()), 234, c.muted, 0.42f, counter.c_str());
+                rich_text_draw(font, 912 - rich_text_width(font, 0.42f, counter.c_str()), 234, c.key_muted, 0.42f, counter.c_str());
                 // Indicate hidden earlier lines without confusing them with message content.
                 if (first) for (int i = 0; i < 3; ++i) vita2d_draw_fill_circle(465 + i*10, 86, 2, c.muted);
             }
@@ -543,12 +678,17 @@ struct CustomKeyboard::Impl {
                 const bool locked = key.act == Act::Shift && casing.caps();
                 const unsigned fill = locked && !symbols ? c.accent : disabled ? c.utility : pressed || toggled ? c.active :
                     ok ? c.accent : utility ? c.utility : c.key;
-                const unsigned color = locked && !symbols ? c.on_accent : disabled ? c.muted : ok && !pressed ? c.on_accent : c.ink;
+                const unsigned normal_ink = fill == c.accent ? c.on_accent : fill == c.active ? c.active_ink : fill == c.utility ? c.utility_ink : c.key_ink;
+                const unsigned hint_ink = fill == c.accent ? c.on_accent : fill == c.active ? c.active_muted : fill == c.utility ? c.utility_muted : c.key_muted;
+                const unsigned color = disabled ? hint_ink : normal_ink;
                 const int inset = pressed ? 2 : 0;
-                const int radius = utility ? 20 : 10;
+                const int radius = split_layout && (ok || key.act==Act::Symbols) ? 28 : 10;
                 // Soft key faces, with one precise controller focus outline.
-                if (selected) rounded_key_base(key.x - 2, key.y - 2, key.w + 4, key.h + 4, radius + 2, c.accent);
+                rounded_key_base(key.x - 2, key.y - 2, key.w + 4, key.h + 4, radius + 2, selected ? c.focus : c.separator);
                 rounded_key_base(key.x + inset, key.y + inset, key.w - 2*inset, key.h - 2*inset, radius, fill);
+                if (fill == c.key || fill == c.active)
+                    ui_skin::nine(fill == c.active ? ui_skin::Slice::RowFocused : ui_skin::Slice::Row,
+                        key.x + inset + 2, key.y + inset + 2, key.w - 2*inset - 4, key.h - 2*inset - 4);
                 const float cx = key.x + key.w / 2.0f;
                 const float cy = key.y + key.h / 2.0f;
                 if (key.act == Act::Shift) {
@@ -589,11 +729,11 @@ struct CustomKeyboard::Impl {
                     if (w > key.w - 16) { scale *= (key.w - 16.0f) / w; w = rich_text_width(font, scale, label.c_str()); }
                     rich_text_draw(font, key.x + (key.w - w) / 2, cy + 9, color, scale, label.c_str());
                     if (key.act == Act::Space) {
-                        vita2d_draw_line(cx - 16, cy + 20, cx + 16, cy + 20, c.muted);
+                        vita2d_draw_line(cx - 16, cy + 20, cx + 16, cy + 20, hint_ink);
                     }
                 }
                 if (secret) {
-                    const unsigned badge_color = disabled ? c.muted : color;
+                    const unsigned badge_color = color;
                     const int shortcut = key.act == Act::Delete ? 1 : key.act == Act::Space ? 0 :
                         key.act == Act::Cancel ? 3 : key.act == Act::Ok ? 5 : -1;
                     if (shortcut >= 0) shortcut_badge(font, shortcut, key.x + key.w - 8, key.y + 7, badge_color, fill);
@@ -616,7 +756,7 @@ struct CustomKeyboard::Impl {
                     int width = rich_text_width(font, scale, hint.c_str());
                     if (width > key.w - 12) { scale *= float(key.w - 12) / width; width = rich_text_width(font, scale, hint.c_str()); }
                     rich_text_draw(font, key.x + key.w - width - 7, key.y + 15,
-                        hold.active && hold.fired && row == r && col == k ? c.accent : c.muted,
+                        hint_ink,
                         scale, hint.c_str());
                 }
             }
@@ -635,7 +775,7 @@ struct CustomKeyboard::Impl {
                 const std::string label = language ? keyboard_layout::get(hold.key.alternatives[option]).badge : hold.key.alternatives[option];
                 const float scale = language ? 0.68f : secret ? 0.8f : 1.05f;
                 rich_text_draw(font, x + (Popup::cell - rich_text_width(font, scale, label.c_str())) / 2,
-                    popup.y + 43, selected ? c.on_accent : c.ink, scale, label.c_str());
+                    popup.y + 43, selected ? c.on_accent : c.utility_ink, scale, label.c_str());
             }
             if (hold.key.act == Act::Language && hold.key.alternatives.size() > static_cast<size_t>(count)) {
                 if (hold.window > 0) triangle(popup.x + 4, popup.y + 33, 3, 2, c.accent);
@@ -649,7 +789,7 @@ struct CustomKeyboard::Impl {
             rounded_key_base(x, y + 3, width, 66, 16, c.separator);
             rounded_key_base(x, y, width, 66, 16, c.active);
             rich_text_draw(font, x + (width - rich_text_width(font, 1.05f, label.c_str())) / 2,
-                y + 44, c.ink, 1.05f, label.c_str());
+                y + 44, c.active_ink, 1.05f, label.c_str());
             if (hold.active) {
                 const float progress = std::min(1.0f, float(clock - hold.since) / KeyboardHold::delay);
                 vita2d_draw_rectangle(x + 14, y + 57, (width - 28)*progress, 2, c.accent);
@@ -662,6 +802,7 @@ struct CustomKeyboard::Impl {
 CustomKeyboard::CustomKeyboard() : impl_(new Impl) {}
 CustomKeyboard::~CustomKeyboard() { clear(); }
 void CustomKeyboard::clear() {
+    impl_->gesture = Impl::Gesture{}; impl_->pending_touch_active=false;
     std::fill(impl_->text.begin(), impl_->text.end(), '\0'); impl_->text.clear(); impl_->cursor = 0;
     impl_->hold = Impl::Hold{};
     impl_->deletion = Impl::DeleteRepeat{};
@@ -670,9 +811,11 @@ void CustomKeyboard::clear() {
 void CustomKeyboard::open(const std::string& initial, bool secret, bool message, size_t max_bytes, bool allow_system, bool auto_capitalize) {
     const std::string language = impl_->language_chosen ? impl_->code : keyboard_languages::canonical(i18n::systemLanguage());
     const bool chosen = impl_->language_chosen;
+    const bool split = impl_->split_layout;
     const auto preferences = impl_->preferences;
     clear();
     *impl_ = Impl{};
+    impl_->split_layout = split;
     impl_->allow_system = allow_system;
     impl_->preferences = preferences;
     impl_->apply_languages();
@@ -692,11 +835,12 @@ void CustomKeyboard::open(const std::string& initial, bool secret, bool message,
     impl_->casing.reset(auto_capitalize && message && !secret);
     impl_->geometry();
 }
-CustomKeyboard::Result CustomKeyboard::handle(unsigned pressed, unsigned held, bool touch_down, int x, int y, uint64_t now) {
-    return impl_->handle(pressed, held, touch_down, x, y, now);
+CustomKeyboard::Result CustomKeyboard::handle(unsigned pressed, unsigned held, bool touch_down, int x, int y, uint64_t now, const SceTouchData* touches) {
+    return impl_->handle(pressed, held, touch_down, x, y, now, touches);
 }
 void CustomKeyboard::draw(vita2d_pgf* font, bool dark, const std::string& title, bool keyboard_only) const { impl_->draw(font, dark, title, keyboard_only); }
 const std::string& CustomKeyboard::text() const { return impl_->text; }
+bool CustomKeyboard::split() const { return impl_->split_layout; }
 size_t CustomKeyboard::cursor() const { return impl_->cursor; }
 
 void CustomKeyboard::setLanguages(const std::vector<std::string>& codes) {

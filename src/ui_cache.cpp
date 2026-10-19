@@ -69,7 +69,7 @@ bool completed_file(json_t* file) {
 }
 json_t* compact_chat(json_t* chat) {
     json_t* result = json_object();
-    for (const char* key : {"@type", "id", "title", "type", "positions", "photo", "last_read_outbox_message_id", "last_read_inbox_message_id"})
+    for (const char* key : {"@type", "id", "title", "type", "positions", "photo", "last_read_outbox_message_id", "last_read_inbox_message_id", "accent_color_id", "upgraded_gift_colors"})
         set_copy(result, key, json_object_get(chat, key));
     return result;
 }
@@ -176,7 +176,7 @@ json_t* startup_copy(json_t* source, size_t per_list = UiCache::kStartupRowsPerL
         }
         if (shown) json_decref(shown);
         for (const char* field : {"@type", "id", "title", "type", "positions", "permissions", "last_read_outbox_message_id",
-                                  "last_read_inbox_message_id", "unread_count", "is_marked_as_unread"})
+                                  "last_read_inbox_message_id", "unread_count", "is_marked_as_unread", "accent_color_id", "upgraded_gift_colors"})
             set_copy(chat, field, json_object_get(row.chat, field));
         if (const int64_t last = number(json_object_get(row.chat, "last_message"), "id"))
             json_object_set_new(chat, "last_message", json_pack("{s:I}", "id", (json_int_t)last));
@@ -185,16 +185,18 @@ json_t* startup_copy(json_t* source, size_t per_list = UiCache::kStartupRowsPerL
     }
     json_object_foreach(json_object_get(source, "users"), key, value) {
         auto* user = json_object();
-        for (const char* field : {"id", "first_name", "last_name", "type"}) set_copy(user, field, json_object_get(value, field));
+        for (const char* field : {"id", "first_name", "last_name", "type", "accent_color_id", "upgraded_gift_colors"}) set_copy(user, field, json_object_get(value, field));
         json_object_set_new(json_object_get(result, "users"), key, user);
     }
+    set_copy(result, "accent_colors", json_object_get(source, "accent_colors"));
     set_copy(result, "folders", json_object_get(source, "folders"));
+    set_copy(result, "local_read", json_object_get(source, "local_read"));
     return result;
 }
 json_t* freeze_tree(json_t* data) {
     json_t* copy = json_copy(data);
     if (!copy) return nullptr;
-    for (const char* key : {"chats", "users", "sticker_items", "history"}) {
+    for (const char* key : {"chats", "users", "sticker_items", "history", "local_read"}) {
         json_t* source = json_object_get(data, key);
         if (!source) continue;
         json_t* collection = json_copy(source);
@@ -296,14 +298,14 @@ void UiCache::load(bool (*proceed)(void*), void* context) {
             break;
         }
         for (auto id : touched) json_object_del(json_object_get(candidate, "history"), std::to_string(id).c_str());
-        for (const char* collection : {"chats", "users", "history", "sticker_items"}) {
+        for (const char* collection : {"chats", "users", "history", "sticker_items", "local_read"}) {
             auto* value = json_object_get(current, collection);
             if (!value) continue;
             auto* target = json_object_get(candidate, collection);
             if (json_is_object(target)) json_object_update(target, value);
             else json_object_set(candidate, collection, value);
         }
-        for (const char* field : {"folders", "sticker_packs"})
+        for (const char* field : {"folders", "sticker_packs", "accent_colors"})
             if (auto* value = json_object_get(current, field)) json_object_set(candidate, field, value);
         json_decref(current);
         // Trim to the runtime limits here, on Storage. A disk cache above them used
@@ -421,7 +423,9 @@ json_t* UiCache::startupSnapshot() {
     // Leaves are immutable. Don't retain or copy the history containers at all.
     for (const char* key : {"chats", "users"})
         json_object_set_new(frozen, key, json_copy(json_object_get(data_, key)));
+    json_object_set(frozen, "accent_colors", json_object_get(data_, "accent_colors"));
     json_object_set(frozen, "folders", json_object_get(data_, "folders"));
+    json_object_set_new(frozen, "local_read", json_copy(json_object_get(data_, "local_read")));
     unlock_cache(&mutex_);
     auto* result = startup_copy(frozen);
     json_decref(frozen);
@@ -448,6 +452,11 @@ json_t* UiCache::loadStartup() {
     if (generation==generation_) {
         if (startup_avatars_) json_decref(startup_avatars_);
         startup_avatars_=json_incref(json_object_get(compact,"avatars"));
+        auto* positions = json_copy(json_object_get(compact, "local_read"));
+        if (positions) {
+            json_object_update(positions, json_object_get(data_, "local_read"));
+            json_object_set_new(data_, "local_read", positions);
+        }
     }
     unlock_cache(&mutex_);
     return compact;
@@ -473,11 +482,14 @@ bool UiCache::saveStartupList(json_t* chats, uint64_t generation, bool (*proceed
     auto* cached = json_object_get(data_, "chats");
     const char* key; json_t* chat;
     json_object_foreach(chats, key, chat)
-        if (auto* photo = json_object_get(json_object_get(cached, key), "photo")) json_object_set(chat, "photo", photo);
+        for (const char* field : {"photo", "accent_color_id", "upgraded_gift_colors"})
+            if (auto* value = json_object_get(json_object_get(cached, key), field)) json_object_set(chat, field, value);
     auto* source = json_object();
     json_object_set(source, "chats", chats);
     json_object_set_new(source, "users", json_copy(json_object_get(data_, "users")));
+    json_object_set(source, "accent_colors", json_object_get(data_, "accent_colors"));
     json_object_set(source, "folders", json_object_get(data_, "folders"));
+    json_object_set_new(source, "local_read", json_copy(json_object_get(data_, "local_read")));
     if (startup_avatars_) json_object_set(source, "avatars", startup_avatars_);
     unlock_cache(&mutex_);
     auto* startup = startup_copy(source);
@@ -593,6 +605,25 @@ json_t* UiCache::history(int64_t id, size_t newest) {
     }
     return result;
 }
+int64_t UiCache::localReadPosition(int64_t chat, int64_t scope) {
+    lock_cache(&mutex_);
+    const int64_t result = number(json_object_get(data_, "local_read"), (std::to_string(chat) + (scope ? "/" + std::to_string(scope) : "")).c_str());
+    unlock_cache(&mutex_);
+    return std::max<int64_t>(0, result);
+}
+void UiCache::setLocalReadPosition(int64_t chat, int64_t message, int64_t scope) {
+    if (!chat || message <= 0) return;
+    lock_cache(&mutex_);
+    auto* positions = json_object_get(data_, "local_read");
+    if (!positions) { positions = json_object(); json_object_set_new(data_, "local_read", positions); }
+    const auto key = std::to_string(chat) + (scope ? "/" + std::to_string(scope) : "");
+    if (message > number(positions, key.c_str())) {
+        json_object_set_new(positions, key.c_str(), json_integer(message));
+        ++revision_; ++main_revision_;
+    }
+    unlock_cache(&mutex_);
+}
+
 void UiCache::remember(json_t* root, uint64_t wire_bytes) {
     const char* t = type(root);
     // The Parser already stored this reply (see rememberMessages).
@@ -640,6 +671,9 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
         }
     }
 
+    if (!std::strcmp(t, "updateAccentColors")) {
+        set_copy(data_, "accent_colors", json_object_get(root, "colors")); changed = main_changed = true;
+    }
     if (!std::strcmp(t, "updateChatFolders")) {
         json_object_set_new(data_, "folders", measured_copy(root)); changed = main_changed = true;
     }
@@ -648,7 +682,7 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
         json_t* users = json_object_get(data_, "users");
         if (!users) { users = json_object(); json_object_set_new(data_, "users", users); }
         json_t* name = json_object();
-        for (const char* field : {"id", "first_name", "last_name", "profile_photo", "type"})
+        for (const char* field : {"id", "first_name", "last_name", "profile_photo", "type", "accent_color_id", "upgraded_gift_colors"})
             set_copy(name, field, json_object_get(user, field));
         json_object_set_new(users, std::to_string(number(user, "id")).c_str(), name);
         retain(users, 1024, 16); changed = main_changed = true;
@@ -661,12 +695,16 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
     }
     std::string chat_key = std::to_string(number(root, "chat_id"));
     json_t* cached = json_object_get(chats, chat_key.c_str());
-    const bool chat_update = !std::strcmp(t, "updateChatTitle") || !std::strcmp(t, "updateChatPhoto") ||
+    const bool chat_update = !std::strcmp(t, "updateChatAccentColors") || !std::strcmp(t, "updateChatTitle") || !std::strcmp(t, "updateChatPhoto") ||
         !std::strcmp(t, "updateChatLastMessage") || !std::strcmp(t, "updateChatDraftMessage") || !std::strcmp(t, "updateChatPosition");
     if (cached && chat_update) {
         cached = measured_copy(cached);
         json_object_set_new(chats, chat_key.c_str(), cached);
         main_changed = true;
+    }
+    if (cached && !std::strcmp(t, "updateChatAccentColors")) {
+        for (const char* field : {"accent_color_id", "upgraded_gift_colors"}) set_copy(cached, field, json_object_get(root, field));
+        changed = true;
     }
     if (cached && !std::strcmp(t, "updateChatTitle")) { set_copy(cached, "title", json_object_get(root, "title")); changed = true; }
     if (cached && !std::strcmp(t, "updateChatPhoto")) { set_copy(cached, "photo", json_object_get(root, "photo")); changed = true; }

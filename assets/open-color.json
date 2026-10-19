@@ -1,0 +1,668 @@
+{
+  "brand": "Open Color",
+  "source": "https://github.com/yeun/open-color",
+  "license": "MIT",
+  "note": "Open Color \u2014 MIT License, Copyright (c) 2016 heeyeun.",
+  "colors": [
+    {
+      "code": "white",
+      "name": "White",
+      "hex": "#FFFFFF"
+    },
+    {
+      "code": "black",
+      "name": "Black",
+      "hex": "#000000"
+    },
+    {
+      "code": "gray-0",
+      "name": "Gray 0",
+      "hex": "#F8F9FA"
+    },
+    {
+      "code": "gray-1",
+      "name": "Gray 1",
+      "hex": "#F1F3F5"
+    },
+    {
+      "code": "gray-2",
+      "name": "Gray 2",
+      "hex": "#E9ECEF"
+    },
+    {
+      "code": "gray-3",
+      "name": "Gray 3",
+      "hex": "#DEE2E6"
+    },
+    {
+      "code": "gray-4",
+      "name": "Gray 4",
+      "hex": "#CED4DA"
+    },
+    {
+      "code": "gray-5",
+      "name": "Gray 5",
+      "hex": "#ADB5BD"
+    },
+    {
+      "code": "gray-6",
+      "name": "Gray 6",
+      "hex": "#868E96"
+    },
+    {
+      "code": "gray-7",
+      "name": "Gray 7",
+      "hex": "#495057"
+    },
+    {
+      "code": "gray-8",
+      "name": "Gray 8",
+      "hex": "#343A40"
+    },
+    {
+      "code": "gray-9",
+      "name": "Gray 9",
+      "hex": "#212529"
+    },
+    {
+      "code": "red-0",
+      "name": "Red 0",
+      "hex": "#FFF5F5"
+    },
+    {
+      "code": "red-1",
+      "name": "Red 1",
+      "hex": "#FFE3E3"
+    },
+    {
+      "code": "red-2",
+      "name": "Red 2",
+      "hex": "#FFC9C9"
+    },
+    {
+      "code": "red-3",
+      "name": "Red 3",
+      "hex": "#FFA8A8"
+    },
+    {
+      "code": "red-4",
+      "name": "Red 4",
+      "hex": "#FF8787"
+    },
+    {
+      "code": "red-5",
+      "name": "Red 5",
+      "hex": "#FF6B6B"
+    },
+    {
+      "code": "red-6",
+      "name": "Red 6",
+      "hex": "#FA5252"
+    },
+    {
+      "code": "red-7",
+      "name": "Red 7",
+      "hex": "#F03E3E"
+    },
+    {
+      "code": "red-8",
+      "name": "Red 8",
+      "hex": "#E03131"
+    },
+    {
+      "code": "red-9",
+      "name": "Red 9",
+      "hex": "#C92A2A"
+    },
+    {
+      "code": "pink-0",
+      "name": "Pink 0",
+      "hex": "#FFF0F6"
+    },
+    {
+      "code": "pink-1",
+      "name": "Pink 1",
+      "hex": "#FFDEEB"
+    },
+    {
+      "code": "pink-2",
+      "name": "Pink 2",
+      "hex": "#FCC2D7"
+    },
+    {
+      "code": "pink-3",
+      "name": "Pink 3",
+      "hex": "#FAA2C1"
+    },
+    {
+      "code": "pink-4",
+      "name": "Pink 4",
+      "hex": "#F783AC"
+    },
+    {
+      "code": "pink-5",
+      "name": "Pink 5",
+      "hex": "#F06595"
+    },
+    {
+      "code": "pink-6",
+      "name": "Pink 6",
+      "hex": "#E64980"
+    },
+    {
+      "code": "pink-7",
+      "name": "Pink 7",
+      "hex": "#D6336C"
+    },
+    {
+      "code": "pink-8",
+      "name": "Pink 8",
+      "hex": "#C2255C"
+    },
+    {
+      "code": "pink-9",
+      "name": "Pink 9",
+      "hex": "#A61E4D"
+    },
+    {
+      "code": "grape-0",
+      "name": "Grape 0",
+      "hex": "#F8F0FC"
+    },
+    {
+      "code": "grape-1",
+      "name": "Grape 1",
+      "hex": "#F3D9FA"
+    },
+    {
+      "code": "grape-2",
+      "name": "Grape 2",
+      "hex": "#EEBEFA"
+    },
+    {
+      "code": "grape-3",
+      "name": "Grape 3",
+      "hex": "#E599F7"
+    },
+    {
+      "code": "grape-4",
+      "name": "Grape 4",
+      "hex": "#DA77F2"
+    },
+    {
+      "code": "grape-5",
+      "name": "Grape 5",
+      "hex": "#CC5DE8"
+    },
+    {
+      "code": "grape-6",
+      "name": "Grape 6",
+      "hex": "#BE4BDB"
+    },
+    {
+      "code": "grape-7",
+      "name": "Grape 7",
+      "hex": "#AE3EC9"
+    },
+    {
+      "code": "grape-8",
+      "name": "Grape 8",
+      "hex": "#9C36B5"
+    },
+    {
+      "code": "grape-9",
+      "name": "Grape 9",
+      "hex": "#862E9C"
+    },
+    {
+      "code": "violet-0",
+      "name": "Violet 0",
+      "hex": "#F3F0FF"
+    },
+    {
+      "code": "violet-1",
+      "name": "Violet 1",
+      "hex": "#E5DBFF"
+    },
+    {
+      "code": "violet-2",
+      "name": "Violet 2",
+      "hex": "#D0BFFF"
+    },
+    {
+      "code": "violet-3",
+      "name": "Violet 3",
+      "hex": "#B197FC"
+    },
+    {
+      "code": "violet-4",
+      "name": "Violet 4",
+      "hex": "#9775FA"
+    },
+    {
+      "code": "violet-5",
+      "name": "Violet 5",
+      "hex": "#845EF7"
+    },
+    {
+      "code": "violet-6",
+      "name": "Violet 6",
+      "hex": "#7950F2"
+    },
+    {
+      "code": "violet-7",
+      "name": "Violet 7",
+      "hex": "#7048E8"
+    },
+    {
+      "code": "violet-8",
+      "name": "Violet 8",
+      "hex": "#6741D9"
+    },
+    {
+      "code": "violet-9",
+      "name": "Violet 9",
+      "hex": "#5F3DC4"
+    },
+    {
+      "code": "indigo-0",
+      "name": "Indigo 0",
+      "hex": "#EDF2FF"
+    },
+    {
+      "code": "indigo-1",
+      "name": "Indigo 1",
+      "hex": "#DBE4FF"
+    },
+    {
+      "code": "indigo-2",
+      "name": "Indigo 2",
+      "hex": "#BAC8FF"
+    },
+    {
+      "code": "indigo-3",
+      "name": "Indigo 3",
+      "hex": "#91A7FF"
+    },
+    {
+      "code": "indigo-4",
+      "name": "Indigo 4",
+      "hex": "#748FFC"
+    },
+    {
+      "code": "indigo-5",
+      "name": "Indigo 5",
+      "hex": "#5C7CFA"
+    },
+    {
+      "code": "indigo-6",
+      "name": "Indigo 6",
+      "hex": "#4C6EF5"
+    },
+    {
+      "code": "indigo-7",
+      "name": "Indigo 7",
+      "hex": "#4263EB"
+    },
+    {
+      "code": "indigo-8",
+      "name": "Indigo 8",
+      "hex": "#3B5BDB"
+    },
+    {
+      "code": "indigo-9",
+      "name": "Indigo 9",
+      "hex": "#364FC7"
+    },
+    {
+      "code": "blue-0",
+      "name": "Blue 0",
+      "hex": "#E7F5FF"
+    },
+    {
+      "code": "blue-1",
+      "name": "Blue 1",
+      "hex": "#D0EBFF"
+    },
+    {
+      "code": "blue-2",
+      "name": "Blue 2",
+      "hex": "#A5D8FF"
+    },
+    {
+      "code": "blue-3",
+      "name": "Blue 3",
+      "hex": "#74C0FC"
+    },
+    {
+      "code": "blue-4",
+      "name": "Blue 4",
+      "hex": "#4DABF7"
+    },
+    {
+      "code": "blue-5",
+      "name": "Blue 5",
+      "hex": "#339AF0"
+    },
+    {
+      "code": "blue-6",
+      "name": "Blue 6",
+      "hex": "#228BE6"
+    },
+    {
+      "code": "blue-7",
+      "name": "Blue 7",
+      "hex": "#1C7ED6"
+    },
+    {
+      "code": "blue-8",
+      "name": "Blue 8",
+      "hex": "#1971C2"
+    },
+    {
+      "code": "blue-9",
+      "name": "Blue 9",
+      "hex": "#1864AB"
+    },
+    {
+      "code": "cyan-0",
+      "name": "Cyan 0",
+      "hex": "#E3FAFC"
+    },
+    {
+      "code": "cyan-1",
+      "name": "Cyan 1",
+      "hex": "#C5F6FA"
+    },
+    {
+      "code": "cyan-2",
+      "name": "Cyan 2",
+      "hex": "#99E9F2"
+    },
+    {
+      "code": "cyan-3",
+      "name": "Cyan 3",
+      "hex": "#66D9E8"
+    },
+    {
+      "code": "cyan-4",
+      "name": "Cyan 4",
+      "hex": "#3BC9DB"
+    },
+    {
+      "code": "cyan-5",
+      "name": "Cyan 5",
+      "hex": "#22B8CF"
+    },
+    {
+      "code": "cyan-6",
+      "name": "Cyan 6",
+      "hex": "#15AABF"
+    },
+    {
+      "code": "cyan-7",
+      "name": "Cyan 7",
+      "hex": "#1098AD"
+    },
+    {
+      "code": "cyan-8",
+      "name": "Cyan 8",
+      "hex": "#0C8599"
+    },
+    {
+      "code": "cyan-9",
+      "name": "Cyan 9",
+      "hex": "#0B7285"
+    },
+    {
+      "code": "teal-0",
+      "name": "Teal 0",
+      "hex": "#E6FCF5"
+    },
+    {
+      "code": "teal-1",
+      "name": "Teal 1",
+      "hex": "#C3FAE8"
+    },
+    {
+      "code": "teal-2",
+      "name": "Teal 2",
+      "hex": "#96F2D7"
+    },
+    {
+      "code": "teal-3",
+      "name": "Teal 3",
+      "hex": "#63E6BE"
+    },
+    {
+      "code": "teal-4",
+      "name": "Teal 4",
+      "hex": "#38D9A9"
+    },
+    {
+      "code": "teal-5",
+      "name": "Teal 5",
+      "hex": "#20C997"
+    },
+    {
+      "code": "teal-6",
+      "name": "Teal 6",
+      "hex": "#12B886"
+    },
+    {
+      "code": "teal-7",
+      "name": "Teal 7",
+      "hex": "#0CA678"
+    },
+    {
+      "code": "teal-8",
+      "name": "Teal 8",
+      "hex": "#099268"
+    },
+    {
+      "code": "teal-9",
+      "name": "Teal 9",
+      "hex": "#087F5B"
+    },
+    {
+      "code": "green-0",
+      "name": "Green 0",
+      "hex": "#EBFBEE"
+    },
+    {
+      "code": "green-1",
+      "name": "Green 1",
+      "hex": "#D3F9D8"
+    },
+    {
+      "code": "green-2",
+      "name": "Green 2",
+      "hex": "#B2F2BB"
+    },
+    {
+      "code": "green-3",
+      "name": "Green 3",
+      "hex": "#8CE99A"
+    },
+    {
+      "code": "green-4",
+      "name": "Green 4",
+      "hex": "#69DB7C"
+    },
+    {
+      "code": "green-5",
+      "name": "Green 5",
+      "hex": "#51CF66"
+    },
+    {
+      "code": "green-6",
+      "name": "Green 6",
+      "hex": "#40C057"
+    },
+    {
+      "code": "green-7",
+      "name": "Green 7",
+      "hex": "#37B24D"
+    },
+    {
+      "code": "green-8",
+      "name": "Green 8",
+      "hex": "#2F9E44"
+    },
+    {
+      "code": "green-9",
+      "name": "Green 9",
+      "hex": "#2B8A3E"
+    },
+    {
+      "code": "lime-0",
+      "name": "Lime 0",
+      "hex": "#F4FCE3"
+    },
+    {
+      "code": "lime-1",
+      "name": "Lime 1",
+      "hex": "#E9FAC8"
+    },
+    {
+      "code": "lime-2",
+      "name": "Lime 2",
+      "hex": "#D8F5A2"
+    },
+    {
+      "code": "lime-3",
+      "name": "Lime 3",
+      "hex": "#C0EB75"
+    },
+    {
+      "code": "lime-4",
+      "name": "Lime 4",
+      "hex": "#A9E34B"
+    },
+    {
+      "code": "lime-5",
+      "name": "Lime 5",
+      "hex": "#94D82D"
+    },
+    {
+      "code": "lime-6",
+      "name": "Lime 6",
+      "hex": "#82C91E"
+    },
+    {
+      "code": "lime-7",
+      "name": "Lime 7",
+      "hex": "#74B816"
+    },
+    {
+      "code": "lime-8",
+      "name": "Lime 8",
+      "hex": "#66A80F"
+    },
+    {
+      "code": "lime-9",
+      "name": "Lime 9",
+      "hex": "#5C940D"
+    },
+    {
+      "code": "yellow-0",
+      "name": "Yellow 0",
+      "hex": "#FFF9DB"
+    },
+    {
+      "code": "yellow-1",
+      "name": "Yellow 1",
+      "hex": "#FFF3BF"
+    },
+    {
+      "code": "yellow-2",
+      "name": "Yellow 2",
+      "hex": "#FFEC99"
+    },
+    {
+      "code": "yellow-3",
+      "name": "Yellow 3",
+      "hex": "#FFE066"
+    },
+    {
+      "code": "yellow-4",
+      "name": "Yellow 4",
+      "hex": "#FFD43B"
+    },
+    {
+      "code": "yellow-5",
+      "name": "Yellow 5",
+      "hex": "#FCC419"
+    },
+    {
+      "code": "yellow-6",
+      "name": "Yellow 6",
+      "hex": "#FAB005"
+    },
+    {
+      "code": "yellow-7",
+      "name": "Yellow 7",
+      "hex": "#F59F00"
+    },
+    {
+      "code": "yellow-8",
+      "name": "Yellow 8",
+      "hex": "#F08C00"
+    },
+    {
+      "code": "yellow-9",
+      "name": "Yellow 9",
+      "hex": "#E67700"
+    },
+    {
+      "code": "orange-0",
+      "name": "Orange 0",
+      "hex": "#FFF4E6"
+    },
+    {
+      "code": "orange-1",
+      "name": "Orange 1",
+      "hex": "#FFE8CC"
+    },
+    {
+      "code": "orange-2",
+      "name": "Orange 2",
+      "hex": "#FFD8A8"
+    },
+    {
+      "code": "orange-3",
+      "name": "Orange 3",
+      "hex": "#FFC078"
+    },
+    {
+      "code": "orange-4",
+      "name": "Orange 4",
+      "hex": "#FFA94D"
+    },
+    {
+      "code": "orange-5",
+      "name": "Orange 5",
+      "hex": "#FF922B"
+    },
+    {
+      "code": "orange-6",
+      "name": "Orange 6",
+      "hex": "#FD7E14"
+    },
+    {
+      "code": "orange-7",
+      "name": "Orange 7",
+      "hex": "#F76707"
+    },
+    {
+      "code": "orange-8",
+      "name": "Orange 8",
+      "hex": "#E8590C"
+    },
+    {
+      "code": "orange-9",
+      "name": "Orange 9",
+      "hex": "#D9480F"
+    }
+  ]
+}

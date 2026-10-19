@@ -60,6 +60,7 @@ bool UploadPicker::matches(Kind k, const std::string& name) {
     switch (k) {
         case Kind::Photo: return has_extension(name, {"jpg", "jpeg", "png", "webp", "gif", "bmp"});
         case Kind::Video: return has_extension(name, {"mp4", "m4v", "mov", "mkv", "webm", "avi", "3gp"});
+        case Kind::Media: return matches(Kind::Photo, name) || matches(Kind::Video, name);
         case Kind::File: return true;
     }
     return true;
@@ -142,7 +143,7 @@ void UploadPicker::log(const std::string& text) const {
     if (sceIoGetstat(file, &st) >= 0 && st.st_size > 64 * 1024) sceIoRemove(file);
     SceUID fd = sceIoOpen(file, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
     if (fd < 0) return;
-    std::string line = "[" + std::string(kind == Kind::Photo ? "photo" : kind == Kind::Video ? "video" : "file") +
+    std::string line = "[" + std::string(kind == Kind::Media ? "multimedia" : kind == Kind::Photo ? "photo" : kind == Kind::Video ? "video" : "file") +
         (show_hidden ? ",hidden" : "") + "] " + path + ": " + text + "\n";
     sceIoWrite(fd, line.data(), line.size());
     sceIoClose(fd);
@@ -192,7 +193,7 @@ void UploadPicker::sortEntries() {
             const bool b_logs = b.dir && b.name == LogsDirectory;
             if (a_logs != b_logs) return a_logs;
         }
-        if (path.empty() && kind == Kind::Photo) {
+        if (path.empty() && kind == Kind::Media) {
             const bool a_latest = a.dir && a.name == LatestView;
             const bool b_latest = b.dir && b.name == LatestView;
             if (a_latest != b_latest) return a_latest;
@@ -297,7 +298,7 @@ void UploadPicker::enter() {
     const std::string full = fullPath(e);
     const auto marked = std::find_if(items.begin(), items.end(), [&](const Item& item) { return item.path == full; });
     if (marked != items.end()) items.erase(marked);
-    else if (items.size() < MaxItems) items.push_back({full, e.name, kind, e.size});
+    else if (items.size() < MaxItems) items.push_back({full, e.name, kind == Kind::Media ? (matches(Kind::Photo, e.name) ? Kind::Photo : Kind::Video) : kind, e.size});
 }
 
 bool UploadPicker::isMarked(const Entry& entry) const {
@@ -316,7 +317,7 @@ void UploadPicker::finishSelection() {
 void UploadPicker::up() {
     if (stage != Stage::Browse) return;
     if (path.empty()) {
-        if (items.empty()) { stage = Stage::Menu; selected = (int)kind; }
+        if (items.empty()) { stage = Stage::Menu; selected = kind == Kind::File ? 1 : 0; }
         else { stage = Stage::Review; selected = (int)items.size() + 1; }
         return;
     }
@@ -349,8 +350,8 @@ bool UploadPicker::reviewActivate() {
     if (stage != Stage::Review) return false;
     if (selected == 0) return sendBatch();
     const int first_add = (int)items.size() + 1;
-    if (selected >= first_add && selected < first_add + 3) {
-        if (items.size() < MaxItems) chooseKind((Kind)(selected - first_add));
+    if (selected >= first_add && selected < first_add + 2) {
+        if (items.size() < MaxItems) chooseKind(selected == first_add ? Kind::Media : Kind::File);
     }
     return false;
 }

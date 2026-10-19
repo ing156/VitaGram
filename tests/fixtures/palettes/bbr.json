@@ -1,0 +1,10 @@
+{
+  "background": "#05080F",
+  "surface": "#0D1117",
+  "text": "#EFF7FF",
+  "muted": "#5D88C0",
+  "accent": "#232F39",
+  "selected": "#11161D",
+  "focus": "#C80909",
+  "border": "#0917D7"
+}

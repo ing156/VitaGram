@@ -95,8 +95,7 @@ struct Reader {
 // 50-400 ms each to parse on the Vita at every start, so their bodies are skipped.
 inline const char* unused_td_update_type(std::string_view name) {
     for (const char* known:{"updateStickerSet","updateAvailableMessageEffects","updateEmojiChatThemes",
-                            "updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors",
-                            "updateAccentColors"})
+                            "updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors"})
         if (name==known) return known;
     return nullptr;
 }
@@ -107,8 +106,7 @@ inline json_t* compact_raw_unused_td_update(const std::string& text) {
     const std::string_view head(text.data(),text.size()<128 ? text.size() : 128);
     bool candidate=false;
     for (const char* known:{"updateStickerSet","updateAvailableMessageEffects","updateEmojiChatThemes",
-                            "updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors",
-                            "updateAccentColors"})
+                            "updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors"})
         if (head.find(known)!=std::string_view::npos) { candidate=true;break; }
     if (!candidate) return nullptr;
     const char* matched_type=nullptr;

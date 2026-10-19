@@ -1,7 +1,8 @@
 #pragma once
 #include <vita2d.h>
+#include <array>
 
-// PNG skin for the decorative parts of the UI (VitaGram_UI_Assets v1.x). Paths, 9-slice insets and
+// Mask-based light/dark skin with runtime palettes; VHBB retains its PNG artwork. Paths, 9-slice insets and
 // sprite rectangles come from app0:ui/manifest.json. Every draw call returns false when its asset
 // is not loaded, so callers keep their original drawing as the fallback.
 namespace ui_skin {
@@ -20,12 +21,21 @@ struct Sprite {
 
 // Loads the textures of one theme, releasing the previous theme first. UI thread, outside a frame.
 // Returns true when the manifest was read; individual missing files only disable their own element.
-// Theme IDs: 0 = light, 1 = dark, 2 = VHBB.
+// Persisted theme IDs and their base resources/palette files are in ui_themes.h.
 bool load(int theme);
 void unload();
 // True when the last load() left the manifest, wallpaper or header missing and a retry is due.
 bool needs_retry();
 bool ready();
+// Apply role->#RRGGBB JSON between frames, without loading/rebuilding PNG files.
+// Unknown roles, duplicate keys and malformed colors leave the previous palette intact.
+bool set_palette(const char* json);
+// Poll ux0:data/vitagram/palette.json at most once per second, outside drawing.
+void reload_palette();
+unsigned int color(const char* role, unsigned int fallback);
+bool is_dark(bool fallback);
+// Cached background, surface, accent, text and selection colors, for the settings picker.
+bool theme_colors(int theme, std::array<unsigned, 5>& colors);
 // True when the controller button sprites of the current theme are loaded.
 bool has_buttons();
 
@@ -44,8 +54,7 @@ bool header(float height = 36);                     // header strip scaled to `h
 // Covers the four corners of a rectangle with the surface color, leaving a rounded hole of `radius` (<= 8):
 // rounds video frames without touching the video texture. Only valid over the flat media frame.
 bool corners(float x, float y, float w, float h, float radius);
-// Bottom-corner buttons (attach left, menu right) from assets/ui_extra/corner_buttons.png; `glow` 0..1 fades
-// in the sparkle overlay. Theme independent.
+// Bottom-corner buttons (attach left, menu right); `glow` 0..1 fades in the sparkle overlay.
 bool corner_button(bool right, float glow, float opacity = 1.f);
 // Subtle inward-fading scroll hint at a vertical edge; right mirrors the left edge.
 bool edge_glow(bool right, float edge, float y, float height);
@@ -53,6 +62,7 @@ bool indicator(float x, float y, float w, float h);
 bool icon(Icon icon, float x, float y, float size, unsigned int tint = kWhite);
 // Controller button 0..8 in the order triangle, square, cross, circle, dpad, start, select, L, R.
 bool button(int index, Sprite& sprite);
+bool battery(int index, Sprite& sprite);
 // Theme colors from the manifest; `fallback` is returned when the skin is not loaded.
 unsigned int background_color(unsigned int fallback);
 unsigned int surface_color(unsigned int fallback);

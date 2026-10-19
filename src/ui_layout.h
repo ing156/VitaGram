@@ -1,0 +1,62 @@
+#pragma once
+
+// Native screen geometry, also embedded in the offline palette preview.
+namespace ui_layout {
+inline constexpr int width = 960;
+inline constexpr int height = 544;
+inline constexpr int header_height = 36;
+inline constexpr int header_baseline = 25;
+inline constexpr int list_left = 10;
+inline constexpr int list_width = 940;
+inline constexpr int strip_top = 42;
+inline constexpr int strip_height = 23;
+inline constexpr int content_top = 71;
+inline constexpr int search_height = 26;
+inline constexpr int search_top = 103;
+inline constexpr int search_row = 44;
+inline constexpr int search_rows = 9;
+inline constexpr int search_shift = 32;
+inline constexpr int folder_step = 189;
+inline constexpr int folder_width = 184;
+inline constexpr int folder_height = 39;
+inline constexpr int folder_count = 5;
+inline constexpr int chat_top_folders = 151;
+inline constexpr int chat_top_plain = 103;
+inline constexpr int chat_rows_folders = 9;
+inline constexpr int chat_rows_plain = 10;
+inline constexpr int chat_title_left = 88;
+inline constexpr int settings_top = 71;
+inline constexpr int settings_row = 47;
+inline constexpr int settings_viewport = 400;
+inline constexpr int menu_left = 600;
+inline constexpr int menu_width = 320;
+inline constexpr int menu_bottom = 486;
+inline constexpr int menu_row = 40;
+inline constexpr int menu_pad = 8;
+inline constexpr int menu_focus_height = 36;
+inline constexpr int menu_max_rows = 10;
+inline constexpr int attach_left = 40;
+inline constexpr int attach_width = 300;
+inline constexpr int theme_left = 120;
+inline constexpr int theme_top = 72;
+inline constexpr int theme_width = 720;
+inline constexpr int theme_header = 44;
+inline constexpr int theme_row = 44;
+inline constexpr int theme_visible = 8;
+inline constexpr int history_top = 71;
+inline constexpr int history_clip_top = 60;
+inline constexpr int bubble_left = 32;
+inline constexpr int bubble_right = 928;
+inline constexpr int bubble_max_width = 712;
+inline constexpr int card_pad = 8;
+inline constexpr int time_gap = 4;
+inline constexpr int quote_padding = 12;
+inline constexpr int quote_content_height = 34;
+inline constexpr int quote_gap = 4;
+inline constexpr int quote_max_width = 480;
+inline constexpr int poll_left = 26;
+inline constexpr int poll_top = 170;
+inline constexpr int poll_width = 908;
+inline constexpr int poll_step = 55;
+inline constexpr int poll_height = 50;
+}

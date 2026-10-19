@@ -1,0 +1,21 @@
+{
+  "background": "#3A413E",
+  "surface": "#383E46",
+  "text": "#F3F0E9",
+  "muted": "#D6D1C5",
+  "accent": "#8CC5AA",
+  "header_top": "#8CC5AA",
+  "header_bottom": "#84B89F",
+  "surface_secondary": "#3F494E",
+  "hover": "#424E52",
+  "menu": "#383E46",
+  "selected": "#475658",
+  "focus": "#8CC5AA",
+  "divider": "#5A5E63",
+  "border": "#6C7074",
+  "shadow": "#141716",
+  "date": "#3F494E",
+  "progress": "#5A5E63",
+  "green": "#23DB80",
+  "header_text": "#383E46"
+}

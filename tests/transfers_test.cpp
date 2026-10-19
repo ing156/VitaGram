@@ -102,6 +102,64 @@ int main() {
     use_test_language();
     {
         TelegramClient client;
+        auto colors = parse(R"({"@type":"updateAccentColors","colors":[{"id":8,"light_theme_colors":[1122867,4478310,7833753],"dark_theme_colors":[11189196,14544639]}]})");
+        client.process(colors);
+        auto user = parse(R"({"@type":"user","id":77,"first_name":"Original","accent_color_id":8})");
+        client.process(user);
+        auto palette = client.senderColors(77, false, false);
+        assert(palette.count == 3 && palette.rgb[0] == 0x112233 && palette.rgb[2] == 0x778899);
+        assert(client.senderColors(77, false, true).rgb[0] == 0xaabbcc);
+        assert(peer_colors::rgba(0x112233) == 0xff332211u);
+        assert(client.senderColors(1, false, false).rgb[0] == 0xd67722);
+        auto* invalid = parse(R"([-1,16777216])");
+        assert(!peer_colors::read(invalid).count); json_decref(invalid);
+        auto* gift = parse(R"({"@type":"user","id":78,"accent_color_id":8,"upgraded_gift_colors":{"light_theme_accent_color":66051,"dark_theme_accent_color":263430}})");
+        client.process(gift);
+        assert(client.senderColors(78, false, false).rgb[0] == 0x010203);
+        assert(client.senderColors(78, false, true).rgb[0] == 0x040506);
+        client.process(parse(R"({"@type":"chat","id":-1000000000123,"title":"Channel","accent_color_id":8,"positions":[{"list":{"@type":"chatListMain"},"order":100}]})"));
+        assert(client.senderColors(-1000000000123LL, true, false).count == 3);
+        client.process(parse(R"({"@type":"updateChatAccentColors","chat_id":-1000000000123,"accent_color_id":3,"upgraded_gift_colors":null})"));
+        assert(client.senderColors(-1000000000123LL, true, false).rgb[0] == 0x40a920);
+        client.current_chat_id_ = 42;
+        auto* raw = parse(R"({"id":1,"sender_id":{"@type":"messageSenderUser","user_id":77},"content":{"@type":"messageText","text":{"text":"Original"}}})");
+        client.history_items_.push_back(client.parseMessage(raw)); json_decref(raw);
+        raw = parse(R"({"id":2,"sender_id":{"@type":"messageSenderUser","user_id":78},"reply_to":{"@type":"messageReplyToMessage","chat_id":42,"message_id":1},"content":{"@type":"messageText","text":{"text":"Reply"}}})");
+        client.messages_.push_back(client.parseMessage(raw)); json_decref(raw);
+        client.resolveReplies(false);
+        assert(client.messages_[0].reply_sender_id == 77 && !client.messages_[0].reply_sender_chat);
+        assert(client.messages_[0].reply_sender == "Original");
+        client.history_items_.clear();
+        client.reply_cache_[{42, 1}].sender_id = 77;
+        client.reply_cache_[{42, 1}].text = "Cached";
+        client.resolveReplies(false);
+        assert(client.messages_[0].reply_sender_id == 77 && client.messages_[0].reply_text == "Cached");
+        raw = parse(R"({"id":3,"reply_to":{"@type":"messageReplyToMessage","chat_id":99,"message_id":5,"origin":{"@type":"messageOriginChannel","chat_id":-1000000000123},"content":{"@type":"messageText","text":{"text":"Outside history"}}},"content":{"@type":"messageText","text":{"text":"Reply"}}})");
+        client.messages_.push_back(client.parseMessage(raw)); json_decref(raw);
+        client.resolveReplies(false);
+        assert(client.messages_[1].reply_sender_id == -1000000000123LL && client.messages_[1].reply_sender_chat);
+        raw = parse(R"({"id":4,"reply_to":{"@type":"messageReplyToMessage","message_id":9,"quote":{"text":{"text":"Selected quote"}}},"content":{"@type":"messageText","text":{"text":"Reply"}}})");
+        client.messages_.push_back(client.parseMessage(raw)); json_decref(raw);
+        client.ready_ = client.worker_started_ = true;
+        client.resolveReplies(true);
+        assert(client.reply_requested_.count({42, 9})); // A quote still needs the original author's identity.
+        client.worker_started_ = client.ready_ = false;
+        auto* snapshot = client.ui_cache_.startupSnapshot();
+        TelegramClient restored; restored.applyRestoredCache(snapshot);
+        assert(restored.senderColors(77, false, false).rgb[0] == 0x112233);
+        assert(restored.senderColors(78, false, true).rgb[0] == 0x040506);
+        assert(restored.senderColors(-1000000000123LL, true, false).rgb[0] == 0x40a920);
+        // A delayed cache snapshot cannot replace newer live palettes or users.
+        restored.process(parse(R"({"@type":"updateAccentColors","colors":[{"id":8,"light_theme_colors":[7]}]})"));
+        restored.applyRestoredCache(client.ui_cache_.startupSnapshot());
+        assert(restored.senderColors(77, false, false).rgb[0] == 7);
+        restored.process(parse(R"({"@type":"updateAccentColors","colors":[]})"));
+        assert(restored.senderColors(77, false, false).rgb[0] == 0xcc5049); // 77 % 7
+        std::puts("Telegram colors: palettes, gifts, reply authors, quoted lookups, cache and live precedence passed");
+    }
+
+    {
+        TelegramClient client;
         auto* raw = parse(R"({"id":90,"content":{"@type":"messageText","text":{"text":"😀Тест","entities":[{"offset":2,"length":4,"type":{"@type":"textEntityTypeBold"}},{"offset":2,"length":4,"type":{"@type":"textEntityTypeSpoiler"}},{"offset":99,"length":1,"type":{"@type":"textEntityTypeItalic"}}]}}})");
         auto item = client.parseMessage(raw);
         assert(item.styles.size() == 2);
@@ -173,16 +231,22 @@ int main() {
         std::fputs("attachment", fixture); std::fclose(fixture);
         TelegramClient attachments;
         attachments.ready_ = attachments.worker_started_ = true;
+        attachments.current_chat_id_ = 42;
+        ChatItem attachment_chat; attachment_chat.id = 42; attachment_chat.user_id = 1;
+        attachments.known_chats_.push_back(attachment_chat);
         const std::string caption = "Подпись \"текст\"\nSecond line";
         auto check = [&](const std::vector<std::pair<std::string, int>>& files,
                          bool expected_ok, size_t requests) {
             attachments.outgoing_.clear();
+            assert(attachments.setCompositionReply(55));
             assert(attachments.sendLocalFiles(files, 42, 7, caption) == expected_ok);
             assert(attachments.outgoing_.size() == requests);
+            assert(attachments.replyTarget() == (requests ? 0 : 55));
             int captions = 0;
             for (const auto& outgoing : attachments.outgoing_) {
                 auto* root = parse(outgoing.text.c_str());
                 assert(MediaUploads::number(root, "chat_id") == 42);
+                assert(MediaUploads::number(json_object_get(root, "reply_to"), "message_id") == 55);
                 assert(MediaUploads::number(json_object_get(root, "topic_id"), "forum_topic_id") == 7);
                 auto check_content = [&](json_t* content) {
                     auto* text = json_object_get(content, "caption");
@@ -212,6 +276,40 @@ int main() {
         check({{path, 0}, {path, 1}, {path, 2}}, true, 2);
         check({{"missing-caption.fixture", 0}, {path, 2}}, false, 1);
         check({{"missing-caption.fixture", 0}, {"missing-caption.fixture", 1}}, false, 0);
+        // Reply selection doesn't open the text editor and survives failed sends.
+        attachments.outgoing_.clear();
+        assert(attachments.setCompositionReply(55) && attachments.inputKind() == InputKind::None);
+        assert(!attachments.sendLocalFile("missing-caption.fixture", 0, false, 42, 0));
+        assert(attachments.replyTarget() == 55);
+        assert(attachments.sendAudioFile(path, 2, 42, 7));
+        auto verify_reply = [&] {
+            auto* root = parse(attachments.outgoing_.back().text.c_str());
+            assert(MediaUploads::number(json_object_get(root, "reply_to"), "message_id") == 55);
+            assert(MediaUploads::number(json_object_get(root, "topic_id"), "forum_topic_id") == 7);
+            assert(!attachments.replyTarget()); json_decref(root);
+        };
+        verify_reply();
+        assert(attachments.setCompositionReply(55));
+        SendStickerItem sticker; sticker.file = 123; attachments.stickers_.push_back(sticker);
+        attachments.current_topic_ = 7;
+        assert(attachments.sendSticker(0)); verify_reply();
+        attachments.current_thread_ = 99; attachments.current_topic_ = 0;
+        assert(attachments.setCompositionReply(55));
+        attachments.requestCompose(); attachments.submitInput("Text reply");
+        auto* text_reply = parse(attachments.outgoing_.back().text.c_str());
+        assert(MediaUploads::number(json_object_get(text_reply, "reply_to"), "message_id") == 55);
+        assert(MediaUploads::number(json_object_get(text_reply, "topic_id"), "message_thread_id") == 99);
+        assert(!attachments.replyTarget()); json_decref(text_reply);
+        assert(attachments.setCompositionReply(55)); attachments.cancelInput();
+        assert(!attachments.replyTarget());
+        assert(attachments.sendLocalFile(path, 0, false, 42, 0));
+        auto* regular = parse(attachments.outgoing_.back().text.c_str());
+        assert(!json_object_get(regular, "reply_to")); json_decref(regular);
+        assert(attachments.setCompositionReply(55));
+        assert(attachments.sendLocalFile(path, 0, false, 43, 0));
+        auto* other_chat = parse(attachments.outgoing_.back().text.c_str());
+        assert(!json_object_get(other_chat, "reply_to") && attachments.replyTarget() == 55); json_decref(other_chat);
+        assert(attachments.setCompositionReply(0) && !attachments.replyTarget());
         attachments.worker_started_ = false;
         assert(!std::remove(path));
     }
@@ -323,6 +421,32 @@ int main() {
         assert(status_only.incoming_.size()==64); // Cache checks do not replay protocol events.
 
         status_only.stopping_ = true; paused.join(); assert(!permitted);
+    }
+    {
+        TelegramClient preview;
+        preview.ready_ = preview.worker_started_ = true;
+        SendStickerItem sticker;
+        sticker.file = 120; sticker.preview = 121; sticker.animated = true;
+        preview.stickers_.push_back(sticker);
+        preview.ensureSticker(0);
+        assert(preview.pending_files_.count(121) && !preview.pending_files_.count(120));
+        preview.ensureSticker(0, true);
+        assert(preview.pending_files_.count(120));
+        preview.ensureSticker(0, true);
+        assert(preview.outgoing_.size() == 2); // held preview does not repeat requests
+        preview.worker_started_ = false;
+        auto* partial = parse(R"({"id":120,"local":{"path":"preview.tgs","is_downloading_completed":false}})");
+        preview.updateFile(partial); json_decref(partial);
+        assert(preview.stickers_[0].full_path.empty());
+        auto* complete = parse(R"({"id":120,"local":{"path":"preview.tgs","is_downloading_completed":true}})");
+        preview.updateFile(complete); json_decref(complete);
+        assert(preview.stickers_[0].full_path == "preview.tgs" && preview.stickers_[0].path.empty());
+        auto* thumbnail = parse(R"({"id":121,"local":{"path":"preview.webp","is_downloading_completed":true}})");
+        preview.updateFile(thumbnail); json_decref(thumbnail);
+        assert(preview.stickers_[0].path == "preview.webp" && preview.stickers_[0].full_path == "preview.tgs");
+        auto* root = parse(R"({"@type":"stickers","stickers":[{"format":{"@type":"stickerFormatTgs"},"sticker":{"id":122}},{"format":{"@type":"stickerFormatWebp"},"sticker":{"id":123}}]})");
+        preview.applyStickerResponse(root, false); json_decref(root);
+        assert(preview.stickers_.size() == 2 && preview.stickers_[0].animated && !preview.stickers_[1].animated);
     }
     {
         TelegramClient sliced;
@@ -1368,6 +1492,48 @@ int main() {
     assert(!tg.senderIsDeleted(sender) && tg.senderName(sender)==tr("user.participant"));
     std::puts("Avatars: visible sender lookup, small file, deduplication, updates, deletion, cache refresh and chat senders passed");
     tg.worker_started_=false; std::remove("upload-test.bin");
+    {
+        TelegramClient packs;
+        packs.worker_started_=true; packs.ready_=true; packs.current_chat_id_=42;
+        auto* raw = parse(R"({"id":5,"edit_date":123,"content":{"@type":"messageSticker","sticker":{"set_id":"77","format":{"@type":"stickerFormatWebp"}}}})");
+        const auto sticker = packs.parseMessage(raw); json_decref(raw);
+        assert(sticker.sticker_set_id == 77 && sticker.edit_date == 123);
+        raw = parse(R"({"content":{"@type":"messageText","text":{"text":"😀","entities":[{"offset":0,"length":2,"type":{"@type":"textEntityTypeCustomEmoji","custom_emoji_id":"999"}}]}}})");
+        const auto emoji = packs.parseMessage(raw); json_decref(raw);
+        assert(emoji.custom_emoji_ids == std::vector<int64_t>{999});
+        packs.openStickerSet(0, 999);
+        assert(!packs.stickerSetCanInstall());
+        auto* request = parse(packs.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request,"@type") == "getCustomEmojiStickers");
+        auto* response = parse(R"({"@type":"stickers","stickers":[{"set_id":"77"}]})");
+        json_object_set(response,"@extra",json_object_get(request,"@extra")); json_decref(request);
+        packs.process(response);
+        request = parse(packs.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request,"@type") == "getStickerSet" && MediaUploads::number(request,"set_id") == 77);
+        auto* extra = json_incref(json_object_get(request,"@extra")); json_decref(request);
+        assert(!packs.stickerSetCanInstall());
+        response = parse(R"({"@type":"stickerSet","id":"77","title":"Emoji pack","is_installed":false,"sticker_type":{"@type":"stickerTypeCustomEmoji"},"stickers":[{"set_id":"77","format":{"@type":"stickerFormatWebp"},"sticker":{"id":9}}]})");
+        json_object_set(response,"@extra",extra); packs.process(response);
+        assert(packs.stickerSetTitle() == "Emoji pack" && packs.stickerSetCanInstall());
+        assert(packs.stickers().size() == 1 && packs.stickers()[0].set_id == 77 && !packs.sendSticker(0));
+        packs.installStickerSet(); assert(!packs.stickerSetCanInstall());
+        request = parse(packs.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(request,"@type") == "changeStickerSet" && json_is_true(json_object_get(request,"is_installed")));
+        auto requests = packs.outgoing_.size(); packs.installStickerSet(); assert(requests == packs.outgoing_.size());
+        response = parse(R"({"@type":"error","message":"Try again"})");
+        json_object_set(response,"@extra",json_object_get(request,"@extra")); packs.process(response);
+        assert(packs.stickerSetCanInstall() && packs.stickerStatus() == "Try again");
+        packs.installStickerSet();
+        response = parse(R"({"@type":"ok"})");
+        json_object_set(response,"@extra",json_object_get(request,"@extra")); packs.process(response);
+        assert(!packs.stickerSetCanInstall() && packs.sticker_view_installed_);
+        json_decref(request);
+        packs.openStickers();
+        response = parse(R"({"@type":"stickerSet","id":"88","title":"Stale","stickers":[]})");
+        json_object_set(response,"@extra",extra); json_decref(extra); packs.process(response);
+        assert(!packs.stickerSetOpen() && packs.stickerSetTitle() == "Emoji pack");
+        packs.worker_started_=false;
+    }
     // Pack icons must be static and independent of the opened sticker grid.
     {
         TelegramClient packs;
@@ -1388,13 +1554,22 @@ int main() {
         size_t requests=packs.outgoing_.size();
         packs.ensureStickerPackIcon(2); assert(packs.outgoing_.size()==requests);
         packs.ensureStickerPackIcon(3);
-        assert(packs.outgoing_.size()==requests); // No full set for a missing cover.
+        assert(packs.outgoing_.size()==requests+1);
+        req=parse(packs.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(req,"@type")=="getStickerSet" && MediaUploads::number(req,"set_id")==80000000002LL);
+        assert(MediaUploads::string(json_object_get(req,"@extra"),"kind")=="sticker_pack_icon");
+        json_decref(req);
+        requests=packs.outgoing_.size();
         packs.ensureStickerPackIcon(3); assert(packs.outgoing_.size()==requests);
+        packs.ensureStickerPackIcon(0); packs.ensureStickerPackIcon(1);
+        assert(packs.outgoing_.size()==requests);
         packs.stickers_.push_back({}); packs.stickers_[0].file=999;
         packs.process(parse(R"({"@type":"stickerSet","id":80000000002,"stickers":[{"format":{"@type":"stickerFormatTgs"},"thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"file":{"id":306}}}],"@extra":{"kind":"sticker_pack_icon","set":80000000002,"session":0}})"));
         assert(packs.sticker_packs_[3].icon_file_id==306 && packs.stickers_[0].file==999);
         packs.process(parse(R"({"@type":"stickerSet","id":80000000002,"stickers":[],"@extra":{"kind":"sticker_pack_icon","set":80000000002,"session":99}})"));
         assert(packs.sticker_packs_[3].icon_file_id==306); // Stale response ignored.
+        packs.process(parse(R"({"@type":"updateFile","file":{"id":306,"local":{"is_downloading_completed":false,"path":"partial.jpg"}}})"));
+        assert(packs.sticker_packs_[3].icon_path.empty());
         packs.process(parse(R"({"@type":"updateFile","file":{"id":306,"local":{"is_downloading_completed":true,"path":"icon.jpg"}}})"));
         assert(packs.sticker_packs_[3].icon_path=="icon.jpg");
         packs.process(parse(R"({"@type":"updateFile","file":{"id":306,"local":{"is_downloading_completed":false,"path":""}}})"));
@@ -1429,12 +1604,20 @@ int main() {
         auto view_requests=reactions.outgoing_.size();reactions.viewMessage(55);
         assert(reactions.outgoing_.size()==view_requests);
         reactions.loadReactions(55);
+        reactions.loadReactions(55, true);
+        auto* refreshed = parse(reactions.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(refreshed,"@type") == "getMessage" && MediaUploads::number(refreshed,"message_id") == 55);
+        json_decref(refreshed);
         reactions.process(parse(R"({"@type":"availableReactions","top_reactions":[{"type":{"@type":"reactionTypeCustomEmoji","custom_emoji_id":900000000000},"needs_premium":false}],"recent_reactions":[{"type":{"@type":"reactionTypeCustomEmoji","custom_emoji_id":900000000001},"needs_premium":false}],"popular_reactions":[{"type":{"@type":"reactionTypeCustomEmoji","custom_emoji_id":900000000000},"needs_premium":false},{"type":{"@type":"reactionTypeEmoji","emoji":"X"},"needs_premium":false}],"@extra":{"kind":"reaction_choices","chat":42,"message":55}})"));
-        assert(reactions.reaction_choices_.size()==3);
+        assert(reactions.reaction_choices_.size()==65 && reactions.reactionTopCount()==1);
+        assert(reactions.reactionState(0).chosen && reactions.reactionState(0).count == 1);
+        assert(!reactions.reactionState(1).chosen && reactions.reactionState(1).count == 2);
+        assert(reactions.reactionState(64).count == 64);
+        assert(reactions.reactionState(999).count == 0);
         reactions.ensureReactionMedia(0);
         auto* icons=parse(reactions.outgoing_.back().text.c_str());
         assert(MediaUploads::string(icons,"@type")=="getCustomEmojiStickers");
-        assert(json_array_size(json_object_get(icons,"custom_emoji_ids"))==2);json_decref(icons);
+        assert(json_array_size(json_object_get(icons,"custom_emoji_ids"))==31);json_decref(icons);
         auto requests=reactions.outgoing_.size();reactions.ensureReactionMedia(1);
         assert(reactions.outgoing_.size()==requests);
         reactions.process(parse(R"({"@type":"stickers","stickers":[{"full_type":{"custom_emoji_id":900000000000},"format":{"@type":"stickerFormatWebp"},"sticker":{"@type":"file","id":306,"local":{"is_downloading_completed":true,"path":"reaction.webp"}}}],"@extra":{"kind":"reaction_icons","chat":42,"message":55}})"));
@@ -1444,7 +1627,7 @@ int main() {
         icons=parse(reactions.outgoing_.back().text.c_str());
         assert(MediaUploads::string(icons,"@type")=="getCustomEmojiStickers");
         // Existing reactions need icons even when absent from the choices.
-        assert(json_array_size(json_object_get(icons,"custom_emoji_ids"))==62);json_decref(icons);
+        assert(json_array_size(json_object_get(icons,"custom_emoji_ids"))==33);json_decref(icons);
         requests=reactions.outgoing_.size();reactions.ensureMessageReactionMedia();
         assert(reactions.outgoing_.size()==requests);
         reactions.process(parse(R"({"@type":"stickers","stickers":[{"full_type":{"custom_emoji_id":900000000063},"format":{"@type":"stickerFormatTgs"},"thumbnail":{"format":{"@type":"thumbnailFormatWebp"},"file":{"id":307,"local":{"is_downloading_completed":false,"path":""}}}}],"@extra":{"kind":"reaction_icons","chat":42,"message":55}})"));
@@ -1468,8 +1651,10 @@ int main() {
         assert(MediaUploads::string(req,"@type")=="addMessageReaction");json_decref(req);
         reactions.process(parse(R"({"@type":"updateMessageReactions","chat_id":42,"message_id":55,"reactions":[{"type":{"@type":"reactionTypeEmoji","emoji":"X"},"total_count":123,"is_chosen":true}]})"));
         assert(reactions.messages_[0].reactions.size()==1 && reactions.messages_[0].reactions[0].count==123);
+        assert(reactions.reactionState(2).chosen && reactions.reactionState(2).count == 123);
         reactions.process(parse(R"({"@type":"message","id":55,"chat_id":42,"content":{"@type":"messageText","text":{"text":"Refreshed without info"}},"@extra":{"kind":"post_refresh","chat":42,"generation":0}})"));
         assert(reactions.messages_[0].reactions.size()==1 && reactions.messages_[0].reactions[0].count==123);
+        assert(reactions.reactionState(2).chosen && reactions.reactionState(2).count == 123);
         reactions.process(parse(R"({"@type":"updateMessageInteractionInfo","chat_id":42,"message_id":55,"interaction_info":{"reactions":{"reactions":[]}}})"));
         assert(reactions.messages_[0].reactions.empty());
         reactions.process(parse(R"({"@type":"availableReactions","top_reactions":[{"type":{"@type":"reactionTypeCustomEmoji","custom_emoji_id":999},"needs_premium":true}],"@extra":{"kind":"reaction_choices","chat":42,"message":55}})"));
@@ -1477,6 +1662,17 @@ int main() {
         assert(reactions.customReactionIcon(900000000063LL)=="custom-thumbnail.webp");
         reactions.loadReactions(56);
         assert(reactions.customReactionIcon(900000000063LL).empty());
+        assert(reactions.reactionTopCount()==0);
+        auto* preferred=parse(R"({"@type":"availableReactions","top_reactions":[],"recent_reactions":[],"popular_reactions":[{"type":{"@type":"reactionTypeEmoji","emoji":"other"}}],"@extra":{"kind":"reaction_choices","chat":42,"message":56}})");
+        auto* top=json_object_get(preferred,"top_reactions");
+        for (int i=0;i<10;++i) json_array_append_new(top,json_pack("{s:{s:s,s:s}}","type","@type","reactionTypeEmoji","emoji",("top"+std::to_string(i)).c_str()));
+        json_array_append_new(top,json_pack("{s:{s:s,s:s}}","type","@type","reactionTypeEmoji","emoji","top0"));
+        reactions.process(preferred);
+        assert(reactions.reactionTopCount()==8 && reactions.reactionChoices().size()==11);
+        assert(reactions.reactionChoices()[0]=="top0" && reactions.reactionChoices()[8]=="top8");
+        reactions.process(parse(R"({"@type":"availableReactions","top_reactions":[{"type":{"@type":"reactionTypeCustomEmoji","custom_emoji_id":999},"needs_premium":true}],"recent_reactions":[{"type":{"@type":"reactionTypeEmoji","emoji":"recent"}}],"popular_reactions":[{"type":{"@type":"reactionTypeEmoji","emoji":"recent"}},{"type":{"@type":"reactionTypeEmoji","emoji":"other"}}],"@extra":{"kind":"reaction_choices","chat":42,"message":56}})"));
+        assert(reactions.reactionTopCount()==1 && reactions.reactionChoices().size()==2);
+        assert(reactions.reactionChoices()[0]=="recent");
         reactions.worker_started_=false;
     }
     std::puts("Reactions: large custom lists, choices, deduplication, send/remove and updates passed");
@@ -1785,15 +1981,121 @@ int main() {
         open.ready_ = true;
         open.known_chats_.push_back(cached.chats_[0]);
         open.openChat(8, i18n::Text{});
+        assert(!open.historyAnchorPending()); // Default is latest.
+        open.setChatOpenPosition(1);
+        open.openChat(8, i18n::Text{});
         assert(open.history_anchor_ == 180 && open.historyAnchorSeeking());
+        open.history_items_.push_back(MessageItem{}); open.history_items_.back().id = -1;
+        assert(open.historyAnchorSeeking()); // A pending outgoing message is not a server read boundary.
         open.history_items_.clear();
-        for (int64_t id : {170, 190, 200}) { MessageItem item; item.id = id; open.history_items_.push_back(item); }
+        for (int64_t id : {170, 180, 190, 200}) { MessageItem item; item.id = id; open.history_items_.push_back(item); }
         open.rebuildHistory(false);
         open.resolveHistoryAnchor();
-        assert(open.history_anchor_ == 0 && open.message_jump_ == 190);
-        assert(open.takeMessageJump() == 190);
+        assert(open.history_anchor_ == 0 && open.message_jump_ == 180);
+        assert(open.takeMessageJump() == 180 && !open.messageJumpOpensPost());
+        open.ui_cache_.setLocalReadPosition(8, 170);
+        open.setChatOpenPosition(2); open.openChat(8, "Device");
+        assert(open.history_anchor_ == 170);
+        open.viewMessage(200); // Loading must never mark the newest message as read.
+        assert(open.ui_cache_.localReadPosition(8) == 170);
+        open.messagesPresented(200); assert(open.ui_cache_.localReadPosition(8) == 170);
+        open.history_anchor_ = 0;
+        open.history_items_ = {MessageItem{}}; open.history_items_.front().id = 190; open.rebuildHistory(false);
+        open.messagesPresented(190); assert(open.ui_cache_.localReadPosition(8) == 190);
+        open.viewMessage(190); open.viewMessage(170);
+        assert(open.ui_cache_.localReadPosition(8) == 190);
+        open.process(parse(R"({"@type":"updateChatReadInbox","chat_id":8,"last_read_inbox_message_id":200,"unread_count":0})"));
+        assert(open.ui_cache_.localReadPosition(8) == 190); // Other clients cannot move the local marker.
+        open.openChat(8, "Device again"); assert(open.history_anchor_ == 190);
+        open.ui_cache_.setLocalReadPosition(9, 120);
+        auto* saved = open.ui_cache_.startupSnapshot();
+        assert(json_integer_value(json_object_get(json_object_get(saved, "local_read"), "8")) == 190);
+        open.ui_cache_.saveStartup(saved); json_decref(saved);
+        UiCache restored;
+        saved = restored.loadStartup(); assert(saved); json_decref(saved);
+        assert(restored.localReadPosition(8) == 190 && restored.localReadPosition(9) == 120);
+        restored.setLocalReadPosition(8, 220); restored.load();
+        assert(restored.localReadPosition(8) == 220); // An early read wins over disk restore.
+        restored.clear(); assert(restored.localReadPosition(8) == 0);
+
+        // Reach the memory cap without the target: keep the modal pending until acknowledgement.
+        open.setChatOpenPosition(1); open.openChat(8, "Distant");
+        open.history_anchor_ = 10; open.history_cached_ = false; open.history_items_.clear();
+        for (int64_t id = 100; id < 400; ++id) { MessageItem item; item.id = id; open.history_items_.push_back(item); }
+        open.rebuildHistory(false); open.resolveHistoryAnchor();
+        assert(open.historyAnchorPending() && open.historyAnchorFar() && !open.takeMessageJump());
+        open.worker_started_ = true; open.outgoing_.clear(); open.acceptHistoryAnchorFar();
+        assert(open.historyAnchorPending() && !open.historyAnchorFar() && open.messages().empty());
+        auto respond_window = [&](const char* payload) {
+            auto* req = parse(open.outgoing_.back().text.c_str());
+            assert(!std::strcmp(json_string_value(json_object_get(req, "@type")), "getChatHistory"));
+            auto* response = parse(payload); json_object_set(response, "@extra", json_object_get(req, "@extra"));
+            json_decref(req); open.outgoing_.clear(); open.process(response);
+        };
+        respond_window(R"({"@type":"messages","messages":[{"id":20,"chat_id":8},{"id":10,"chat_id":8},{"id":5,"chat_id":8}]})");
+        assert(!open.historyAnchorPending() && open.messages().size() == 3 && open.takeMessageJump() == 10);
+        open.process(parse(R"({"@type":"updateNewMessage","message":{"id":1000,"chat_id":8}})"));
+        assert(open.messages().size() == 3 && open.messages().back().id == 20);
+        open.loadNewer();
+        respond_window(R"({"@type":"messages","messages":[{"id":40,"chat_id":8},{"id":30,"chat_id":8},{"id":20,"chat_id":8}]})");
+        assert(open.messages().size() == 3 && open.takeMessageJump() == 30 && !open.messageJumpOpensPost());
+        open.loadOlder();
+        respond_window(R"({"@type":"messages","messages":[{"id":20,"chat_id":8},{"id":10,"chat_id":8},{"id":5,"chat_id":8}]})");
+        assert(open.messages().size() == 3 && open.takeMessageJump() == 10);
+        open.loadNewer(true);
+        respond_window(R"({"@type":"messages","messages":[{"id":40,"chat_id":8},{"id":30,"chat_id":8},{"id":20,"chat_id":8}]})");
+        assert(open.takeMessageJump() == 30 && open.messageJumpOpensPost());
+        open.history_anchor_ = 1; open.requestHistoryWindow(1);
+        open.history_deadline_ = sceKernelGetSystemTimeWide() - 1;
+        open.pump();
+        assert(!open.history_pending_ && open.historyAnchorPending() && !open.historyError().empty());
+        open.retryHistoryOpening();
+        respond_window(R"({"@type":"error","code":400,"message":"Unavailable"})");
+        assert(open.historyAnchorPending() && !open.historyError().empty() && !open.history_pending_);
+        open.retryHistoryOpening();
+        respond_window(R"({"@type":"messages","messages":[{"id":2,"chat_id":8}]})");
+        assert(!open.historyAnchorPending() && open.takeMessageJump() == 2); // Deleted target: nearest remaining message.
+        open.history_anchor_ = 10; open.requestHistoryWindow(10);
+        auto* stale_request = parse(open.outgoing_.back().text.c_str());
+        open.leaveChat(); open.openChat(9, "Other");
+        auto* stale_response = parse(R"({"@type":"messages","messages":[{"id":10,"chat_id":8}]})");
+        json_object_set(stale_response, "@extra", json_object_get(stale_request, "@extra")); json_decref(stale_request);
+        open.process(stale_response); assert(open.messages().empty());
+        open.worker_started_ = false;
+        open.topics_ = {{7, "Topic", 2, false, 150}};
+        open.setChatOpenPosition(1); open.openTopic(0); assert(open.history_anchor_ == 150);
+        open.ui_cache_.setLocalReadPosition(9, 160, 7);
+        open.setChatOpenPosition(2); open.openTopic(0); assert(open.history_anchor_ == 160);
+        assert(open.ui_cache_.localReadPosition(9) == 120); // Topics do not advance the parent chat.
+        open.leaveChat(); open.pending_thread_ = 80; open.pending_read_anchor_ = 120;
+        open.setChatOpenPosition(1); open.openChat(9, "Comments"); assert(open.history_anchor_ == 120);
+        open.ui_cache_.setLocalReadPosition(9, 140, -80);
+        open.pending_thread_ = 80; open.setChatOpenPosition(2); open.openChat(9, "Comments");
+        assert(open.history_anchor_ == 140);
+        open.history_items_ = {MessageItem{}}; open.history_items_.front().id = 130; open.rebuildHistory(false);
+        assert(open.openPinnedMessage(130) && !open.historyAnchorPending());
     }
     std::puts("Chat read position: parsed, live-updated, cached and used as the open anchor passed");
+
+    // The synchronized mode must never move behind this device's own read progress.
+    for (const auto& positions : {std::pair<int64_t, int64_t>{100, 200}, {200, 100}, {150, 150}, {0, 100}, {100, 0}, {0, 0}}) {
+        const int64_t server = positions.first, local = positions.second;
+        TelegramClient client;
+        ChatItem chat; chat.id = 42; chat.last_read_inbox = server; client.known_chats_ = {chat};
+        client.ui_cache_.setLocalReadPosition(42, local);
+        client.ui_cache_.setLocalReadPosition(42, local, 7);
+        client.ui_cache_.setLocalReadPosition(42, local, -80);
+        for (int mode : {0, 1, 2}) {
+            const int64_t expected = mode == 0 ? 0 : mode == 1 ? std::max(server, local) : local;
+            client.setChatOpenPosition(mode);
+            client.openChat(42, "Chat"); assert(client.history_anchor_ == expected);
+            client.topics_ = {{7, "Topic", 0, false, server}};
+            client.openTopic(0); assert(client.history_anchor_ == expected);
+            client.pending_thread_ = 80; client.pending_read_anchor_ = server;
+            client.openChat(42, "Comments"); assert(client.history_anchor_ == expected);
+        }
+    }
+    std::puts("Chat opening priority: newer device/server position, equal/missing markers and all three modes across chats/topics/comments passed");
 
     // GIF requests through the real client handler, not just the catalog parser.
     {
@@ -1821,15 +2123,32 @@ int main() {
         json_decref(preview_request); client.outgoing_.clear();
         client.process(parse(R"({"@type":"updateFile","file":{"id":52,"local":{"path":"thumb.mp4","is_downloading_completed":true}}})"));
         assert(client.gifs_.items[0].path == "video-thumb:thumb.mp4");
+        assert(!client.pending_files_.count(51)); // browsing downloads only thumbnails
+        client.ensureGif(0, true);
+        auto* full_request = parse(client.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(full_request, "@type") == "downloadFile");
+        assert(MediaUploads::number(full_request, "file_id") == 51);
+        json_decref(full_request);
+        const auto request_count = client.outgoing_.size();
+        client.ensureGif(0, true);
+        assert(client.outgoing_.size() == request_count);
+        client.process(parse(R"({"@type":"updateFile","file":{"id":51,"local":{"path":"animation.mp4","is_downloading_completed":false}}})"));
+        assert(client.gifs_.items[0].full_path.empty());
+        client.process(parse(R"({"@type":"updateFile","file":{"id":51,"local":{"path":"animation.mp4","is_downloading_completed":true}}})"));
+        assert(client.gifs_.items[0].full_path == "animation.mp4");
+        assert(client.gifs_.items[0].path == "video-thumb:thumb.mp4");
+        client.outgoing_.clear();
         client.searchGifs("cats");
         response(R"({"@type":"optionValueString","value":"gif"})");
         assert(client.gifs_.pending);
         response(R"({"@type":"chat","id":100,"type":{"@type":"chatTypePrivate","user_id":100}})");
         response(R"({"@type":"inlineQueryResults","inline_query_id":"9007199254740993","results":[{"@type":"inlineQueryResultAnimation","id":"cat","animation":{"animation":{"id":61}}}],"next_offset":""})");
         assert(!client.gifs_.pending && client.gifs_.items.size() == 1);
+        assert(client.setCompositionReply(55));
         assert(client.sendGif(0));
         auto* send = parse(client.outgoing_.back().text.c_str());
         assert(!std::strcmp(json_string_value(json_object_get(send, "query_id")), "9007199254740993"));
+        assert(MediaUploads::number(json_object_get(send, "reply_to"), "message_id") == 55 && !client.replyTarget());
         json_decref(send); client.outgoing_.clear();
         client.searchGifs(); client.gifs_.deadline = 1;
         const auto generation = client.gifs_.generation;

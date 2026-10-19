@@ -142,14 +142,51 @@ int main() {
     assert(!review.sendBatch() && !review.takeResult(outgoing));
     review.stage = Stage::Review;
     assert(!review.sendBatch()); // an empty batch is never released
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < 2; ++k) {
         review.stage = Stage::Review;
         review.items = {{"kept", "kept", Kind::File, 1}};
-        review.selected = 2 + k; // Send, one file, then the three Add rows
+        review.selected = 2 + k; // Send, one file, then the two Add rows
         assert(!review.reviewActivate());
-        assert(review.stage == Stage::Browse && review.kind == (Kind)k);
+        assert(review.stage == Stage::Browse && review.kind == (k == 0 ? Kind::Media : Kind::File));
         assert(review.items.size() == 1 && !review.sendBatch());
     }
+    // Multimedia lists both formats, but outgoing items retain their actual Telegram type.
+    UploadPicker mixed;
+    mixed.openMenu();
+    mixed.chooseKind(Kind::Media);
+    mixed.up();
+    assert(mixed.stage == Stage::Menu && mixed.selected == 0);
+    mixed.chooseKind(Kind::File);
+    mixed.up();
+    assert(mixed.stage == Stage::Menu && mixed.selected == 1);
+    SceIoDirent photo{}, video{}, document{};
+    std::snprintf(photo.d_name, sizeof(photo.d_name), "photo.JPG");
+    std::snprintf(video.d_name, sizeof(video.d_name), "video.MP4");
+    std::snprintf(document.d_name, sizeof(document.d_name), "notes.txt");
+    directories["ux0:mixed"] = {photo, video, document};
+    mixed.chooseKind(Kind::Media);
+    mixed.path = "ux0:mixed";
+    mixed.reload();
+    assert(mixed.entries.size() == 2);
+    mixed.enter();
+    mixed.selected = 1;
+    mixed.enter();
+    assert(mixed.items[0].kind == Kind::Photo && mixed.items[1].kind == Kind::Video);
+    mixed.refresh();
+    assert(mixed.isMarked(mixed.entries[0]) && mixed.isMarked(mixed.entries[1]));
+    mixed.finishSelection();
+    assert(mixed.reviewRows() == 6);
+    assert(mixed.sendBatch() && mixed.takeResult(outgoing));
+    assert(outgoing.size() == 2 && outgoing[0].kind == Kind::Photo && outgoing[1].kind == Kind::Video);
+    mixed.chooseKind(Kind::File);
+    mixed.path = "ux0:mixed";
+    mixed.reload();
+    assert(mixed.entries.size() == 3);
+    mixed.enter();
+    assert(mixed.items[0].kind == Kind::File);
+    for (const char* name : {"a.png", "a.JPEG", "a.webp", "a.gif", "a.bmp", "a.mp4", "a.m4v", "a.mov", "a.mkv", "a.webm", "a.avi", "a.3gp"})
+        assert(UploadPicker::matches(Kind::Media, name));
+    assert(!UploadPicker::matches(Kind::Media, "a.txt"));
     using Sort = UploadPicker::Sort;
     UploadPicker sorted;
     sorted.chooseKind(Kind::File);
@@ -214,7 +251,7 @@ int main() {
     assert(sorted.sort == before); // sort controls belong only to browsing
     // The photo shortcut stays first through every sort, refresh and return.
     UploadPicker photos;
-    photos.chooseKind(Kind::Photo);
+    photos.chooseKind(Kind::Media);
     assert(photos.entries.front().name == UploadPicker::LatestView);
     photos.selected = 1;
     const std::string focused_folder = photos.fullPath(photos.entries[1]);

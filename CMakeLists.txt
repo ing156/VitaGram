@@ -17,8 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
 # VitaSDK requires ##.##; the package version matches the final two source components.
-set(VITA_VERSION  "37.83")
-set(VITAGRAM_VERSION "0.37.83")
+set(VITA_VERSION  "38.09")
+set(VITAGRAM_VERSION "0.38.09")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 option(VITAGRAM_PICKER_LOG "Write browsed folders and file names to ux0:data/vitagram/picker.log (plain text)" OFF)
@@ -181,6 +181,11 @@ if(VITAGRAM_UI_ALT_BACKGROUND)
 endif()
 set(UI_VPK_FILES)
 list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/manifest.json" ui/manifest.json)
+file(GLOB_RECURSE UI_MASK_FILES CONFIGURE_DEPENDS "${UI_ASSET_ROOT}/masks/*.png" "${UI_ASSET_ROOT}/masks/manifest.json")
+foreach(UI_MASK_FILE ${UI_MASK_FILES})
+  file(RELATIVE_PATH UI_MASK_PATH "${UI_ASSET_ROOT}" "${UI_MASK_FILE}")
+  list(APPEND UI_VPK_FILES FILE "${UI_MASK_FILE}" "ui/${UI_MASK_PATH}")
+endforeach()
 list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/themes/vhbb/NOTICE.txt" ui/themes/vhbb/NOTICE.txt
     FILE "${UI_ASSET_ROOT}/themes/vhbb/LICENSE.txt" ui/themes/vhbb/LICENSE.txt)
 list(APPEND UI_VPK_FILES FILE "${CMAKE_SOURCE_DIR}/assets/ui_extra/corner_buttons.png" ui/corner_buttons.png)
@@ -201,6 +206,12 @@ foreach(UI_THEME dark light vhbb)
     list(APPEND UI_VPK_FILES FILE "${UI_THEME_DIR}/ps_buttons_atlas.png" ui/themes/${UI_THEME}/ps_buttons_atlas.png)
   endif()
 endforeach()
+foreach(UI_PALETTE little-greene-light little-greene-dark)
+  list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/palettes/${UI_PALETTE}.json" "ui/palettes/${UI_PALETTE}.json")
+endforeach()
+foreach(UI_PALETTE black-blue black-red)
+  list(APPEND UI_VPK_FILES FILE "${UI_ASSET_ROOT}/palettes/${UI_PALETTE}/palette.json" "ui/palettes/${UI_PALETTE}/palette.json")
+endforeach()
 foreach(UI_PATH ${UI_VPK_FILES})
   if(NOT UI_PATH STREQUAL "FILE" AND IS_ABSOLUTE "${UI_PATH}" AND NOT EXISTS "${UI_PATH}")
     message(FATAL_ERROR "Missing UI asset ${UI_PATH}")
@@ -212,6 +223,7 @@ endif()
 
 add_executable(${PROJECT_NAME}
   src/main.cpp
+  src/gxm_guard.cpp
   src/ui_battery.cpp
   src/i18n.cpp
   src/download_folder_picker.cpp
@@ -305,6 +317,9 @@ else()
 endif()
 
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=utf8_to_ucs2")
+foreach(GXM_CALL BeginScene ReserveVertexDefaultUniformBuffer ReserveFragmentDefaultUniformBuffer SetUniformDataF Draw)
+  target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=sceGxm${GXM_CALL}")
+endforeach()
 # Every free() zeroes the block first while the vault is on (src/memory_hygiene.h).
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=free")
 # The prepared VitaSDK linker script reserves this gap for vita-elf-create's

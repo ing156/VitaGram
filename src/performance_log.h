@@ -3,6 +3,7 @@
 #include "td_diagnostics.h"
 #include "ui_diagnostics.h"
 #include "event_stats.h"
+#include "audio_startup_trace.h"
 #include <cstdio>
 #include <sys/stat.h>
 #ifdef __vita__
@@ -49,6 +50,7 @@ inline bool flush(const char* path, const char* previous, const char* version, i
         FILE* file = std::fopen(path, "ab");
         if (file) {
             writeSnapshot(file, snapshot, version);
+            audio_startup_trace::write(file);
             td_diagnostics::write(file);
             ui_diagnostics::write(file);
             event_stats::write(file);

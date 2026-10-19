@@ -37,17 +37,50 @@ int main() {
                           "ux0:data/vitagram/db/thumbnails", "ux0:data/vitagram/db/thumbnails/b1", "ux0:data/vitagram/db/old.trash"})
         assert(!mkdir(d, 0777));
     const std::string files = "ux0:data/vitagram/files", db = "ux0:data/vitagram/db";
+    assert(!mkdir(ui_themes::directory, 0777));
+    const std::string custom_palette = R"({"background":"#080609","surface":"#160E14","text":"#FFF3F6","muted":"#DABFC9","accent":"#FF365D"})";
+    spit(std::string(ui_themes::directory) + "/Алая ночь.json", custom_palette);
+    spit(std::string(ui_themes::directory) + "/Blue.json", custom_palette);
     // All theme IDs survive JSON and the pre-unlock hint, including VHBB (ID 2).
     {
-        for (int theme = 0; theme < AppSettings::kThemeChoices; ++theme) {
+        for (int theme = 0; theme < AppSettings::themeChoices(); ++theme) {
             AppSettings settings; settings.theme = theme; assert(settings.save());
             AppSettings loaded; loaded.load();
             assert(loaded.loaded && loaded.theme == theme);
-            assert(loaded.isDark() == (theme != 0));
+            assert(loaded.isDark() == (ui_themes::get(theme).base != 0));
             assert(AppSettings::themeHint(-1) == theme);
         }
-        spit(AppSettings::kThemeHint, "9");
+        spit(AppSettings::kThemeHint, "2147483647");
         assert(AppSettings::themeHint(1) == 1);
+        for (const char* invalid : {"", "-1", "3x", "9 0", "9999999999999999999999999999999999999999"}) {
+            spit(AppSettings::kThemeHint, invalid);
+            assert(AppSettings::themeHint(1) == 1);
+        }
+        spit(AppSettings::kThemeHint, "2");
+        assert(AppSettings::themeHint(-1) == 2); // Previous releases wrote a single digit.
+        spit(AppSettings::kThemeHint, std::to_string(ui_themes::saved_id((int)ui_themes::themes.size()-1)) + "\n");
+        assert(AppSettings::themeHint(-1) == (int)ui_themes::themes.size() - 1);
+        for(int retired:{5,8,9,10,11,12,13,14,15}) {
+            spit(AppSettings::kThemeHint,std::to_string(retired));assert(AppSettings::themeHint(0)==1);
+            spit("ux0:data/vitagram/settings.json","{\"theme\":"+std::to_string(retired)+"}");
+            AppSettings removed;removed.load();assert(removed.theme==1);
+        }
+        for(int saved:{3,4,6,7}) {
+            spit("ux0:data/vitagram/settings.json","{\"theme\":"+std::to_string(saved)+"}");
+            AppSettings kept;kept.load();assert(kept.theme==ui_themes::from_saved_id(saved));
+        }
+        const int custom_id = ui_themes::find_file("Алая ночь.json");
+        assert(custom_id >= (int)ui_themes::themes.size());
+        AppSettings custom; custom.theme = custom_id; assert(custom.save());
+        assert(slurp(AppSettings::kThemeHint) == "file:Алая ночь.json");
+        assert(slurp("ux0:data/vitagram/settings.json").find("Алая ночь.json") != std::string::npos);
+        // Loading uses the file identity even if an old/transient numeric ID points elsewhere.
+        spit("ux0:data/vitagram/settings.json", R"({"theme":0,"theme_file":"Алая ночь.json"})");
+        AppSettings restored; restored.load(); assert(restored.theme == custom_id);
+        spit("ux0:data/vitagram/settings.json", R"({"theme":15,"theme_file":"Removed.json"})");
+        restored.load(); assert(restored.theme == 1);
+        spit(AppSettings::kThemeHint, "file:Removed.json");
+        assert(AppSettings::themeHint(0) == 1);
         spit("ux0:data/vitagram/settings.json", "{}");
         AppSettings defaults; defaults.load(); assert(defaults.theme == 1);
     }
@@ -68,6 +101,17 @@ int main() {
         loaded.load(); assert(loaded.spoiler_reset == 3);
         spit("ux0:data/vitagram/settings.json", R"({"spoiler_hide_chat":false,"spoiler_hide_app":true})");
         loaded.load(); assert(loaded.spoiler_reset == 2); // Migrate the earlier two-switch layout.
+    }
+
+    {
+        for (bool enabled : {false, true}) {
+            AppSettings settings; settings.user_colors = enabled; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.user_colors == enabled);
+        }
+        for (const char* json : {"{}", R"({"user_colors":0})", R"({"user_colors":"false"})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(loaded.user_colors);
+        }
     }
 
     // Every scroll preset persists; missing or malformed preferences retain Normal.
@@ -93,6 +137,18 @@ int main() {
         for (const char* json : {"{}", R"({"allow_vpk_install":1})", R"({"allow_vpk_install":"true"})"}) {
             spit("ux0:data/vitagram/settings.json", json);
             AppSettings loaded; loaded.load(); assert(!loaded.allow_vpk_install);
+        }
+    }
+
+    // Chat opening preference survives encryption and rejects invalid values.
+    {
+        for (int mode : {0, 1, 2}) {
+            AppSettings settings; settings.chat_open_position = mode; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.chat_open_position == mode);
+        }
+        for (const char* json : {"{}", R"({"chat_open_position":"device"})", R"({"chat_open_position":true})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(loaded.chat_open_position == 0);
         }
     }
 

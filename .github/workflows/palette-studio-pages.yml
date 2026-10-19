@@ -1,0 +1,68 @@
+name: Palette Studio Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/palette-studio-pages.yml'
+      - 'scripts/build-palette-editor.py'
+      - 'tools/palette-editor/**'
+      - 'assets/**'
+      - 'src/ui_layout.h'
+      - 'src/ui_themes.h'
+      - 'src/radial_menu.h'
+      - 'src/media_render.cpp'
+      - 'CMakeLists.txt'
+      - 'tests/palette_editor_test.js'
+      - 'tests/fixtures/palettes/**'
+  pull_request:
+    paths:
+      - '.github/workflows/palette-studio-pages.yml'
+      - 'scripts/build-palette-editor.py'
+      - 'tools/palette-editor/**'
+      - 'assets/**'
+      - 'src/ui_layout.h'
+      - 'src/ui_themes.h'
+      - 'src/radial_menu.h'
+      - 'src/media_render.cpp'
+      - 'CMakeLists.txt'
+      - 'tests/palette_editor_test.js'
+      - 'tests/fixtures/palettes/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: palette-studio-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build standalone editor
+        run: python3 scripts/build-palette-editor.py build-modern/palette-site/index.html
+      - name: Check palettes and standalone bundle
+        run: node tests/palette_editor_test.js build-modern/palette-site/index.html
+      - name: Include offline copy
+        run: cp build-modern/palette-site/index.html build-modern/palette-site/VitaGram-Palette-Studio.html
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: build-modern/palette-site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment

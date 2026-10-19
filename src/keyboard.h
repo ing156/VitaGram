@@ -4,6 +4,7 @@
 #include "custom_keyboard.h"
 
 struct vita2d_pgf;
+struct SceTouchData;
 
 class Keyboard {
 public:
@@ -17,13 +18,13 @@ public:
     bool submitted() const { return submitted_; }
     bool cancelled() const { return cancelled_; }
     const std::string& text() const { return text_; }
-    void handle(unsigned int pressed, unsigned int held, bool touching, int x, int y, uint64_t now);
+    void handle(unsigned int pressed, unsigned int held, bool touching, int x, int y, uint64_t now, const SceTouchData* touches = nullptr);
     void draw(vita2d_pgf* font) const;
 private:
     void openSystem(const std::string& title, bool secret, const std::string& initial, const std::string& language);
     CustomKeyboard custom_;
     std::vector<std::string> languages_;
-    bool secret_ = false, message_ = false;
+    bool secret_ = false;
     bool prefer_custom_ = false, custom_active_ = false, dark_ = true, suppress_opening_input_ = false;
     std::string caption_;
     static constexpr unsigned int MaxTextLength = 1023;

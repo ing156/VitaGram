@@ -12,5 +12,5 @@ trap 'rm -rf -- "$test_dir"' EXIT
   "$ffmpeg_build/libavformat/libavformat.a" "$ffmpeg_build/libavcodec/libavcodec.a" \
   "$ffmpeg_build/libswresample/libswresample.a" \
   "$ffmpeg_build/libavutil/libavutil.a" -lm -o "$test_dir/download-stream"
-fixture=${1:-"$root/tests/El_Ojo_Geek_👁️_on_X_'Hay_peña_que_no_le_está_haciendo_gracia_lo.mp4"}
+fixture=${1:-"$root/tests/local/media/El_Ojo_Geek_👁️_on_X_'Hay_peña_que_no_le_está_haciendo_gracia_lo.mp4"}
 (cd "$test_dir" && ./download-stream "$fixture")

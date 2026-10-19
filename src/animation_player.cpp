@@ -3,6 +3,7 @@
 #include "i18n.h"
 #include "animation_player.h"
 #include "media_decode_policy.h"
+#include "webm_alpha.h"
 #include "portrait_video.h"
 #include "vault.h"
 #include "vault_avio.h"
@@ -620,6 +621,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     VaultAvio sealed_input; // decrypts on the fly when the file is sealed
     DownloadAvio growing_input;
     AVCodecContext* codec = nullptr;
+    WebmAlpha alpha;
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
     std::vector<AVFrame*> reordered_frames;
@@ -1013,6 +1015,8 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             int result = avcodec_receive_frame(codec, frame);
             if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
             if (result < 0) { frame_error = decoder_error("Receive frame", result); return false; }
+            result = alpha.attach(frame);
+            if (result < 0) { frame_error = decoder_error("WebM alpha frame", result); return false; }
             if (video && parameters->codec_id == AV_CODEC_ID_H264) {
                 AVFrame* queued = av_frame_clone(frame);
                 av_frame_unref(frame);
@@ -1131,6 +1135,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 fail(decoder_error("Loop seek", rc)); return;
             }
             avcodec_flush_buffers(codec);
+            alpha.flush();
             origin_pts = AV_NOPTS_VALUE; origin_wall = next_wall = last_output = 0; had_frame = false;
             continue;
         }
@@ -1147,6 +1152,8 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                     std::fflush(hardware_log);
                 }
             }
+            rc = alpha.send(packet, codec);
+            if (rc < 0) { fail(decoder_error("WebM alpha packet", rc)); return; }
             rc = avcodec_send_packet(codec, packet);
             if (rc < 0) {
                 // A failed access unit can leave SceVideodec's state unusable.

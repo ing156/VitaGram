@@ -4,9 +4,11 @@
 
 **Telegram for PS Vita · Telegram для PS Vita**
 
-Current version / Текущая версия: **0.37.83**.
+Current version / Текущая версия: **0.38.09**. Vita package / Версия пакета Vita: **38.09** (SFO uses two digits per component / SFO допускает две цифры в компоненте).
 
 [English](#english) · [Русский](#russian) · [Build / Сборка](#building) · [Licenses / Лицензии](#licenses)
+
+[Release notes / Изменения 0.38.08](releases/v0.38.08.md) · [Palette Studio / Мастер дизайна](tools/palette-editor/README.md)
 
 <a id="english"></a>
 
@@ -36,29 +38,54 @@ supported media and features that are not yet available.
 
 ### Features
 
+- **Custom theme packs:** install one theme or a whole pack at once: extract/copy
+  all theme `.json` files directly into `ux0:data/vitagram/palletes/`, restart,
+  and select a theme by filename in Settings. Up to 64 valid files are loaded;
+  subfolders, ZIP archives and single colour-catalogue JSON files are not imported. Use [Palette Studio in your browser](https://ing156.github.io/VitaGram/) to edit
+  colors, preview the interface and download a JSON theme. An
+  [offline HTML edition and publishing instructions](tools/palette-editor/README.md)
+  are also available. The web address becomes available after GitHub Pages is enabled.
+
 - **Chats:** private conversations, groups, channels, Telegram folders, archive,
   search, forum topics and channel comments. Chat lists, history and media are cached.
+- **Opening chats:** Settings → When opening a chat selects the latest message, the synchronized Telegram read position, or the last message read on this Vita (default: latest). Read positions load before showing the message. Loading offers cancellation/retry; distant positions show a memory warning, then load a bounded history window with browsing in both directions. Local positions are separate for chats, forum topics and comments. The synchronized mode uses the newer of the Telegram and device read positions, so reopening never moves behind progress already read on this Vita.
 - **Messages:** bold, italic, underline, strikethrough, code/quote highlighting and text spoilers (open the message, then press Cross or tap the hidden line to confirm reveal). Text, replies, forwarding, permission-aware deletion, standard emoji
-  reactions and voting in polls, including quizzes and multiple-choice polls.
+  reactions (hold Cross for 550 ms on a message; frequent reactions occupy the first row) and voting in polls, including quizzes and multiple-choice polls.
   Links with Telegram preview data show a card with the site, title, description and image.
-- **Photos and files:** albums, attachment batches of up to 10 items, fullscreen
+- **Photos and files:** the Multimedia attachment option selects photos and videos together; albums, attachment batches of up to 10 items, fullscreen
   photos with rotation and 1–5× zoom (touch or right stick up/down), left-stick panning
   while zoomed, and saving files to a download folder. Attachment review offers
   Add text / Edit text; the shared text is sent once as a file or album caption.
 - **Stickers and GIFs:** static and animated stickers, recent/favorite/installed
-  sticker sets, saved GIFs and GIF search.
+  sticker sets, saved GIFs and GIF search. In the sticker or GIF grid, hold Cross or
+  touch an item for 550 ms to preview it. Animations start automatically and loop;
+  release to close without sending. A short press sends the item.
+  Open a sticker/custom emoji set from the right menu or hold the item in a message.
+  In a sticker preview, slide to the Open set button and release. Uninstalled sets
+  offer Add set (Triangle or touch).
 - **Audio and video:** supported media playback, progressive playback while downloading,
   voice-message recording and video notes from the front or rear camera.
   Fullscreen video: Left/Right selects 10-second seek steps; holding repeats faster
   after two and four seconds. The time and cursor update while held, and releasing
   applies the target and restores the prior play/pause state. Tap or drag the
   progress track to seek, including while the controls are hidden.
+- **User colors:** Settings → Theme → Use user colors in the interface (the switch is directly below Theme, enabled by default). Telegram colors are used for sender names, empty avatars, forwards, link previews and reply headers; replies use the original author’s color.
+- **Split keyboard:** spread two fingers horizontally across the built-in keyboard to move the keys towards the edges; pinch them inward to restore the full layout. Theme colors and the wide spacebar are preserved.
 - **Interface:** native Vita keyboard or the localized in-app keyboard
   (Settings → Keyboard → Keyboard type), Cyrillic and color emoji, Light/Dark/VHBB themes, font size
   and interface language settings. Hold D-pad up/down or the left stick to scroll
   lists with acceleration. Settings → Scroll speed selects Normal,
   Fast or Very fast: up to 1, 2 or 3 pages per 0.5 seconds. Normal is the default.
-  Dark is the initial theme. The in-app message window supports line breaks and
+  Dark is the initial theme. In a chat, tap Square to compose text; hold it for
+  250 ms to open the radial menu. The wheel slides in and unfolds over 350 ms.
+  The left stick selects Multimedia (up), GIFs (upper right), File (lower right),
+  Voice (lower left) or Stickers (upper left); neutral selects text. While holding,
+  either L or R toggles between a new message and a reply to the captured message.
+  Both controls stay visible in the center. The 496 px wheel uses rounded glass
+  petals, blue/theme-accent glow, icons and detail captions, with a 216 px center.
+  Release Square to confirm after a 180 ms closing animation, or Circle to cancel.
+  Reply context follows text, stickers, GIFs, voice and attachment batches until
+  sending or cancellation. The in-app message window supports line breaks and
   sending with Send or Start; the system keyboard remains the default.
   Hold a key for 300 ms to open alternatives, slide to a choice and release to insert.
   Square deletes before the cursor, Triangle inserts a space, and L/R move the cursor.
@@ -184,7 +211,7 @@ or account files. **Settings → About** contains project links and privacy note
   already downloaded part; portrait-video preparation requires the completed file,
   and prepared portrait copies have additional seek restrictions.
 - Calls, secret chats, group administration, paid/custom reactions, creating polls
-  or editing forum topics, and searching for/installing sticker sets are not implemented.
+  or editing forum topics, and searching for sticker sets are not implemented.
 - Presence follows Telegram privacy settings. Sticker-set and topic lists still
   need Telegram responses; cached previews do not provide fully offline menus.
 
@@ -217,25 +244,53 @@ VitaGram — неофициальный homebrew-клиент Telegram для PS
 
 ### Возможности
 
+- **Свои темы и наборы:** можно установить одну тему или сразу набор:
+  распакуйте/скопируйте все файлы тем `.json` прямо в `ux0:data/vitagram/palletes/`,
+  перезапустите приложение и выберите тему по имени файла в настройках.
+  Загружаются до 64 корректных файлов; вложенные папки, ZIP и единый JSON-каталог
+  цветов не импортируются. [Откройте мастер дизайна в браузере](https://ing156.github.io/VitaGram/),
+  настройте цвета, проверьте предпросмотр и скачайте JSON темы. Доступны также
+  [автономный HTML и инструкция публикации](tools/palette-editor/README.md).
+  Веб-адрес заработает после включения GitHub Pages.
+
 - **Чаты:** личная переписка, группы, каналы, папки Telegram, архив, поиск,
   темы форумных групп и комментарии каналов. Списки чатов, история и медиа кэшируются.
+- **Открытие чатов:** Настройки → При открытии окна чата: последнее сообщение, общая отметка прочитанного Telegram или последнее прочитанное на этой Vita (по умолчанию — последнее сообщение). Чат открывается после загрузки нужной позиции; во время ожидания доступна отмена, при ошибке — повтор. Для далёкой позиции показывается предупреждение о памяти, после закрытия которого загружается ограниченный участок истории с перелистыванием в обе стороны. Локальные отметки хранятся отдельно для чатов, тем форума и комментариев. В режиме общей отметки Telegram выбирается более новая из отметок Telegram и устройства, чтобы при повторном открытии не возвращаться за уже прочитанное на Vita.
 - **Сообщения:** жирный текст, курсив, подчёркивание, зачёркивание, выделение кода/цитат и текстовые спойлеры (откройте сообщение и нажмите × либо коснитесь скрытой строки для подтверждения). Текст, ответы, пересылка, удаление с проверкой прав, обычные
-  emoji-реакции и голосование в опросах, включая викторины и множественный выбор.
+  emoji-реакции (удерживайте × на сообщении 550 мс; частые реакции — в первой полосе) и голосование в опросах, включая викторины и множественный выбор.
   Ссылки с данными предпросмотра от Telegram показывают карточку сайта с заголовком, описанием и изображением.
-- **Фото и файлы:** альбомы, отправка до 10 вложений за раз, полноэкранные фото
+- **Фото и файлы:** единый пункт «Мультимедиа» для выбора фото и видео; альбомы, отправка до 10 вложений за раз, полноэкранные фото
   с поворотом и масштабом 100–500% (жестом или правым стиком вверх/вниз), перемещением
   левым стиком при увеличении, сохранение файлов в папку загрузок. Перед отправкой
   вложений пункт «Добавить текст» / «Изменить текст» открывает редактор; общий текст
   отправляется один раз как подпись к файлу или альбому.
 - **Стикеры и GIF:** статичные и анимированные стикеры, недавние, избранные
-  и установленные наборы, сохранённые GIF и поиск анимаций.
+  и установленные наборы, сохранённые GIF и поиск анимаций. В сетке стикеров или GIF
+  удерживайте × или касание элемента 550 мс для предпросмотра. Анимация запускается
+  автоматически и повторяется; отпускание закрывает окно без отправки.
+  Короткое нажатие отправляет выбранный элемент. Набор стикера или пользовательского
+  эмодзи открывается из правого меню или удержанием в сообщении. В предпросмотре
+  стикера сдвиньте палец на кнопку открытия набора и отпустите. Неустановленный
+  набор можно добавить кнопкой △ или касанием.
 - **Аудио и видео:** воспроизведение поддерживаемых медиа, просмотр во время
   загрузки, запись голоса и видеокружков с фронтальной или задней камеры.
+- **Цвета пользователей:** переключатель «Учитывать цвета пользователей при построении интерфейса» расположен сразу под темой и включён по умолчанию. Цвета Telegram используются для имён, аватаров без фото, пересылок, предпросмотра ссылок и цитат ответов. Цитата использует цвет автора исходного сообщения.
+- **Раздельная клавиатура:** разведите два пальца по горизонтали на встроенной клавиатуре, чтобы сдвинуть клавиши к краям. Сведение возвращает обычную раскладку. Цвета темы и широкий пробел сохраняются.
 - **Интерфейс:** системная клавиатура Vita или локализованная встроенная клавиатура
   («Настройки → Клавиатура»), кириллица и цветные emoji, темы Светлая/Тёмная/VHBB,
   настройка размера шрифта и языка. Удержание стрелок вверх/вниз или левого стика прокручивает списки с ускорением. «Настройки → Скорость прокрутки»:
   «Норма», «Быстрая» и «Очень быстрая» — до 1, 2 и 3 страниц за 0,5 секунды.
-  По умолчанию выбрана «Норма», тема тёмная. Встроенное окно сообщения поддерживает
+  По умолчанию выбрана «Норма», тема тёмная. В чате короткое □ открывает текст;
+  удержание 250 мс — радиальное меню с выездом и раскрытием за 350 мс.
+  Левый стик выбирает «Мультимедиа» сверху, GIF справа сверху, «Файл» справа снизу,
+  «Голосовое» слева снизу или «Стикеры» слева сверху; нейтральное положение — текст.
+  При удержании любая из кнопок L/R переключает «Новое ↔ Ответ» на зафиксированное
+  сообщение; обе подсказки постоянно видны в центре. Колесо диаметром 496 px
+  использует скруглённые стеклянные лепестки, свечение цвета акцента темы,
+  иконки и вторые строки подписей; диаметр центральной области — 216 px.
+  Отпустите □ для подтверждения и закрытия за 180 мс; ○ отменяет выбор.
+  Контекст ответа сохраняется для текста, стикеров, GIF, голоса и вложений до
+  отправки или отмены. Встроенное окно сообщения поддерживает
   переносы строк и отправку кнопкой «Отправить» или Start.
   По умолчанию клавиатура системная. Удержание клавиши 300 мс открывает варианты:
   сдвиньте палец к нужному и отпустите. □ удаляет символ перед курсором,
@@ -369,7 +424,7 @@ VPK из чатов можно устанавливать после включ�
   переход выполняется после отпускания с сохранением прежнего режима воспроизведения.
   Касание или перетаскивание по шкале тоже перематывает, даже если панель скрыта.
 - Не реализованы звонки, секретные чаты, управление группами, платные/пользовательские
-  реакции, создание опросов, редактирование тем форума, поиск и установка наборов стикеров.
+  реакции, создание опросов, редактирование тем форума и поиск наборов стикеров.
 - Статусы присутствия зависят от приватности Telegram. Списки наборов стикеров
   и тем требуют ответа сервера; кэш миниатюр не делает эти меню полностью офлайн.
 
@@ -520,12 +575,39 @@ media playback in `src/animation_player.*` and `src/voice_player.*`, caching in
 `src/ui_cache.*` and `src/media_cache.*`, encryption in `src/vault*`, and localization
 in `src/i18n.*`. UI assets live in `assets/VitaGram_UI_Assets_v1`; only the active
 theme is loaded. `-DVITAGRAM_UI_ALT_BACKGROUND=ON` selects the stronger wave background.
+For offline recoloring from JSON catalogues, see the
+[asset template and compositions](assets/VitaGram_UI_Assets_v1/README_RU.md#шаблон-и-композиции-из-json).
+Light/Dark now share alpha masks: `ux0:data/vitagram/palette.json` changes their
+colors while the app runs. Settings → Theme offers seven built-in themes:
+Light, Dark, VHBB, Little Greene Light/Dark, black-blue and black-red.
+A localized “Changing theme…” screen stays visible while switching.
+The dropdown shows five-color previews; browsing does not recolor the UI.
+Light/Dark preset switches reuse loaded masks and textures; VHBB retains its artwork.
+Palette Studio includes Open Color (MIT) and Little Greene, and imports local
+catalogue JSON files such as `assets/little-greene.json`. Imported catalogues stay
+in the browser session; export the resulting theme to install it on Vita.
+Little Greene themes use materials from @ElvisSuperStar007.
+See the [source record](tools/palette-editor/CATALOG-SOURCES.md).
 
 Основной интерфейс — `src/main.cpp`, Telegram — `src/telegram_client.*`, плееры —
 `src/animation_player.*` и `src/voice_player.*`, кэши — `src/ui_cache.*` и
 `src/media_cache.*`, шифрование — `src/vault*`, локализация — `src/i18n.*`.
 Оформление находится в `assets/VitaGram_UI_Assets_v1`; загружается активная тема.
 Флаг `-DVITAGRAM_UI_ALT_BACKGROUND=ON` включает более контрастные волнообразные обои.
+Перекраска шаблона из JSON-каталогов на ПК описана в разделе
+[«Шаблон и композиции»](assets/VitaGram_UI_Assets_v1/README_RU.md#шаблон-и-композиции-из-json).
+Светлая и тёмная темы используют общие альфа-маски: файл
+`ux0:data/vitagram/palette.json` меняет цвета во время работы приложения.
+В «Настройки → Тема» доступны семь встроенных тем: Светлая, Тёмная, VHBB,
+Little Greene / Светлая и Тёмная, black-blue и black-red.
+При переключении показывается «Идёт смена темы…». Выпадающий список показывает
+образцы из пяти цветов; просмотр вариантов не меняет оформление.
+Светлые и тёмные палитры используют загруженные маски и текстуры; VHBB сохраняет свою графику.
+Мастер содержит Open Color (MIT) и Little Greene и позволяет загрузить локальный
+JSON-каталог, например `assets/little-greene.json`. Каталог остаётся в сессии
+браузера; для Vita экспортируйте полученную тему.
+Темы Little Greene — использованы материалы @ElvisSuperStar007.
+Подробности — в [записи об источниках](tools/palette-editor/CATALOG-SOURCES.md).
 
 <details>
 <summary>Encryption and media implementation / Реализация шифрования и медиа</summary>

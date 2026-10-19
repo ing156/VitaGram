@@ -1,4 +1,6 @@
 #include "ui_battery.h"
+#include "ui_skin.h"
+#include "ui_themes.h"
 #include <vita2d.h>
 #include <jansson.h>
 #include <array>
@@ -24,10 +26,12 @@ void unload() {
 }
 
 void load(int theme) {
-    theme = std::max(0, std::min(2, theme));
+    theme = ui_themes::get(theme).base;
     if (attempted_theme == theme) return;
     unload();
     attempted_theme = theme; // Missing resources must not trigger disk reads every frame.
+    ui_skin::Sprite shared;
+    if (ui_skin::battery(0, shared)) return;
     json_error_t error{};
     json_t* manifest = json_load_file("app0:ui/manifest.json", 0, &error);
     if (!manifest) return;
@@ -52,10 +56,16 @@ void load(int theme) {
 }
 
 bool draw(int percent, bool charging, float x, float y, float size) {
-    if (!atlas || size <= 0 || (!charging && (percent < 0 || percent > 100))) return false;
+    if (size <= 0 || (!charging && (percent < 0 || percent > 100))) return false;
     // Thresholds from manifest.json > battery_icons > display_rules.
     const size_t state = charging ? 5 : percent <= 12 ? 0 : percent <= 37 ? 1 :
         percent <= 62 ? 2 : percent <= 87 ? 3 : 4;
+    ui_skin::Sprite shared;
+    if (ui_skin::battery((int)state, shared)) {
+        vita2d_draw_texture_part_scale(shared.texture, x, y, shared.x, shared.y, shared.w, shared.h, size/shared.w, size/shared.h);
+        return true;
+    }
+    if (!atlas) return false;
     const Rect& r = sprites[state];
     if (r.w <= 0 || r.h <= 0) return false;
     vita2d_draw_texture_part_scale(atlas, x, y, r.x, r.y, r.w, r.h, size/r.w, size/r.h);

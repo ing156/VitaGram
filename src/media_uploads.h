@@ -203,8 +203,8 @@ private:
     static const char* kindKey(const Item& i) {
         switch (i.kind) {
             case Kind::Sticker: return "up.kind.sticker";
-            case Kind::Photo: return "up.kind.image";
-            case Kind::Video: return "up.kind.video";
+            case Kind::Photo:
+            case Kind::Video: return "up.kind.media";
             case Kind::File: return "up.kind.file";
             default: return i.video ? "up.kind.video_note" : "up.kind.audio";
         }

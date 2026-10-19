@@ -124,7 +124,11 @@ int main() {
     event(light, R"({"@type":"updateChatPhoto","chat_id":1,"photo":{"small":{"@type":"file","id":99,"size":4,"local":{"path":"ux0:data/vitagram/files/avatar.png","is_downloading_completed":true}}}})");
     event(light, R"({"@type":"user","id":7,"first_name":"Name","type":{"@type":"userTypeDeleted"},"profile_photo":{"small":{"id":99}}})");
     event(light, R"({"@type":"updateNewMessage","message":{"id":55,"chat_id":1,"content":{"@type":"messageText","text":{"text":"History stays separate"}}}})");
+    event(light, R"({"@type":"updateAccentColors","colors":[{"id":8,"light_theme_colors":[1122867]}]})");
+    event(light, R"({"@type":"updateChatAccentColors","chat_id":1,"accent_color_id":8,"upgraded_gift_colors":null})");
     auto* small = light.startupSnapshot();
+    assert(json_integer_value(json_object_get(json_object_get(json_object_get(small, "chats"), "1"), "accent_color_id")) == 8);
+    assert(json_array_size(json_object_get(small, "accent_colors")) == 1);
     assert(!json_object_get(small, "history") && !json_object_get(small, "sticker_items"));
     auto* rows = json_object_get(small, "chats");
     assert(!std::strcmp(json_object_iter_key(json_object_iter(rows)), "2"));
@@ -192,6 +196,8 @@ int main() {
         assert(light.saveStartupList(pending, light.generation()));
         json_decref(pending);
         auto* list = UiCache().loadStartup(); assert(list);
+        assert(json_integer_value(json_object_get(json_object_get(json_object_get(list, "chats"), "1"), "accent_color_id")) == 8);
+        assert(json_array_size(json_object_get(list, "accent_colors")) == 1);
         assert(!std::strcmp(json_object_iter_key(json_object_iter(json_object_get(list, "chats"))), "2"));
         auto* avatar = json_object_get(json_object_get(list, "avatars"), "1");
         assert(!std::strcmp(json_string_value(json_object_get(json_object_get(avatar, "local"), "path")), "ux0:data/vitagram/files/avatar.png"));

@@ -14,7 +14,7 @@ struct SendGifItem {
     int width = 0, height = 0, duration = 0;
     int64_t query_id = 0;
     bool video_preview = false;
-    std::string result_id, title, path, fallback;
+    std::string result_id, title, path, fallback, full_path;
     std::string preview_format;
     int preview_width = 0, preview_height = 0;
     int64_t preview_size = 0;
@@ -90,6 +90,8 @@ struct GifCatalog {
             json_t* animation = saved ? result : json_object_get(result, "animation");
             SendGifItem item;
             item.file = (int32_t)integer(json_object_get(animation, "animation"), "id");
+            auto* full_local = json_object_get(json_object_get(animation, "animation"), "local");
+            if (json_is_true(json_object_get(full_local, "is_downloading_completed"))) item.full_path = string(full_local, "path");
             item.width = (int)integer(animation, "width"); item.height = (int)integer(animation, "height");
             item.duration = (int)integer(animation, "duration");
             item.query_id = saved ? 0 : integer(root, "inline_query_id");

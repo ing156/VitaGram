@@ -12,6 +12,48 @@ using namespace performance;
 int main(int argc, char** argv) {
     assert(argc == 2);
     {
+        auto stream = std::make_shared<download_stream::State>(7);
+        stream->update("private-media-name.mp3", 1000000, 0, 262144, false);
+        auto written = [] {
+            FILE* file = std::tmpfile(); assert(file);
+            audio_startup_trace::write(file); std::rewind(file);
+            std::string text; char line[512];
+            while (std::fgets(line, sizeof(line), file)) text += line;
+            std::fclose(file); return text;
+        };
+        diag_log::set_mask(0);
+        audio_startup_trace::record(stream.get(), 3, "disabled");
+        assert(written().empty());
+        diag_log::set_mask(1u << static_cast<unsigned>(diag_log::Kind::Performance));
+        const int64_t origin = now();
+        audio_startup_trace::record(stream.get(), 3, "open_input_begin", 0, origin, stream, 7);
+        stream->update("private-final-name.mp3", 1000000, 0, 1000000, true);
+        audio_startup_trace::record(stream.get(), 3, "open_input_end", -5, origin, stream, 7);
+        if (enabled) {
+            assert(audio_startup_trace::events[1].at >= audio_startup_trace::events[0].at);
+            assert(audio_startup_trace::events[1].total == audio_startup_trace::events[1].at - origin);
+        }
+        const auto text = written();
+        if (enabled) {
+            assert(text.find("generation=3 stage=open_input_begin at_us=") != std::string::npos);
+            assert(text.find("result=0 file_id=7 size=1000000 prefix=262144 complete=0") != std::string::npos);
+            assert(text.find("result=-5 file_id=7 size=1000000 prefix=1000000 complete=1") != std::string::npos);
+            assert(text.find("private-") == std::string::npos);
+        } else assert(text.empty());
+        assert(written().empty());
+        for (size_t i = 0; i < audio_startup_trace::capacity + 1; ++i)
+            audio_startup_trace::record(stream.get(), 4, "bounded");
+        const auto full = written();
+        assert((full.find("audio_startup_events kept=128 dropped=1") != std::string::npos) == enabled);
+        assert(written().empty());
+        // A busy writer must never stall the playback or UI thread.
+        pthread_mutex_lock(&audio_startup_trace::mutex);
+        audio_startup_trace::record(stream.get(), 4, "contended");
+        pthread_mutex_unlock(&audio_startup_trace::mutex);
+        assert((written().find("kept=0 dropped=1") != std::string::npos) == enabled);
+        diag_log::set_mask(0);
+    }
+    {
         Collector slow_collector;
         SlowEvent event;event.phase=SlowPhase::Process;
         std::strcpy(event.type.data(),"updateNewMessage");event.wire_bytes=1234;
@@ -166,13 +208,14 @@ int main(int argc, char** argv) {
     assert(compact && json_object_size(compact)==1);json_decref(compact);
     for (const char* raw:{R"({"@type":"updateStickerSet","@extra":null})",R"({"@type":"updateStickerSet","@type":"message"})",R"({"@type":"updateStickerSet","value":[1,]})",R"({"@type":"updateStickerSet","value":"\uD800"})",R"({"@type":"messages","value":"updateStickerSet"})",R"({"@type":"updateStickerSet"} garbage)"})
         assert(!compact_raw_unused_td_update(raw));
-    for (const char* type:{"updateAvailableMessageEffects","updateEmojiChatThemes","updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors","updateAccentColors"}) {
+    for (const char* type:{"updateAvailableMessageEffects","updateEmojiChatThemes","updateTextCompositionStyles","updateAttachmentMenuBots","updateProfileAccentColors"}) {
         std::string raw=std::string("{\"@type\":\"")+type+"\",\"themes\":[{\"name\":\"x\\u00e9\",\"n\":[1,2.5e3,null]}]}";
         auto* stub=compact_raw_unused_td_update(raw);
         assert(stub && std::string(json_string_value(json_object_get(stub,"@type")))==type && json_object_size(stub)==1);
         json_decref(stub);
         assert(!compact_raw_unused_td_update(std::string("{\"@type\":\"")+type+"\",\"@extra\":\"x\"}"));
     }
+    assert(!compact_raw_unused_td_update(R"({"@type":"updateAccentColors","colors":[{"id":8}]})"));
     assert(!compact_raw_unused_td_update(R"({"@type":"updateUser","user":{"id":1,"note":"updateEmojiChatThemes"}})"));
     compact=compact_raw_unused_td_update(R"({"@type":"updateStickerSet","value":[null,true,false,-1.5e+2,"\uD83D\uDE00"]})");
     assert(compact);json_decref(compact);
@@ -212,12 +255,16 @@ int main(int argc, char** argv) {
     FILE* f = std::fopen(path.c_str(), "wb"); assert(f);
     assert(!std::fseek(f, 1024*1024, SEEK_SET)); std::fputc('x', f); std::fclose(f);
     collector().start(1000); observe(Metric::Frame, 18000);
+    diag_log::set_mask(1u << static_cast<unsigned>(diag_log::Kind::Performance));
+    audio_startup_trace::record(nullptr, 17, "flush_integration");
     assert(flush(path.c_str(), previous.c_str(), "test", 2000));
+    diag_log::set_mask(0);
     assert(!access(previous.c_str(), F_OK));
     f = std::fopen(path.c_str(), "rb"); assert(f);
     char buffer[8192]{}; auto bytes = std::fread(buffer, 1, sizeof(buffer)-1, f); std::fclose(f);
     assert(bytes && std::string(buffer).find("version=test") != std::string::npos);
     assert(std::string(buffer).find("frame_us n=1") != std::string::npos);
+    assert(std::string(buffer).find("generation=17 stage=flush_integration") != std::string::npos);
     assert(!flush((path+"/missing").c_str(), previous.c_str(), "test", 3000));
     assert(!collector().take(4000).get(Metric::Frame).count);
     // Over budget only replaceable values are shed (F07); persistent state is never classified so.

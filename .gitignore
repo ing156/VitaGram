@@ -26,21 +26,54 @@ docs/
 docs/*
 !docs/controls-analysis.md
 !docs/keyboard-layouts.md
-# tests/ also collects local media, logs and crash dumps: only test sources and fixtures are tracked.
+# Test sources and required fixtures are tracked; private inputs/results stay local.
+/tests/local/
 tests/*
 !tests/*.cpp
 !tests/*.h
 !tests/*.sh
+!tests/*_test.py
+!tests/*_test.js
 !tests/README.md
-!tests/AnimatedSticker.tgs
+# Explicit input fixtures only: do not publish arbitrary media dropped here.
 !tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/README.md
+!tests/fixtures/invalid-proxy-qr.txt
+!tests/fixtures/mtproxy-qr.txt
+!tests/fixtures/unrelated-qr.txt
+!tests/fixtures/palettes/
+tests/fixtures/palettes/*
+!tests/fixtures/palettes/bbr.json
+!tests/fixtures/palettes/brr2.json
 !tests/stubs/
 !tests/updater-stubs/
 !tests/photo-stubs/
 !tests/keyboard-stubs/
 !tests/font-stubs/
+!tests/net-stubs/
+!tests/ui-skin-stubs/
+!tests/radial-stubs/
 tests/font-stubs/*
 !tests/font-stubs/vita2d.h
+
+# Multimedia inputs are local only, including files inside fixtures/.
+/tests/**/*.webm
+/tests/**/*.mp4
+/tests/**/*.mkv
+/tests/**/*.mov
+/tests/**/*.avi
+/tests/**/*.gif
+/tests/**/*.tgs
+/tests/**/*.png
+/tests/**/*.jpg
+/tests/**/*.jpeg
+/tests/**/*.webp
+/tests/**/*.ppm
+/tests/**/*.mp3
+/tests/**/*.m4a
+/tests/**/*.ogg
+/tests/**/*.wav
 
 # executables and package outputs
 *.vpk
@@ -70,6 +103,7 @@ tests/font-stubs/*
 .DS_Store
 /assets/cacert.pem
 /release/
+/releases/
 .kilo/
 
 # download metadata and incomplete dependency downloads
@@ -81,3 +115,9 @@ __pycache__/
 *.pyc
 assets/little-greene.json
 assets/sherwin-williams.json
+
+# Supplied colour catalogues without confirmed redistribution rights
+/local-palettes/
+
+# Explicitly retained catalogue for the application and Palette Studio
+!assets/little-greene.json

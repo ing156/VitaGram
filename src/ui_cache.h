@@ -40,6 +40,8 @@ public:
     bool loadHistory(int64_t preferred = 0, bool (*proceed)(void*) = nullptr, void* context = nullptr);
     bool historyPending(int64_t id); // Its file exists but is not merged yet.
     static void removeHistoryFiles(); // Untrusted caches after a vault signature failure.
+    int64_t localReadPosition(int64_t chat, int64_t scope = 0);
+    void setLocalReadPosition(int64_t chat, int64_t message, int64_t scope = 0);
     void clear();
     // Worker only. True when histories were left for another pass by kHistoriesPerFlush.
     bool flush(bool (*proceed)(void*) = nullptr, void* context = nullptr);

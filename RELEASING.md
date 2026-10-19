@@ -129,3 +129,67 @@ SQLCipher и сведения о MPL-2.0 и исходнике CA bundle Mozilla
 Сохраните исходники MPL-компонентов rlottie и сведения об исходнике CA bundle.
 Не удаляйте авторство, описание изменений и условия CC BY-NC-SA ресурсов VHBB.
 Для графики без явной лицензии проверьте происхождение и условия распространения.
+
+## Palette Studio web/offline edition / Веб- и автономный мастер
+
+The Pages workflow publishes the standalone editor from `master`; enable
+**Settings → Pages → Source → GitHub Actions** before the first deployment.
+See [Palette Studio instructions](tools/palette-editor/README.md#публикация-на-github-pages).
+A pull request runs the editor checks without publishing.
+
+Workflow Pages публикует мастер из `master`. Перед первым запуском выберите
+**Settings → Pages → Source → GitHub Actions**. Сборка и проверка pull request
+не публикуют сайт. Ссылка в README обозначает ожидаемый адрес; считайте её
+действующей только после успешного deployment.
+
+For an offline release asset / Для автономного файла релиза:
+
+```bash
+python3 scripts/build-palette-editor.py build-modern/palette-site/index.html
+node tests/palette_editor_test.js build-modern/palette-site/index.html
+cp build-modern/palette-site/index.html build-modern/palette-site/VitaGram-Palette-Studio.html
+```
+
+Attach `VitaGram-Palette-Studio.html` alongside the signed application package.
+The HTML contains its own fonts, masks, MIT license and font-license notice. Do not attach
+local logs, crash dumps, API configuration, account data or signing keys.
+
+Приложите `VitaGram-Palette-Studio.html` к подписанному VPK. В HTML встроены
+маски, шрифты, лицензия MIT и уведомление о лицензии шрифта. Не включайте локальные журналы,
+дампы, API-конфигурацию, данные аккаунта и ключ подписи.
+
+### Local release preparation / Локальная подготовка выпуска
+
+The prepared notes for the current release are in
+[releases/v0.38.07.md](releases/v0.38.07.md). The local bundle is
+`release/v0.38.07/`; it is intentionally ignored by Git. Use its `RELEASE.md`
+as the GitHub release body and attach `vitagram.vpk`, `vitagram.vpk.sig`,
+`VitaGram-Palette-Studio.html` and `SHA256SUMS`. The ZIP is a convenience copy
+of the complete bundle, not an additional updater package.
+
+Описание текущего выпуска: [releases/v0.38.07.md](releases/v0.38.07.md).
+Локальный комплект: `release/v0.38.07/`; он намеренно не добавляется в Git.
+В нём лежат VPK, подпись, автономный мастер, описание, лицензия и SHA256SUMS.
+ZIP рядом с каталогом — копия этого комплекта для переноса.
+
+If the release version changes before pushing, update the CMake version fields,
+README and release notes, rebuild the VPK/editor, sign with the new app version,
+and regenerate SHA256SUMS. Do not reuse a signature from another version or build.
+Commit the source files needed by Pages as well as the workflow; a generated HTML
+alone does not make the workflow's source dependencies available in a checkout.
+
+Если перед push меняете номер выпуска, согласуйте версии в CMake, README
+и описании релиза; пересоберите VPK и мастер, подпишите новой версией приложения
+и пересчитайте SHA256SUMS. Старая подпись для другого номера или VPK не подходит.
+Добавьте в коммит исходники мастера, маски, палитры, тесты и workflow; локальные
+неотслеживаемые файлы не попадут в GitHub Actions автоматически.
+
+### Каталоги цветов в мастере
+
+Текущая сборка встраивает Open Color (MIT, уведомление и полный текст лицензии
+в HTML) и Little Greene. Сообщённое пользователем согласие @ElvisSuperStar007
+и ссылка на закрытое сообщение зафиксированы в
+[источниках и правах](tools/palette-editor/CATALOG-SOURCES.md); текст и полномочия
+не проверены. Локальный архив `local-palettes/` не входит в публикацию.
+Используйте заново собранные HTML/VPK: старые артефакты могут содержать
+исключённые каталоги и предустановки.

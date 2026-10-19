@@ -30,16 +30,21 @@ int main() {
         "\"outline\":[[{\"@type\":\"vectorPathCommandLine\"}]],\"thumbnail\":{\"format\":{\"@type\":\"thumbnailFormatWebp\"},\"file\":{\"id\":8}},"
         "\"sticker\":{\"id\":9,\"local\":{\"path\":\"/x\"}}}],\"emojis\":[{\"emojis\":[\"a\"]}],\"pad\":\"" + pad + "\","
         "\"@extra\":{\"kind\":\"sticker_items\"}}";
+    set.insert(set.find("\"stickers\""), "\"is_installed\":true,\"is_archived\":false,\"sticker_type\":{\"@type\":\"stickerTypeCustomEmoji\"},");
     json_t* s2 = compact_raw_sticker_items(set);
     assert(s2);
+    assert(json_is_true(json_object_get(s2, "is_installed")));
+    assert(json_is_false(json_object_get(s2, "is_archived")));
+    assert(!std::strcmp(json_string_value(json_object_get(json_object_get(s2, "sticker_type"), "@type")), "stickerTypeCustomEmoji"));
     assert(!json_object_get(s2, "emojis") && !json_object_get(s2, "name") && !json_object_get(s2, "pad"));
     assert(json_string_value(json_object_get(s2, "id")));
     json_t* st = json_array_get(json_object_get(s2, "stickers"), 0);
-    assert(st && !json_object_get(st, "outline") && !json_object_get(st, "set_id") && !json_object_get(st, "id"));
+    assert(st && !json_object_get(st, "outline") && json_object_get(st, "set_id") && !json_object_get(st, "id"));
     assert(json_integer_value(json_object_get(st, "width")) == 512);
     assert(!std::strcmp(json_string_value(json_object_get(st, "emoji")), "\xf0\x9f\x98\x80"));
     assert(json_object_get(st, "full_type") && json_integer_value(json_object_get(json_object_get(st, "sticker"), "id")) == 9);
     assert(json_integer_value(json_object_get(sticker_pack_preview(s2), "id")) == 3);
+    assert(!std::strcmp(json_string_value(json_object_get(st, "set_id")), "77"));
     json_decref(s2);
     assert(!compact_raw_sticker_items(set.substr(0, set.size() - 3)));
     assert(!compact_raw_sticker_items(t)); // stickerSets stay on their own path
@@ -111,10 +116,13 @@ int main() {
         "\"remote\":{\"@type\":\"remoteFile\",\"id\":\"AAA\",\"unique_id\":\"U\"}},\"big\":{\"@type\":\"file\",\"id\":43},"
         "\"minithumbnail\":{\"data\":\"" + pad + "\"},\"has_animation\":false},\"emoji_status\":null,\"is_contact\":true,"
         "\"type\":{\"@type\":\"userTypeBot\",\"can_join_groups\":true},\"language_code\":\"ru\"}}";
+    user.insert(user.find("\"profile_photo\""), "\"accent_color_id\":8,\"upgraded_gift_colors\":{\"light_theme_accent_color\":1122867},");
     json_t* cu = compact_raw_user_update(user);
     assert(cu);
     json_t* cuser = json_object_get(cu, "user");
     assert(json_integer_value(json_object_get(cuser, "id")) == 777);
+    assert(json_integer_value(json_object_get(cuser, "accent_color_id")) == 8);
+    assert(json_integer_value(json_object_get(json_object_get(cuser, "upgraded_gift_colors"), "light_theme_accent_color")) == 1122867);
     assert(!std::strcmp(json_string_value(json_object_get(cuser, "first_name")), "\xd0\x98\xd0\xb2\xd0\xb0\xd0\xbd"));
     assert(!json_object_get(cuser, "usernames") && !json_object_get(cuser, "is_contact") && !json_object_get(cuser, "language_code"));
     assert(!std::strcmp(json_string_value(json_object_get(json_object_get(cuser, "type"), "@type")), "userTypeBot"));
@@ -141,10 +149,13 @@ int main() {
         "\"positions\":[{\"@type\":\"chatPosition\",\"list\":{\"@type\":\"chatListMain\"},\"order\":\"99\",\"is_pinned\":false}],"
         "\"unread_count\":3,\"is_marked_as_unread\":true,\"last_read_outbox_message_id\":550,\"notification_settings\":{\"mute_for\":0},"
         "\"available_reactions\":{\"@type\":\"chatAvailableReactionsAll\"},\"draft_message\":null}}";
+    newchat.insert(newchat.find("\"title\""), "\"accent_color_id\":8,\"upgraded_gift_colors\":null,");
     json_t* nc = compact_raw_new_chat(newchat);
     assert(nc);
     json_t* cchat = json_object_get(nc, "chat");
     assert(json_integer_value(json_object_get(cchat, "id")) == -1009);
+    assert(json_integer_value(json_object_get(cchat, "accent_color_id")) == 8);
+    assert(json_is_null(json_object_get(cchat, "upgraded_gift_colors")));
     assert(json_is_true(json_object_get(json_object_get(cchat, "type"), "is_channel")));
     assert(json_integer_value(json_object_get(cchat, "unread_count")) == 3 && json_is_true(json_object_get(cchat, "is_marked_as_unread")));
     assert(json_integer_value(json_object_get(cchat, "last_read_outbox_message_id")) == 550);

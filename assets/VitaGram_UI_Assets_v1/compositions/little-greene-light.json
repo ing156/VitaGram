@@ -1,0 +1,12 @@
+{
+  "name": "Little Greene · Slaked Lime",
+  "mode": "light",
+  "catalog": "../../little-greene.json",
+  "colors": {
+    "background": "Slaked Lime Mid",
+    "surface": "Slaked Lime",
+    "text": "Basalt",
+    "muted": "Obsidian",
+    "accent": "Hicks' Blue"
+  }
+}

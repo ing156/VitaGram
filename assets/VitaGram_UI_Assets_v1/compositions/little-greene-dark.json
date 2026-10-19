@@ -1,0 +1,12 @@
+{
+  "name": "Little Greene · Obsidian",
+  "mode": "dark",
+  "catalog": "../../little-greene.json",
+  "colors": {
+    "background": "Obsidian",
+    "surface": "Basalt",
+    "text": "Slaked Lime",
+    "muted": "Slaked Lime Deep",
+    "accent": "Green Verditer"
+  }
+}

@@ -43,7 +43,7 @@ void Keyboard::configure(bool custom, bool dark, const std::vector<std::string>&
 
 void Keyboard::open(const std::string& title, bool secret, const std::string& initial, bool message) {
     if (active_) return;
-    caption_ = title; secret_ = secret; message_ = message;
+    caption_ = title; secret_ = secret;
     custom_active_ = prefer_custom_;
     if (custom_active_) {
         clear();
@@ -90,6 +90,7 @@ void Keyboard::openSystem(const std::string& title, bool secret, const std::stri
     param_.textBoxMode = secret ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
     // No predictive text or suggestions for secrets, so the system keyboard has nothing to learn from
     // a passphrase; automatic capitalization would also change what the user typed.
+    // Multiline replaces the system Enter action with a line break, including language fallback.
     param_.option = secret ? (SCE_IME_OPTION_NO_ASSISTANCE | SCE_IME_OPTION_NO_AUTO_CAPITALIZATION) : 0;
     param_.title = title_; param_.maxTextLength = MaxTextLength;
     param_.initialText = initial_; param_.inputTextBuffer = input_;
@@ -115,14 +116,14 @@ void Keyboard::clear() {
     std::fill(std::begin(initial_), std::end(initial_), 0);
 }
 
-void Keyboard::handle(unsigned int pressed, unsigned int held, bool touching, int x, int y, uint64_t now) {
+void Keyboard::handle(unsigned int pressed, unsigned int held, bool touching, int x, int y, uint64_t now, const SceTouchData* touches) {
     if (active_ && custom_active_) {
         // The button/tap that opened the dialog belongs to the underlying screen.
         if (suppress_opening_input_) {
             if (!held && !touching) suppress_opening_input_ = false;
             return;
         }
-        const auto result = custom_.handle(pressed, held, touching, x, y, now);
+        const auto result = custom_.handle(pressed, held, touching, x, y, now, touches);
         if (result == CustomKeyboard::Result::System) {
             const std::string initial = custom_.text();
             active_ = custom_active_ = false;

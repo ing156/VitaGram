@@ -1,0 +1,1394 @@
+{
+  "brand": "Little Greene",
+  "source": "https://calculatorian.com/ru/colors/paint-colors/little-greene + https://design.tangible.one/color-books/little-greene-colours-of-england & little-greene-colour-scales",
+  "note": "Little Greene Paint Company catalogue. Codes are the colour names; colours unique to the official Colours of England / Colour Scales collections keep their name-number codes (e.g. slaked-lime-105). Hex values are display approximations.",
+  "total_colours_in_file": 277,
+  "total_colours_in_full_system": 277,
+  "colors": [
+    {
+      "code": "50s Magnolia",
+      "name": "50s Magnolia",
+      "hex": "#F0E4D0"
+    },
+    {
+      "code": "Acorn",
+      "name": "Acorn",
+      "hex": "#DDDCC5"
+    },
+    {
+      "code": "Acre",
+      "name": "Acre",
+      "hex": "#DBD2BE"
+    },
+    {
+      "code": "Adventurer",
+      "name": "Adventurer",
+      "hex": "#765557"
+    },
+    {
+      "code": "Aged Ivory",
+      "name": "Aged Ivory",
+      "hex": "#E0C9A6"
+    },
+    {
+      "code": "Air Force Blue",
+      "name": "Air Force Blue",
+      "hex": "#5A8393"
+    },
+    {
+      "code": "Ambleside",
+      "name": "Ambleside",
+      "hex": "#738579"
+    },
+    {
+      "code": "Angie",
+      "name": "Angie",
+      "hex": "#F2CBCB"
+    },
+    {
+      "code": "Apple",
+      "name": "Apple",
+      "hex": "#C9BF91"
+    },
+    {
+      "code": "Aquamarine",
+      "name": "Aquamarine",
+      "hex": "#AAB9AB"
+    },
+    {
+      "code": "Aquamarine - Deep",
+      "name": "Aquamarine - Deep",
+      "hex": "#98AB9B"
+    },
+    {
+      "code": "Aquamarine - Light",
+      "name": "Aquamarine - Light",
+      "hex": "#CDD8D1"
+    },
+    {
+      "code": "Aquamarine - Mid",
+      "name": "Aquamarine - Mid",
+      "hex": "#BDCAC1"
+    },
+    {
+      "code": "Aquamarine - Pale",
+      "name": "Aquamarine - Pale",
+      "hex": "#DCE4DD"
+    },
+    {
+      "code": "Arquerite",
+      "name": "Arquerite",
+      "hex": "#908D91"
+    },
+    {
+      "code": "Arras",
+      "name": "Arras",
+      "hex": "#69413C"
+    },
+    {
+      "code": "Ashes of Roses",
+      "name": "Ashes of Roses",
+      "hex": "#986C67"
+    },
+    {
+      "code": "Atomic Red",
+      "name": "Atomic Red",
+      "hex": "#C53933"
+    },
+    {
+      "code": "Attic II",
+      "name": "Attic II",
+      "hex": "#6F6761"
+    },
+    {
+      "code": "Baked Cherry",
+      "name": "Baked Cherry",
+      "hex": "#884143"
+    },
+    {
+      "code": "Baluster",
+      "name": "Baluster",
+      "hex": "#8D897C"
+    },
+    {
+      "code": "Basalt",
+      "name": "Basalt",
+      "hex": "#383E46"
+    },
+    {
+      "code": "Bath Stone",
+      "name": "Bath Stone",
+      "hex": "#C9B290"
+    },
+    {
+      "code": "Batsman",
+      "name": "Batsman",
+      "hex": "#F3EEE1"
+    },
+    {
+      "code": "Beauvais Lilac",
+      "name": "Beauvais Lilac",
+      "hex": "#D7C3AD"
+    },
+    {
+      "code": "beauvais-lilac-29",
+      "name": "Beauvais Lilac",
+      "hex": "#DFCBB8"
+    },
+    {
+      "code": "Black Jack",
+      "name": "Black Jack",
+      "hex": "#3B3B3B"
+    },
+    {
+      "code": "Blue Verditer",
+      "name": "Blue Verditer",
+      "hex": "#74A8C1"
+    },
+    {
+      "code": "Blush",
+      "name": "Blush",
+      "hex": "#AD8A83"
+    },
+    {
+      "code": "Bone China Blue",
+      "name": "Bone China Blue",
+      "hex": "#A6B2B6"
+    },
+    {
+      "code": "Bone China Blue Deep",
+      "name": "Bone China Blue Deep",
+      "hex": "#BAC4C8"
+    },
+    {
+      "code": "Bone China Blue Mid",
+      "name": "Bone China Blue Mid",
+      "hex": "#D3DADC"
+    },
+    {
+      "code": "Bone China Blue Pale",
+      "name": "Bone China Blue Pale",
+      "hex": "#DFE5E5"
+    },
+    {
+      "code": "Book Room Green",
+      "name": "Book Room Green",
+      "hex": "#B5B199"
+    },
+    {
+      "code": "Boxington",
+      "name": "Boxington",
+      "hex": "#B4A87A"
+    },
+    {
+      "code": "Brighton",
+      "name": "Brighton",
+      "hex": "#B4CCCF"
+    },
+    {
+      "code": "Bronze Red",
+      "name": "Bronze Red",
+      "hex": "#85413D"
+    },
+    {
+      "code": "Button",
+      "name": "Button",
+      "hex": "#C1A797"
+    },
+    {
+      "code": "Canton",
+      "name": "Canton",
+      "hex": "#538A8A"
+    },
+    {
+      "code": "Cape Red",
+      "name": "Cape Red",
+      "hex": "#B43242"
+    },
+    {
+      "code": "Carmine",
+      "name": "Carmine",
+      "hex": "#BC707B"
+    },
+    {
+      "code": "Carys",
+      "name": "Carys",
+      "hex": "#FAE09D"
+    },
+    {
+      "code": "Castell Pink",
+      "name": "Castell Pink",
+      "hex": "#CDBAA7"
+    },
+    {
+      "code": "Celestial Blue",
+      "name": "Celestial Blue",
+      "hex": "#AABBBB"
+    },
+    {
+      "code": "Ceviche",
+      "name": "Ceviche",
+      "hex": "#DEDDD7"
+    },
+    {
+      "code": "Chamois",
+      "name": "Chamois",
+      "hex": "#DBC8A3"
+    },
+    {
+      "code": "Chemise",
+      "name": "Chemise",
+      "hex": "#EDE2E5"
+    },
+    {
+      "code": "Chimney Brick",
+      "name": "Chimney Brick",
+      "hex": "#4F433C"
+    },
+    {
+      "code": "China Clay",
+      "name": "China Clay",
+      "hex": "#EFE9E3"
+    },
+    {
+      "code": "China Clay Dark",
+      "name": "China Clay Dark",
+      "hex": "#CDBFB6"
+    },
+    {
+      "code": "China Clay Deep",
+      "name": "China Clay Deep",
+      "hex": "#D9CEC6"
+    },
+    {
+      "code": "China Clay Mid",
+      "name": "China Clay Mid",
+      "hex": "#E5DBD5"
+    },
+    {
+      "code": "china-clay-original-1",
+      "name": "China Clay Original",
+      "hex": "#F0EBE5"
+    },
+    {
+      "code": "Chocolate Colour",
+      "name": "Chocolate Colour",
+      "hex": "#49423F"
+    },
+    {
+      "code": "Citrine",
+      "name": "Citrine",
+      "hex": "#97894D"
+    },
+    {
+      "code": "Clay",
+      "name": "Clay",
+      "hex": "#D2C2AA"
+    },
+    {
+      "code": "Clay Deep",
+      "name": "Clay Deep",
+      "hex": "#DBCEBA"
+    },
+    {
+      "code": "Clay Mid",
+      "name": "Clay Mid",
+      "hex": "#E6DCCB"
+    },
+    {
+      "code": "Clay Pale",
+      "name": "Clay Pale",
+      "hex": "#EEE7DA"
+    },
+    {
+      "code": "clay-original-39",
+      "name": "Clay Original",
+      "hex": "#D1C2AB"
+    },
+    {
+      "code": "Clockface",
+      "name": "Clockface",
+      "hex": "#EDEADE"
+    },
+    {
+      "code": "Clockwise",
+      "name": "Clockwise",
+      "hex": "#B5BFE3"
+    },
+    {
+      "code": "Confetti",
+      "name": "Confetti",
+      "hex": "#E4C6C3"
+    },
+    {
+      "code": "Cool Arbour",
+      "name": "Cool Arbour",
+      "hex": "#C9C7BD"
+    },
+    {
+      "code": "Cordoba",
+      "name": "Cordoba",
+      "hex": "#4C393C"
+    },
+    {
+      "code": "Cream Colour",
+      "name": "Cream Colour",
+      "hex": "#EDCFAB"
+    },
+    {
+      "code": "Creamerie",
+      "name": "Creamerie",
+      "hex": "#F8E7C8"
+    },
+    {
+      "code": "Custard",
+      "name": "Custard",
+      "hex": "#F2E2B7"
+    },
+    {
+      "code": "Daffodil",
+      "name": "Daffodil",
+      "hex": "#DEC175"
+    },
+    {
+      "code": "daffodil-136",
+      "name": "Daffodil",
+      "hex": "#DFC175"
+    },
+    {
+      "code": "Dark Brunswick Green",
+      "name": "Dark Brunswick Green",
+      "hex": "#3F5443"
+    },
+    {
+      "code": "Dark Lead Colour",
+      "name": "Dark Lead Colour",
+      "hex": "#7B7978"
+    },
+    {
+      "code": "Dash of Soot",
+      "name": "Dash of Soot",
+      "hex": "#C7C2BE"
+    },
+    {
+      "code": "Dawn",
+      "name": "Dawn",
+      "hex": "#E7E4E2"
+    },
+    {
+      "code": "Deep Space Blue",
+      "name": "Deep Space Blue",
+      "hex": "#294F6D"
+    },
+    {
+      "code": "Delicate Blue",
+      "name": "Delicate Blue",
+      "hex": "#D2DFE4"
+    },
+    {
+      "code": "Dock Blue",
+      "name": "Dock Blue",
+      "hex": "#333A44"
+    },
+    {
+      "code": "Dolphin",
+      "name": "Dolphin",
+      "hex": "#A09893"
+    },
+    {
+      "code": "Dorchester Pink",
+      "name": "Dorchester Pink",
+      "hex": "#CCBEBE"
+    },
+    {
+      "code": "Dorchester Pink - Deep",
+      "name": "Dorchester Pink - Deep",
+      "hex": "#D7CBCC"
+    },
+    {
+      "code": "Dorchester Pink - Mid",
+      "name": "Dorchester Pink - Mid",
+      "hex": "#E2D8D7"
+    },
+    {
+      "code": "Dorchester Pink - Pale",
+      "name": "Dorchester Pink - Pale",
+      "hex": "#EEE4E2"
+    },
+    {
+      "code": "Drizzle",
+      "name": "Drizzle",
+      "hex": "#CFD8D9"
+    },
+    {
+      "code": "Drummond",
+      "name": "Drummond",
+      "hex": "#A24C41"
+    },
+    {
+      "code": "Eau de Nil",
+      "name": "Eau de Nil",
+      "hex": "#C6C9A1"
+    },
+    {
+      "code": "Echo",
+      "name": "Echo",
+      "hex": "#E0E9E9"
+    },
+    {
+      "code": "Elysian Ground",
+      "name": "Elysian Ground",
+      "hex": "#4D4840"
+    },
+    {
+      "code": "Felt",
+      "name": "Felt",
+      "hex": "#796963"
+    },
+    {
+      "code": "Ferdinand",
+      "name": "Ferdinand",
+      "hex": "#E8DDCD"
+    },
+    {
+      "code": "Fescue",
+      "name": "Fescue",
+      "hex": "#D0CFC8"
+    },
+    {
+      "code": "Firefly",
+      "name": "Firefly",
+      "hex": "#C2484B"
+    },
+    {
+      "code": "First Light",
+      "name": "First Light",
+      "hex": "#FCF6E2"
+    },
+    {
+      "code": "Flint",
+      "name": "Flint",
+      "hex": "#F4F3EE"
+    },
+    {
+      "code": "French Grey",
+      "name": "French Grey",
+      "hex": "#CBC7C1"
+    },
+    {
+      "code": "French Grey Dark",
+      "name": "French Grey Dark",
+      "hex": "#B4AEA4"
+    },
+    {
+      "code": "French Grey Mid",
+      "name": "French Grey Mid",
+      "hex": "#D9D7D1"
+    },
+    {
+      "code": "French Grey Pale",
+      "name": "French Grey Pale",
+      "hex": "#E5E3DE"
+    },
+    {
+      "code": "French Stone",
+      "name": "French Stone",
+      "hex": "#F7E2B6"
+    },
+    {
+      "code": "french-grey-original-113",
+      "name": "French Grey Original",
+      "hex": "#CECAC2"
+    },
+    {
+      "code": "Furrow",
+      "name": "Furrow",
+      "hex": "#716656"
+    },
+    {
+      "code": "Garden",
+      "name": "Garden",
+      "hex": "#8D9C75"
+    },
+    {
+      "code": "Gauze",
+      "name": "Gauze",
+      "hex": "#E4E6E6"
+    },
+    {
+      "code": "Gauze Dark",
+      "name": "Gauze Dark",
+      "hex": "#C6CACD"
+    },
+    {
+      "code": "Gauze Deep",
+      "name": "Gauze Deep",
+      "hex": "#D4D7D9"
+    },
+    {
+      "code": "Gauze Mid",
+      "name": "Gauze Mid",
+      "hex": "#DBDEDF"
+    },
+    {
+      "code": "gauze-original-106",
+      "name": "Gauze Original",
+      "hex": "#E6E7E7"
+    },
+    {
+      "code": "Gentle Sky",
+      "name": "Gentle Sky",
+      "hex": "#CBE4E8"
+    },
+    {
+      "code": "Green Stone",
+      "name": "Green Stone",
+      "hex": "#C4C1AB"
+    },
+    {
+      "code": "Green Stone - Light",
+      "name": "Green Stone - Light",
+      "hex": "#D2CFBC"
+    },
+    {
+      "code": "Green Stone - Pale",
+      "name": "Green Stone - Pale",
+      "hex": "#E2E1D5"
+    },
+    {
+      "code": "Green Verditer",
+      "name": "Green Verditer",
+      "hex": "#8CC5AA"
+    },
+    {
+      "code": "Grey Moss",
+      "name": "Grey Moss",
+      "hex": "#7E7B71"
+    },
+    {
+      "code": "Grey Teal",
+      "name": "Grey Teal",
+      "hex": "#939793"
+    },
+    {
+      "code": "Hammock",
+      "name": "Hammock",
+      "hex": "#D9CCBC"
+    },
+    {
+      "code": "Heat",
+      "name": "Heat",
+      "hex": "#AD583D"
+    },
+    {
+      "code": "Hellebore",
+      "name": "Hellebore",
+      "hex": "#CAA4A2"
+    },
+    {
+      "code": "Hicks' Blue",
+      "name": "Hicks' Blue",
+      "hex": "#4A5B6B"
+    },
+    {
+      "code": "Hollyhock",
+      "name": "Hollyhock",
+      "hex": "#EDE6DB"
+    },
+    {
+      "code": "Hortense",
+      "name": "Hortense",
+      "hex": "#B6C7C8"
+    },
+    {
+      "code": "Indian Sand",
+      "name": "Indian Sand",
+      "hex": "#F7DEB8"
+    },
+    {
+      "code": "Inner Shell II",
+      "name": "Inner Shell II",
+      "hex": "#F3DDCC"
+    },
+    {
+      "code": "Inox",
+      "name": "Inox",
+      "hex": "#D4D5D4"
+    },
+    {
+      "code": "Invisible Green",
+      "name": "Invisible Green",
+      "hex": "#595545"
+    },
+    {
+      "code": "Ivory",
+      "name": "Ivory",
+      "hex": "#ECD6B1"
+    },
+    {
+      "code": "James",
+      "name": "James",
+      "hex": "#96ABBD"
+    },
+    {
+      "code": "Joanna",
+      "name": "Joanna",
+      "hex": "#E1DACE"
+    },
+    {
+      "code": "Julie's Dream",
+      "name": "Julie's Dream",
+      "hex": "#EFE0D4"
+    },
+    {
+      "code": "Juniper Ash",
+      "name": "Juniper Ash",
+      "hex": "#667181"
+    },
+    {
+      "code": "juniper-ash-115",
+      "name": "Juniper Ash",
+      "hex": "#6B7686"
+    },
+    {
+      "code": "Kitchen Green",
+      "name": "Kitchen Green",
+      "hex": "#C2C4A6"
+    },
+    {
+      "code": "Knightsbridge",
+      "name": "Knightsbridge",
+      "hex": "#78706C"
+    },
+    {
+      "code": "Lamp Black",
+      "name": "Lamp Black",
+      "hex": "#2E2D2E"
+    },
+    {
+      "code": "Lead Colour",
+      "name": "Lead Colour",
+      "hex": "#9F9D99"
+    },
+    {
+      "code": "Lead White",
+      "name": "Lead White",
+      "hex": "#F0E9DA"
+    },
+    {
+      "code": "Leather",
+      "name": "Leather",
+      "hex": "#C6506D"
+    },
+    {
+      "code": "Lemon Tree",
+      "name": "Lemon Tree",
+      "hex": "#E6D5A5"
+    },
+    {
+      "code": "Light Beauvais",
+      "name": "Light Beauvais",
+      "hex": "#E1D1BC"
+    },
+    {
+      "code": "Light Bronze Green",
+      "name": "Light Bronze Green",
+      "hex": "#76664A"
+    },
+    {
+      "code": "Light Buff",
+      "name": "Light Buff",
+      "hex": "#D3A76F"
+    },
+    {
+      "code": "Light Gold",
+      "name": "Light Gold",
+      "hex": "#DAB76F"
+    },
+    {
+      "code": "Light Peachblossom",
+      "name": "Light Peachblossom",
+      "hex": "#C4ADA9"
+    },
+    {
+      "code": "Limestone",
+      "name": "Limestone",
+      "hex": "#D3CDC1"
+    },
+    {
+      "code": "Linen Wash",
+      "name": "Linen Wash",
+      "hex": "#EFECE1"
+    },
+    {
+      "code": "Linnet",
+      "name": "Linnet",
+      "hex": "#F3EFCF"
+    },
+    {
+      "code": "Livid",
+      "name": "Livid",
+      "hex": "#6F7A76"
+    },
+    {
+      "code": "Loft White",
+      "name": "Loft White",
+      "hex": "#F8F9F7"
+    },
+    {
+      "code": "Lute",
+      "name": "Lute",
+      "hex": "#BDAD91"
+    },
+    {
+      "code": "Mambo",
+      "name": "Mambo",
+      "hex": "#636EB2"
+    },
+    {
+      "code": "Marigold",
+      "name": "Marigold",
+      "hex": "#E39342"
+    },
+    {
+      "code": "Marine Blue",
+      "name": "Marine Blue",
+      "hex": "#396F7A"
+    },
+    {
+      "code": "Mazarine",
+      "name": "Mazarine",
+      "hex": "#275A81"
+    },
+    {
+      "code": "Mid Bronze Green",
+      "name": "Mid Bronze Green",
+      "hex": "#565F49"
+    },
+    {
+      "code": "Mid Lead Colour",
+      "name": "Mid Lead Colour",
+      "hex": "#949798"
+    },
+    {
+      "code": "Middle Buff",
+      "name": "Middle Buff",
+      "hex": "#B57A43"
+    },
+    {
+      "code": "Milk Thistle",
+      "name": "Milk Thistle",
+      "hex": "#C8B6C4"
+    },
+    {
+      "code": "Mirage II",
+      "name": "Mirage II",
+      "hex": "#D2CAC7"
+    },
+    {
+      "code": "Mirror",
+      "name": "Mirror",
+      "hex": "#DADCD4"
+    },
+    {
+      "code": "Mischief",
+      "name": "Mischief",
+      "hex": "#A35577"
+    },
+    {
+      "code": "Mister David",
+      "name": "Mister David",
+      "hex": "#ECBE45"
+    },
+    {
+      "code": "Mono",
+      "name": "Mono",
+      "hex": "#BBBEC0"
+    },
+    {
+      "code": "Mortar",
+      "name": "Mortar",
+      "hex": "#C6BEB0"
+    },
+    {
+      "code": "Mortlake Yellow",
+      "name": "Mortlake Yellow",
+      "hex": "#D3AD75"
+    },
+    {
+      "code": "Mushroom",
+      "name": "Mushroom",
+      "hex": "#CCBEB0"
+    },
+    {
+      "code": "Nether Red",
+      "name": "Nether Red",
+      "hex": "#8E736A"
+    },
+    {
+      "code": "Normandy Grey",
+      "name": "Normandy Grey",
+      "hex": "#B1B09D"
+    },
+    {
+      "code": "North Brink Grey",
+      "name": "North Brink Grey",
+      "hex": "#ACB1A4"
+    },
+    {
+      "code": "Oak Apple",
+      "name": "Oak Apple",
+      "hex": "#D2BB8E"
+    },
+    {
+      "code": "Obsidian",
+      "name": "Obsidian",
+      "hex": "#3A413E"
+    },
+    {
+      "code": "Old Paper II",
+      "name": "Old Paper II",
+      "hex": "#F4EADE"
+    },
+    {
+      "code": "Olive Colour",
+      "name": "Olive Colour",
+      "hex": "#626446"
+    },
+    {
+      "code": "Olive Oil",
+      "name": "Olive Oil",
+      "hex": "#D4CEAD"
+    },
+    {
+      "code": "Orange Aurora",
+      "name": "Orange Aurora",
+      "hex": "#D47565"
+    },
+    {
+      "code": "Orangerie",
+      "name": "Orangerie",
+      "hex": "#F9E7D3"
+    },
+    {
+      "code": "Palatine",
+      "name": "Palatine",
+      "hex": "#6F5D9B"
+    },
+    {
+      "code": "Pale Lime",
+      "name": "Pale Lime",
+      "hex": "#C8BF6F"
+    },
+    {
+      "code": "Pale Lupin",
+      "name": "Pale Lupin",
+      "hex": "#768399"
+    },
+    {
+      "code": "Pea Green",
+      "name": "Pea Green",
+      "hex": "#ABBDA2"
+    },
+    {
+      "code": "Pearl Colour",
+      "name": "Pearl Colour",
+      "hex": "#D1D4CC"
+    },
+    {
+      "code": "Pearl Colour Dark",
+      "name": "Pearl Colour Dark",
+      "hex": "#BDC2B9"
+    },
+    {
+      "code": "Pearl Colour Mid",
+      "name": "Pearl Colour Mid",
+      "hex": "#E0E2DC"
+    },
+    {
+      "code": "Pearl Colour Pale",
+      "name": "Pearl Colour Pale",
+      "hex": "#E7E9E3"
+    },
+    {
+      "code": "pearl-colour-original-100",
+      "name": "Pearl Colour Original",
+      "hex": "#D3D6CE"
+    },
+    {
+      "code": "Perennial Grey",
+      "name": "Perennial Grey",
+      "hex": "#B6AFAB"
+    },
+    {
+      "code": "Phthalo Green",
+      "name": "Phthalo Green",
+      "hex": "#96C57C"
+    },
+    {
+      "code": "Pink Slip",
+      "name": "Pink Slip",
+      "hex": "#DFCECD"
+    },
+    {
+      "code": "Pitcairn",
+      "name": "Pitcairn",
+      "hex": "#E8D8BA"
+    },
+    {
+      "code": "Pleat",
+      "name": "Pleat",
+      "hex": "#637A75"
+    },
+    {
+      "code": "Polar Blue",
+      "name": "Polar Blue",
+      "hex": "#73B2BD"
+    },
+    {
+      "code": "polar-blue-121",
+      "name": "Polar Blue",
+      "hex": "#72B2BD"
+    },
+    {
+      "code": "Pompeian Ash",
+      "name": "Pompeian Ash",
+      "hex": "#5C5D55"
+    },
+    {
+      "code": "Portland Stone",
+      "name": "Portland Stone",
+      "hex": "#D1CABB"
+    },
+    {
+      "code": "Portland Stone - Light",
+      "name": "Portland Stone - Light",
+      "hex": "#D7D2C4"
+    },
+    {
+      "code": "Portland Stone Dark",
+      "name": "Portland Stone Dark",
+      "hex": "#BDB5A1"
+    },
+    {
+      "code": "Portland Stone Deep",
+      "name": "Portland Stone Deep",
+      "hex": "#CAC2B1"
+    },
+    {
+      "code": "Portland Stone Pale",
+      "name": "Portland Stone Pale",
+      "hex": "#EBE6DA"
+    },
+    {
+      "code": "portland-stone-deep-156",
+      "name": "Portland Stone Deep",
+      "hex": "#CAC2B0"
+    },
+    {
+      "code": "portland-stone-original-77",
+      "name": "Portland Stone Original",
+      "hex": "#D2CBBC"
+    },
+    {
+      "code": "Purple Brown",
+      "name": "Purple Brown",
+      "hex": "#4C413F"
+    },
+    {
+      "code": "Purpleheart",
+      "name": "Purpleheart",
+      "hex": "#564976"
+    },
+    {
+      "code": "Putti",
+      "name": "Putti",
+      "hex": "#989988"
+    },
+    {
+      "code": "Regency Fawn",
+      "name": "Regency Fawn",
+      "hex": "#D1BDAA"
+    },
+    {
+      "code": "Rolling Fog",
+      "name": "Rolling Fog",
+      "hex": "#C7BDB0"
+    },
+    {
+      "code": "Rolling Fog Dark",
+      "name": "Rolling Fog Dark",
+      "hex": "#B0A291"
+    },
+    {
+      "code": "Rolling Fog Mid",
+      "name": "Rolling Fog Mid",
+      "hex": "#E2DACF"
+    },
+    {
+      "code": "Rolling Fog Pale",
+      "name": "Rolling Fog Pale",
+      "hex": "#EBE7DF"
+    },
+    {
+      "code": "rolling-fog-original-143",
+      "name": "Rolling Fog Original",
+      "hex": "#CABEB1"
+    },
+    {
+      "code": "Roman Plaster",
+      "name": "Roman Plaster",
+      "hex": "#BBA694"
+    },
+    {
+      "code": "Royal Navy",
+      "name": "Royal Navy",
+      "hex": "#2F4757"
+    },
+    {
+      "code": "Rubine Ashes",
+      "name": "Rubine Ashes",
+      "hex": "#D3CFCD"
+    },
+    {
+      "code": "Rusling",
+      "name": "Rusling",
+      "hex": "#F8EFE8"
+    },
+    {
+      "code": "Sage Green",
+      "name": "Sage Green",
+      "hex": "#868973"
+    },
+    {
+      "code": "Salix",
+      "name": "Salix",
+      "hex": "#C6CFC6"
+    },
+    {
+      "code": "Scree",
+      "name": "Scree",
+      "hex": "#696D6C"
+    },
+    {
+      "code": "Scullery",
+      "name": "Scullery",
+      "hex": "#705E50"
+    },
+    {
+      "code": "Secret Shell",
+      "name": "Secret Shell",
+      "hex": "#F4E2E8"
+    },
+    {
+      "code": "Serpentine",
+      "name": "Serpentine",
+      "hex": "#AAA69A"
+    },
+    {
+      "code": "Shallows",
+      "name": "Shallows",
+      "hex": "#E3E5E4"
+    },
+    {
+      "code": "Shirting",
+      "name": "Shirting",
+      "hex": "#F8F7F1"
+    },
+    {
+      "code": "Shrimp Pink",
+      "name": "Shrimp Pink",
+      "hex": "#EAC0B0"
+    },
+    {
+      "code": "Silt",
+      "name": "Silt",
+      "hex": "#988C7E"
+    },
+    {
+      "code": "Sky Blue",
+      "name": "Sky Blue",
+      "hex": "#9BC3CD"
+    },
+    {
+      "code": "sky-blue-103",
+      "name": "Sky Blue",
+      "hex": "#9BC2CD"
+    },
+    {
+      "code": "Slaked Lime",
+      "name": "Slaked Lime",
+      "hex": "#F3F0E9"
+    },
+    {
+      "code": "Slaked Lime Dark",
+      "name": "Slaked Lime Dark",
+      "hex": "#CAC4B7"
+    },
+    {
+      "code": "Slaked Lime Deep",
+      "name": "Slaked Lime Deep",
+      "hex": "#D6D1C5"
+    },
+    {
+      "code": "Slaked Lime Mid",
+      "name": "Slaked Lime Mid",
+      "hex": "#E8E4DB"
+    },
+    {
+      "code": "Smalt",
+      "name": "Smalt",
+      "hex": "#2E4A7D"
+    },
+    {
+      "code": "Spanish Brown",
+      "name": "Spanish Brown",
+      "hex": "#5E4A42"
+    },
+    {
+      "code": "Stargazer",
+      "name": "Stargazer",
+      "hex": "#FBE8B9"
+    },
+    {
+      "code": "Starling's Egg",
+      "name": "Starling's Egg",
+      "hex": "#EEF2E9"
+    },
+    {
+      "code": "Stock",
+      "name": "Stock",
+      "hex": "#ECE6D8"
+    },
+    {
+      "code": "Stock Dark",
+      "name": "Stock Dark",
+      "hex": "#DFCDAF"
+    },
+    {
+      "code": "Stock Deep",
+      "name": "Stock Deep",
+      "hex": "#E8D9C0"
+    },
+    {
+      "code": "Stock Mid",
+      "name": "Stock Mid",
+      "hex": "#F0E3CD"
+    },
+    {
+      "code": "Stone-Dark-Cool",
+      "name": "Stone-Dark-Cool",
+      "hex": "#C5B9A1"
+    },
+    {
+      "code": "Stone-Dark-Warm",
+      "name": "Stone-Dark-Warm",
+      "hex": "#B0997C"
+    },
+    {
+      "code": "Stone-Mid-Cool",
+      "name": "Stone-Mid-Cool",
+      "hex": "#D3C6AB"
+    },
+    {
+      "code": "Stone-Mid-Warm",
+      "name": "Stone-Mid-Warm",
+      "hex": "#DBC19D"
+    },
+    {
+      "code": "Stone-Pale-Cool",
+      "name": "Stone-Pale-Cool",
+      "hex": "#DED1B3"
+    },
+    {
+      "code": "Stone-Pale-Warm",
+      "name": "Stone-Pale-Warm",
+      "hex": "#E9DAC1"
+    },
+    {
+      "code": "Straw Colour",
+      "name": "Straw Colour",
+      "hex": "#EBC289"
+    },
+    {
+      "code": "Sunlight",
+      "name": "Sunlight",
+      "hex": "#DAC489"
+    },
+    {
+      "code": "Terra di Sienna",
+      "name": "Terra di Sienna",
+      "hex": "#D3A07D"
+    },
+    {
+      "code": "Thai Sapphire",
+      "name": "Thai Sapphire",
+      "hex": "#413C5F"
+    },
+    {
+      "code": "Theatre Red",
+      "name": "Theatre Red",
+      "hex": "#8D3642"
+    },
+    {
+      "code": "Tivoli",
+      "name": "Tivoli",
+      "hex": "#73A2C3"
+    },
+    {
+      "code": "Toad",
+      "name": "Toad",
+      "hex": "#4F4C41"
+    },
+    {
+      "code": "Tracery II",
+      "name": "Tracery II",
+      "hex": "#C3C3B5"
+    },
+    {
+      "code": "Travertine",
+      "name": "Travertine",
+      "hex": "#CDC0A3"
+    },
+    {
+      "code": "Travertine - Light",
+      "name": "Travertine - Light",
+      "hex": "#E0D6C0"
+    },
+    {
+      "code": "Travertine - Mid",
+      "name": "Travertine - Mid",
+      "hex": "#D5C9AF"
+    },
+    {
+      "code": "True Taupe",
+      "name": "True Taupe",
+      "hex": "#A79D8C"
+    },
+    {
+      "code": "Trumpet",
+      "name": "Trumpet",
+      "hex": "#E8D753"
+    },
+    {
+      "code": "Turquoise Blue",
+      "name": "Turquoise Blue",
+      "hex": "#7AB6A9"
+    },
+    {
+      "code": "Tuscana Red",
+      "name": "Tuscana Red",
+      "hex": "#A1645A"
+    },
+    {
+      "code": "Tuscany",
+      "name": "Tuscany",
+      "hex": "#D9AF9B"
+    },
+    {
+      "code": "Tusk",
+      "name": "Tusk",
+      "hex": "#E9E6DE"
+    },
+    {
+      "code": "Urbane Grey",
+      "name": "Urbane Grey",
+      "hex": "#AEB2AF"
+    },
+    {
+      "code": "Vulcan",
+      "name": "Vulcan",
+      "hex": "#525653"
+    },
+    {
+      "code": "Wedgwood Blue",
+      "name": "Wedgwood Blue",
+      "hex": "#B6C4D1"
+    },
+    {
+      "code": "Weekend",
+      "name": "Weekend",
+      "hex": "#C0C3D6"
+    },
+    {
+      "code": "Welcome",
+      "name": "Welcome",
+      "hex": "#DAD7D8"
+    },
+    {
+      "code": "Welcome Dark",
+      "name": "Welcome Dark",
+      "hex": "#C1BCBD"
+    },
+    {
+      "code": "Welcome Deep",
+      "name": "Welcome Deep",
+      "hex": "#D4D1D0"
+    },
+    {
+      "code": "Welcome Pale",
+      "name": "Welcome Pale",
+      "hex": "#EAE7E5"
+    },
+    {
+      "code": "welcome-original-109",
+      "name": "Welcome Original",
+      "hex": "#E1DDDC"
+    },
+    {
+      "code": "Whisper",
+      "name": "Whisper",
+      "hex": "#DDD7DE"
+    },
+    {
+      "code": "White Lead",
+      "name": "White Lead",
+      "hex": "#F7F2E0"
+    },
+    {
+      "code": "White Lead Dark",
+      "name": "White Lead Dark",
+      "hex": "#E4D7B3"
+    },
+    {
+      "code": "White Lead Deep",
+      "name": "White Lead Deep",
+      "hex": "#EEE5C8"
+    },
+    {
+      "code": "White Lead Mid",
+      "name": "White Lead Mid",
+      "hex": "#F4EDD6"
+    },
+    {
+      "code": "white-lead-original-74",
+      "name": "White Lead Original",
+      "hex": "#F5F0E0"
+    },
+    {
+      "code": "Whitening",
+      "name": "Whitening",
+      "hex": "#F1E9DA"
+    },
+    {
+      "code": "Woad",
+      "name": "Woad",
+      "hex": "#4B6580"
+    },
+    {
+      "code": "Wood Ash",
+      "name": "Wood Ash",
+      "hex": "#E7E8E6"
+    },
+    {
+      "code": "Woodbine",
+      "name": "Woodbine",
+      "hex": "#E4D3A7"
+    },
+    {
+      "code": "Yellow-Pink",
+      "name": "Yellow-Pink",
+      "hex": "#D2AA60"
+    }
+  ]
+}

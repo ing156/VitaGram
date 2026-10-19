@@ -194,8 +194,8 @@ inline Shape child_shape(Shape shape, const std::string& name) {
 }
 inline bool keeps(Shape shape, const std::string& name) {
     switch (shape) {
-    case Shape::Set: return wanted(name, {"@type", "@extra", "id", "title", "thumbnail", "stickers"});
-    case Shape::Item: return wanted(name, {"@type", "width", "height", "emoji", "format", "full_type", "thumbnail", "sticker"});
+    case Shape::Set: return wanted(name, {"@type", "@extra", "id", "title", "thumbnail", "stickers", "is_installed", "is_archived", "sticker_type"});
+    case Shape::Item: return wanted(name, {"@type", "width", "height", "emoji", "format", "full_type", "thumbnail", "sticker", "set_id"});
     case Shape::Thumbnail: return wanted(name, {"@type", "format", "width", "height", "file"});
     case Shape::File: return wanted(name, {"@type", "id", "size", "expected_size", "local", "remote"});
     case Shape::Local: return wanted(name, {"path", "is_downloading_completed", "is_downloading_active", "download_offset", "downloaded_size", "downloaded_prefix_size"});
@@ -217,13 +217,13 @@ inline bool keeps(Shape shape, const std::string& name) {
     case Shape::MediaFile: return wanted(name, {"id", "size", "expected_size", "local", "remote"});
     case Shape::UserUpdate: return wanted(name, {"@type", "@extra", "user"});
     // Members parseUser, user_identity and the UI cache read; "type" and "status" stay whole.
-    case Shape::User: return wanted(name, {"@type", "id", "first_name", "last_name", "type", "status", "profile_photo"});
+    case Shape::User: return wanted(name, {"@type", "id", "first_name", "last_name", "type", "status", "profile_photo", "accent_color_id", "upgraded_gift_colors"});
     case Shape::ProfilePhoto: return wanted(name, {"@type", "id", "small"});
     case Shape::ChatNew: return wanted(name, {"@type", "@extra", "chat"});
     // Members chatFromJson, parseChat and the UI cache (compact_chat) read; "type",
     // "permissions" and "positions" stay whole.
     case Shape::Chat: return wanted(name, {"@type", "id", "type", "title", "photo", "permissions", "positions", "last_message",
-        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id", "last_read_inbox_message_id"});
+        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id", "last_read_inbox_message_id", "accent_color_id", "upgraded_gift_colors"});
     case Shape::ChatPhoto: return wanted(name, {"@type", "small"});
     }
     return false;
@@ -342,7 +342,7 @@ inline json_t* compact_raw_messages(const std::string& text) {
 }
 
 // updateUser (2-4 KB, ~200 at startup) cost ~4.4 ms each in Jansson on the Parser thread,
-// yet the client reads only the names, type, status and the small profile photo file.
+// yet the client reads only names, type, status, colors and the small profile photo file.
 inline json_t* compact_raw_user_update(const std::string& text) {
     using namespace td_sets_detail;
     if (text.size() < 256 || text[0] != '{') return nullptr;

@@ -31,13 +31,13 @@ Colors colors(bool dark) {
     Colors c;
     c.background = dark ? RGBA8(16, 24, 33, 255) : RGBA8(238, 243, 248, 255);
     c.panel = dark ? RGBA8(31, 45, 59, 255) : RGBA8(255, 255, 255, 255);
-    c.ink = dark ? RGBA8(231, 238, 245, 255) : RGBA8(39, 51, 66, 255);
-    c.muted = dark ? RGBA8(163, 183, 200, 255) : RGBA8(105, 122, 140, 255);
-    c.accent = RGBA8(35, 135, 210, 255);
-    c.danger = RGBA8(214, 69, 65, 255);
-    c.ok = RGBA8(20, 143, 82, 255);
-    c.warn = RGBA8(224, 146, 36, 255);
-    c.separator = dark ? RGBA8(53, 70, 86, 255) : RGBA8(205, 216, 226, 255);
+    c.ink = ui_skin::color("text", dark ? RGBA8(231, 238, 245, 255) : RGBA8(39, 51, 66, 255));
+    c.muted = ui_skin::color("muted", dark ? RGBA8(163, 183, 200, 255) : RGBA8(105, 122, 140, 255));
+    c.accent = ui_skin::color("accent", RGBA8(35, 135, 210, 255));
+    c.danger = ui_skin::color("danger", RGBA8(214, 69, 65, 255));
+    c.ok = ui_skin::color("green", RGBA8(20, 143, 82, 255));
+    c.warn = ui_skin::color("warning", RGBA8(224, 146, 36, 255));
+    c.separator = ui_skin::color("divider", dark ? RGBA8(53, 70, 86, 255) : RGBA8(205, 216, 226, 255));
     // Screens sit on a themed card: hollow marks must be filled with the card color.
     if (ui_skin::ready()) c.background = c.panel = ui_skin::surface_color(c.panel);
     return c;
@@ -327,7 +327,7 @@ End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
         SceTouchData touch{}; sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
         const auto result = keyboard.handle(pressed, pad.old, touch.reportNum != 0,
             touch.reportNum ? touch.report[0].x / 2 : 0, touch.reportNum ? touch.report[0].y / 2 : 0,
-            sceKernelGetSystemTimeWide());
+            sceKernelGetSystemTimeWide(), &touch);
         if (result == CustomKeyboard::Result::Cancelled) return End::Select;
         if (result == CustomKeyboard::Result::Submitted) {
             out.assign(keyboard.text().begin(), keyboard.text().end()); return End::Submit;

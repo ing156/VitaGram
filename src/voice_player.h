@@ -12,7 +12,7 @@ public:
     void setSource(const std::string& path, bool video = false, bool music = false,
                    download_stream::Shared stream = nullptr);
     void toggle();
-    void setPlaying(bool playing) { if (!finished_) playing_ = playing; }
+    void setPlaying(bool playing);
     bool playing() const { return playing_ && !finished_; }
     // Restarts decoding of the current source at `us` (clamped by the caller). Keeps the play/pause state.
     void seekTo(int64_t us);

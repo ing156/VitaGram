@@ -1,5 +1,119 @@
 # Native checks
 
+## Что хранится в tests
+
+- `*_test.cpp`, `*_test.js`, `*_test.py` — код проверок; `run-*.sh` — запуск.
+- `*-stubs/`, `stubs/`, `test_language.h` — необходимые заглушки API Vita для ПК.
+- [`fixtures/`](fixtures/README.md) — текстовые входные данные, нужные тестам.
+  Это не ресурсы приложения; они не включаются в VPK.
+- `local/` — личные входные файлы и результаты диагностики, исключённые из Git:
+  `media/` (фото, видео, снимки экрана), `logs/`, `dumps/`, `output/`.
+  Старые файлы из корня перенесены сюда без изменения содержимого.
+
+Большинство проверок создаёт временные данные в `/tmp` и удаляет их после запуска.
+Локальное видео для `run-download-stream-tests.sh` теперь лежит в `local/media/`;
+в чистом checkout передайте свой H.264/AAC MP4 аргументом:
+`bash tests/run-download-stream-tests.sh /absolute/path/to/video.mp4`.
+Аудио для `run-audio-startup-tests.sh` также передаётся аргументами.
+Мультимедийные образцы в Git не включаются. Для воспроизводимых проверок
+оставляйте необходимые текстовые образцы в `fixtures/`,
+а не комментируйте тесты; новый образец нужно явно разрешить в `.gitignore`.
+
+
+Audio startup diagnostics: enable **Start → Diagnostic logs → Performance** before
+opening a music/voice message. Test both Play during downloading and Play on an
+already downloaded file; let the sound start (or wait through the delay), then
+close playback and allow at least five seconds for the background log writer.
+Collect `ux0:data/vitagram/performance.log` and `performance.previous.log` if present.
+The `audio_startup` lines correlate `player` and `generation`, with `at_us` on the
+same clock as other performance events. UI download/button events use generation 0
+and include Telegram's local `file_id`; filenames and media contents are omitted.
+`total_us` measures from decode entry, not from Play; subtract `at_us` of `play`
+from `first_output_begin` for Play-to-first-submission latency. Pauses/resumes and
+ignored Play presses are logged separately. Paired `*_begin`/`*_end` timestamps
+separate file attachment, container opening, stream probing, codec initialization,
+seeking, audio-port opening, PCM conversion and the first blocking AudioOut call.
+First-frame `result` is the sample rate, `decoded_channels`/`decoded_sample_format`
+report the decoded layout/format, and `codec_open_begin` reports FFmpeg's codec ID;
+other operation-end results retain the API return value. Output timestamps measure
+API submission/return, not physical speaker latency. A missing end marker identifies
+an unfinished stage; check `audio_startup_events dropped` before drawing conclusions.
+`bash tests/run-performance-tests.sh` checks gating, chronology, progress snapshots,
+bounded storage, nonblocking producers and background-log integration in ON/OFF builds.
+
+`bash tests/run-audio-startup-tests.sh /path/to/music.mp3 /path/to/music.m4a`
+uses native FFmpeg (same setup as the download-stream tests; override
+`FFMPEG_NATIVE_BUILD` if needed). Supply audio fixtures larger than 256 KiB.
+It checks full decoding/resampling without `avformat_find_stream_info`, matching
+PCM against the analyzed baseline and for ordinary/completed-download reads, the first audio block from a
+256 KiB prefix before download completion, and a fresh 30-second seek for tracks
+longer than 31 seconds. Both reported MP3/M4A files in `release/` pass these checks.
+Music now skips stream analysis, so new logs go from `open_input_end` to
+`codec_open_begin` without `stream_info_begin`/`stream_info_end`.
+
+`bash tests/run-gxm-guard-tests.sh` checks failed vertex/fragment uniform reservations,
+stale output pointers, scene and uniform-write failures, skipped GPU draws and
+recovery at the next successful scene. Uses installed VitaSDK headers (set `VITASDK`
+if needed), with GXM calls mocked; actual GPU recovery requires a PS Vita check.
+
+`python3 scripts/build-palette-editor.py && node tests/palette_editor_test.js`
+checks the offline Windows/Linux editor bundle, JSON/name limits, duplicate keys,
+all exported patterns, contrast and palette round trips. Optional Playwright UI
+checks cover import/download, Unicode filenames, catalogue selection, all preview
+screens and battery states, local catalogue import/replacement and invalid-file
+atomicity, and zero external HTTP requests; see
+[editor instructions](../tools/palette-editor/README.md).
+Border checks cover the unified color list, preserving manual/imported
+`border` and `focus` through auto shading, and JSON export/import. Native skin
+checks verify that both frame colors change without altering panel centers,
+alpha coverage, file reads or texture allocations.
+Preview checks exercise eight native views and verify actual draw coordinates:
+the five folder tabs, nine 43 px chat rows, status strip, settings viewport,
+theme picker and both corner menus. The bundle must contain the unchanged Noto
+font and constants from `src/ui_layout.h`; browser tests verify font sizing,
+opacity calibration and controller sprites while retaining zero HTTP requests.
+History checks include a reply to a visible message: the native date-chip quote,
+sender, source text, accent bar, alpha, expanded card and shifted following rows
+are checked at 120% and 130% font sizes.
+Semantic color checks cover icon/text independence, recolored notification pixels,
+active/inactive radio controls in the poll preview, delivery strokes, old-palette
+fallbacks, and custom-role presence bits beyond bit 31.
+
+The mask suite also exercises custom theme discovery from
+`ux0:data/vitagram/palletes/`: strict bounded JSON, UTF-8 filenames, symlink and
+directory rejection, ordering, the 64-theme cap, warm switches without reads or
+texture allocation, and separation from the legacy single-palette override.
+Vault sweep checks round-trip custom selections by filename, including pre-unlock
+hints, reordered numeric IDs and missing-file fallback.
+
+`bash tests/run-ui-mask-tests.sh` runs the real skin loader against PNG masks with
+host Vita API stubs and libpng. It checks alpha composition, strict/atomic JSON
+palette validation, recoloring without file reads or texture allocations, live
+same-size file changes, preset switches, invalid-file fallback, shared battery
+sprites and resource cleanup. Address/undefined sanitizers are enabled; system
+libpng and Jansson development headers from build-modern are required.
+The named presets are loaded from their packaged JSON files; the legacy
+override file must not replace them. Vault sweep tests round-trip all sixteen theme
+IDs through settings.json and the pre-unlock theme hint, checking light/dark mode.
+Mask tests compare the optimized compositor byte-for-byte with the original
+formula, report host timings, and verify picker wrapping, scrolling and touch boundaries.
+Theme-hint tests cover legacy single digits, two-digit IDs, newlines, invalid
+suffixes, overflow and out-of-range values.
+Every warm preset switch and swatch lookup must perform zero file reads and zero
+GPU texture allocations; VHBB transitions still exercise full loading and cleanup.
+Skin checks also inspect rendered corner glyphs and all six battery states for
+every masked preset. Battery tones must contrast at least 3:1 with both header
+endpoints; live changes to white, black, gray and blue headers repeat the checks
+without reads or allocations. Corner ink must contrast at least 4.5:1 with its surface.
+
+`python tests/theme_composition_test.py` checks catalogue color codes, malformed
+compositions, contrast rejection, portable recipes, and actual light/dark PNG
+generation with the existing UI template. It also checks palette-only exports,
+white/alpha mask layers and original icon coverage. It verifies dimensions, nine-slice
+insets, atlas coordinates, icon alpha and refusal to overwrite an existing pack.
+Use a Python environment with Pillow and CairoSVG; no Vita build or local paint
+catalogue is needed. See `assets/VitaGram_UI_Assets_v1/README_RU.md` for usage.
+
 `bash tests/run-scroll-tests.sh` checks held-arrow acceleration, direction and menu
 changes, release and resume cancellation, frame stalls, and the limit of one page
 per 0.5 seconds in Normal mode across different viewport sizes and frame rates.
@@ -75,8 +189,14 @@ test), build the app's FFmpeg release for the host (the Vita libraries are not t
 bash scripts/build-native-ffmpeg.sh
 export FFMPEG_NATIVE_BUILD="$PWD/external/ffmpeg-native/build"
 bash tests/run-video-tests.sh
-bash tests/run-webm-tests.sh
+bash tests/run-webm-tests.sh /absolute/path/to/sticker.webm /absolute/path/to/alpha.webm
 ```
+
+WebM checks cover user-supplied opaque and alpha samples (local copy: `tests/local/media/alpha.webm`)
+(the reported white-background sticker): transparent, opaque and partial-alpha
+pixels after RGBA conversion, every frame after looping, and malformed alpha
+payload rejection. These use the production alpha decoder; Vita GPU blending
+and playback performance still need a physical-device check.
 
 The test decodes every video and audio packet and checks square dimensions,
 circle masking, non-silent audio, duration, exact timestamps for 90 frames (including
@@ -233,10 +353,11 @@ Transfer tests cover cached deletion permission reads beyond the refresh interva
 photos, videos and files, the 10-item limit, path identity across folders and the
 latest view, retained selections during refresh/navigation, and explicit review
 before sending. Review checks cover Send as the first row, sending from any row,
-empty/duplicate-send rejection, file preview/removal offsets and the three Add rows.
+empty/duplicate-send rejection, file preview/removal offsets and the two Add rows (Multimedia and File). Mixed multimedia browsing checks
+photo/video filtering and automatic outgoing types, plus return-menu focus.
 It also covers all six sort modes, cycling both ways, preserving
 the focused file and marks, equal filenames, and returning to the right folder
-after changing sort order in a child directory. The photo root shortcut for
+after changing sort order in a child directory. The multimedia root shortcut for
 latest screenshots must remain first through every sort, refresh and return. Requires VitaSDK headers; filesystem and clock calls are stubbed.
 Visual highlighting and physical/touch controls require a PS Vita check.
 
@@ -255,6 +376,8 @@ controller/touch behavior or decoder startup time on Vita hardware.
 `bash tests/run-keyboard-tests.sh` checks the shared vault/text keyboard with
 controller and touch events: localized layouts and shift, short/long presses, UTF-8 deletion
 and limits, multiline whitespace, submit/cancel and masked secret rendering.
+System message input keeps Enter instead of multiline, including direct and
+switched Japanese/Korean/Chinese IME routing; custom input retains line breaks.
 It also verifies letter/digit previews, their suppression for secrets, the wider
 text spacebar and the absence of clear-all through touch or R in ordinary fields.
 RU checks cover the 11/11/9 letter rows, е→ё and ь→ъ with touch/controller holds,
@@ -312,3 +435,66 @@ either the full keyboard or the vault keyboard-only drawing mode.
 `bash tests/run-updater-lifecycle-tests.sh` runs the production updater and separate updater app with mocked HTTPS, graphics and Vita system calls. It checks signed download/staging, signature revalidation at startup, helper installation, application installation/relaunch, cleanup, fallback storage and failures. Telegram VPK installation must remain blocked while a signed update is busy or staged, including pending markers left in either storage folder; explicit local handoff remains available after completion. Test packages use a temporary signing key; the production release key and verifier are unchanged. Actual device promotion still needs a PS Vita.
 
 Transfer tests cover overlapping text styles, UTF-16 offsets after emoji and invalid entity ranges. Text formatting and spoiler controls require visual verification on Vita.
+
+`bash tests/run-transfer-tests.sh` also checks Telegram user colors: built-in and server palettes, light/dark variants, gift accents, live channel changes, reply authors from history/cache/external origins, offline startup and live-over-cache precedence. `bash tests/run-vault-tests.sh` checks that the user-color switch persists and defaults to enabled for missing or invalid values.
+
+`bash tests/run-reaction-tests.sh` checks short Cross on release, the 550 ms
+hold threshold, single activation, selection/chat/topic and modal cancellation,
+resume gaps, and controller/touch grid mapping with a separate preferred row.
+Grid checks include cell edges, non-clickable gaps, empty preferred-row slots,
+page offsets and unused cells on the last page.
+It also checks short sticker/GIF selection, held Cross/touch previews, release without
+sending, and cancellation on changed item/set/search generation/chat/topic, navigation or overlays.
+Transfer checks cover full sticker/GIF downloads, completion gating, thumbnail separation
+and static/animated sticker format selection. GIF catalog tests check completed full-file
+paths for saved and searched GIFs and reject partially downloaded files for playback.
+Transfer checks cover preferred/recent ordering, duplicate and Premium filtering,
+and the eight-item first-row limit. Physical controls still need a Vita check.
+
+`bash tests/run-radial-menu-tests.sh` checks the 250 ms Square threshold, five
+fixed stick sectors, neutral/dead-zone and angular hysteresis, direct L/R modes,
+pinned reply IDs, Circle/scope/suspend cancellation, rapid represses and exact-once
+confirmation after closing. It checks early-release animation continuity, cached
+geometry and actual themed drawing with a bounded frame-pool stub and zero menu
+heap allocations over warm frames. Transfer checks cover replies for text,
+stickers, inline GIFs, voice, mixed albums/documents, failures and cancellation.
+Vita GPU appearance and 60 FPS timing require physical-device verification.
+
+Radial checks also cover repeated L and R toggles in both directions, simultaneous
+shoulder presses, rounded contour bounds and curved corners. The real renderer
+keeps the 496 px glass wheel and glow inside the viewport, including the badges,
+icons and captions, within a bounded GPU frame pool and without warm-frame heap
+allocations. `RADIAL_PREVIEW=/tmp/radial.jsonl bash tests/run-radial-menu-tests.sh`
+exports native drawing commands for visual review; fonts and compositing on the
+physical Vita still require a device check.
+
+Radial smoothing checks bound circle/arc/corner chord errors below 0.05 px,
+verify cached unit contour normals, and require one-pixel alpha-coverage strips
+on the real rendered shapes while retaining the fixed GPU-pool and zero-heap
+checks. Petals, central rings and rounded icon/text boxes use local edge smoothing.
+
+Design checks also cover dark radial glass, adaptive glyph/label contrast,
+Light/Dark secondary text and BBR/BRR2 palettes. Palette Studio browser checks
+include the ninth radial view, selection, L/R toggles and live theme changes.
+
+Keyboard design regressions verify theme wallpaper/header use, key masks,
+independent focus color, readable normal/pressed/disabled labels, accent
+glyph contrast and the vault keyboard-only mode. Theme tests keep slots
+6/7 assigned to black-blue/black-red without shifting the remaining IDs.
+
+Split-keyboard regressions send real two-contact packets through CustomKeyboard
+and Keyboard, including reordered IDs, single-finger tails, jitter, one-sided/
+vertical/parallel drags, stale chords, third fingers, all custom layouts,
+release typing/submission, repeat deletion and masked vault entry.
+
+Keyboard drawing checks also verify 2 px key borders and one-pixel transparent
+coverage fringes on dense rounded contours in both full and split layouts.
+
+`bash tests/run-reaction-tests.sh` also checks quote frame widths and boundaries
+for multiline, adjacent and single-line blocks. Transfer checks cover current
+reaction counts/selection, sticker/custom emoji set lookup, installation retries,
+request deduplication and stale responses after leaving the set.
+
+Chat opening checks in `run-transfer-tests.sh` cover latest/server/device modes, exact read anchors, encrypted-cache position persistence and early-restore precedence, memory-cap acknowledgement, bounded history in both directions, deleted targets, retry and stale responses. `run-vault-tests.sh` covers preference persistence. Loading-screen appearance, physical input and RAM headroom require a Vita check.
+
+Chat opening priority checks cover newer device/server positions, equal or missing markers, and preservation of latest/device-only modes for chats, forum topics and comments.

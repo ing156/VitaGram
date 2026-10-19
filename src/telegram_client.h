@@ -5,6 +5,7 @@
 #include "media_uploads.h"
 #include "td_event_queue.h"
 #include "poll.h"
+#include "peer_colors.h"
 #include "gif_catalog.h"
 #include <map>
 #include <set>
@@ -24,6 +25,7 @@
 #include <unordered_map>
 
 struct ChatItem {
+    peer_colors::Peer colors;
     int64_t supergroup_id = 0;
     int64_t user_id = 0;
     bool group = false;
@@ -37,7 +39,7 @@ struct ChatItem {
     int64_t last_message_id = 0;
     int unread_count = 0;
     bool marked_unread = false;
-    int64_t last_read_inbox = 0; // Server read position; the open chat starts at the first message after it.
+    int64_t last_read_inbox = 0; // Synchronized Telegram read position.
     std::string title;
     int32_t avatar_file_id = 0;
     std::string avatar_path;
@@ -53,8 +55,8 @@ struct PhotoItem {
 };
 
 enum class DeliveryState { Pending, Sent, Read, Failed };
-struct ForumTopicItem { int32_t id = 0; std::string title; int unread = 0; bool closed = false; };
-struct SendStickerItem { int32_t file = 0, preview = 0; int width = 0, height = 0; std::string emoji, path; };
+struct ForumTopicItem { int32_t id = 0; std::string title; int unread = 0; bool closed = false; int64_t last_read_inbox = 0; };
+struct SendStickerItem { int32_t file = 0, preview = 0; int width = 0, height = 0; bool animated = false; std::string emoji, path, full_path; int64_t set_id = 0; };
 // Folder tab id of the Archive (TDLib chatListArchive); TDLib folder ids are positive.
 constexpr int32_t kArchiveFolderId = -2;
 struct ChatFolderItem {
@@ -99,6 +101,8 @@ struct MessageItem {
     std::string document_name;
     int64_t document_size = 0, document_downloaded = 0;
     bool sticker = false;
+    int64_t sticker_set_id = 0;
+    std::vector<int64_t> custom_emoji_ids;
     bool animation = false;
     bool video = false, video_note = false; // Shares the animation download/preview fields.
     int video_duration = 0;
@@ -130,6 +134,8 @@ struct MessageItem {
     int64_t forward_origin_id = 0;
     std::string forward_hidden_name, forward_source;   // forward_source is resolved at display time
     int64_t reply_to_id = 0, reply_chat_id = 0;
+    int64_t reply_sender_id = 0;
+    bool reply_sender_chat = false;
     std::string reply_quote, reply_origin_name, reply_sender; i18n::Text reply_text;
     bool reply_missing = false;
     // Discussion thread of a channel post (TDLib interaction_info.reply_info): present only when the post has a
@@ -192,7 +198,13 @@ public:
     bool cacheMaintenance() const { return cache_maintenance_; }
     std::string currentChatAvatar() const;
     void stopWorker();
-    void loadOlder();
+    void loadOlder(bool open_post = false);
+    void loadNewer(bool open_post = false);
+    bool historyWindow() const { return history_window_; }
+    void setChatOpenPosition(int value) { chat_open_position_ = std::clamp(value, 0, 2); }
+    bool historyAnchorFar() const { return history_anchor_far_; }
+    void acceptHistoryAnchorFar();
+    void retryHistoryOpening();
     int historyPercent() const { return history_done_ ? 100 : std::min(99, (int)history_items_.size() * 100 / history_target_); }
     bool historyLoading() const { return current_chat_id_ && !history_done_; }
     bool historyAnchorPending() const { return history_anchor_ != 0; }
@@ -251,6 +263,8 @@ public:
     std::string senderAvatar(const MessageItem& message) const;
     i18n::Text senderName(const MessageItem& message) const;
     bool senderIsDeleted(const MessageItem& message) const;
+    peer_colors::Palette senderColors(int64_t id, bool chat, bool dark) const;
+    peer_colors::Palette chatColors(const ChatItem& chat, bool dark) const;
     i18n::Text serviceMessageText(const MessageItem& message) const;
 
     void refreshChats();
@@ -282,6 +296,7 @@ public:
     // Comments of a channel post are the linked discussion's thread (getMessageThread + getMessageThreadHistory).
     bool openComments(int64_t message_id, bool from_post);
     bool inComments() const { return current_thread_ != 0; }
+    int64_t currentThreadId() const { return current_thread_; }
     void closeComments();   // back to the channel, positioned on the post the comments belong to
     bool openTelegramLink(const std::string& url);
     bool takeLinkChatOpened() { bool opened = link_chat_opened_; link_chat_opened_ = false; return opened; }
@@ -303,10 +318,16 @@ public:
     bool sendLocalFiles(const std::vector<std::pair<std::string, int>>& files, int64_t chat, int32_t topic, const std::string& caption = "");
     bool sendLocalFile(const std::string& path, int kind, bool original, int64_t chat, int32_t topic, const std::string& caption = "");
     void openStickers();
+    void openStickerSet(int64_t set_id, int64_t custom_emoji_id = 0);
+    void installStickerSet();
+    bool stickerSetOpen() const { return sticker_view_open_; }
+    bool stickerSetEmoji() const { return sticker_view_open_ && sticker_view_emoji_; }
+    bool stickerSetCanInstall() const { return sticker_view_id_ && !sticker_view_installed_ && !sticker_view_pending_; }
+    const std::string& stickerSetTitle() const { return sticker_view_title_; }
     void loadStickerPacks();
     void selectStickerPack(int index);
     void ensureStickerPackIcon(size_t index);
-    void ensureSticker(size_t index);
+    void ensureSticker(size_t index, bool full = false);
     bool sendSticker(size_t index);
     const std::vector<SendStickerItem>& stickers() const { return stickers_; }
     const std::vector<ChatFolderItem>& stickerPacks() const { return sticker_packs_; }
@@ -314,7 +335,7 @@ public:
     void searchGifs(const std::string& query = "");
     void loadMoreGifs();
     void closeGifs();
-    void ensureGif(size_t index);
+    void ensureGif(size_t index, bool full = false);
     bool sendGif(size_t index);
     const GifCatalog& gifs() const { return gifs_; }
     const i18n::Text& gifStatus() const { return gif_status_; }
@@ -322,15 +343,17 @@ public:
     bool answerPoll(int64_t message, const std::vector<int>& options);
     std::string pollStatus(int64_t message) const;
     bool pollPending(int64_t message) const;
-    void loadReactions(int64_t message_id);
+    void loadReactions(int64_t message_id, bool refresh = false);
     void viewMessage(int64_t message_id);
-    void messagesPresented();
+    void messagesPresented(int64_t selected_message = 0);
     void toggleReaction(int64_t message_id, const std::string& emoji);
     void ensureReactionMedia(size_t index);
     std::string reactionIcon(size_t index) const;
+    MessageItem::Reaction reactionState(size_t index) const;
     void ensureMessageReactionMedia();
     std::string customReactionIcon(int64_t custom_emoji_id) const;
     const std::vector<std::string>& reactionChoices() const { return reaction_choices_; }
+    int reactionTopCount() const { return reaction_top_count_; }
     const i18n::Text& reactionStatus() const { return reaction_status_; }
     void leaveChat();
     // Chat search: local chats, then the server, then public usernames. Results are ChatItem copies from the known chats.
@@ -346,8 +369,9 @@ public:
     void joinCurrentChat();
     // True when the user may post text in the opened chat (private chats, members of groups, admins of channels).
     bool canPostCurrent() const;
-    // Reply: the next composed text message answers this message of the opened chat.
+    // Reply context is shared by text and attachment workflows.
     void replyTo(int64_t message_id);
+    bool setCompositionReply(int64_t message_id);
     int64_t replyTarget() const { return reply_target_; }
     // Forward: remember a message, then copy it into any chat where posting is possible.
     // refresh=false reads cached rights without issuing requests or expiring the visible action.
@@ -412,6 +436,9 @@ private:
     unsigned topics_generation_ = 0;
     bool matchesTopic(void* message) const;
     std::vector<SendStickerItem> stickers_;
+    bool sticker_view_open_ = false, sticker_view_installed_ = false, sticker_view_pending_ = false, sticker_view_emoji_ = false;
+    int64_t sticker_view_id_ = 0;
+    std::string sticker_view_title_;
     GifCatalog gifs_;
     i18n::Text gif_status_;
     std::string gif_request_kind_;
@@ -429,6 +456,7 @@ private:
     i18n::Text sticker_status_;
     unsigned sticker_generation_ = 0, sticker_session_ = 0;
     std::vector<std::string> reaction_choices_;
+    int reaction_top_count_ = 0;
     std::unordered_map<std::string,int64_t> reaction_custom_choices_;
     struct ReactionPreview { int32_t file=0; std::string path; };
     std::unordered_map<int64_t,ReactionPreview> reaction_previews_;
@@ -440,6 +468,9 @@ private:
     bool reaction_pending_ = false, reaction_loading_ = false, reaction_loaded_ = false;
     bool cache_maintenance_ = false;
     std::unordered_map<int64_t, std::string> user_names_;
+    std::unordered_map<int64_t, peer_colors::Peer> user_colors_;
+    peer_colors::Colors accent_colors_;
+    bool live_accent_colors_ = false;
     struct UserPresence { std::string type; int64_t time = 0; bool bot = false; };
     std::unordered_map<int64_t, UserPresence> user_presence_;
     void parseUserStatus(int64_t id, void* status);
@@ -604,6 +635,11 @@ private:
     bool history_pending_ = false, history_done_ = true, history_end_ = false;
     int history_target_ = 60;
     int64_t history_cursor_ = 0;
+    int64_t pending_read_anchor_ = 0;
+    int chat_open_position_ = 0;
+    bool history_anchor_far_ = false, history_window_ = false, history_window_latest_ = false;
+    int64_t history_deadline_ = 0;
+    void requestHistoryWindow(int64_t anchor, int direction = 0, bool open_post = false);
     int64_t history_anchor_ = 0; // Read position of the chat being opened; 0 when no jump is pending.
     void resolveHistoryAnchor();
     bool historyAnchorSeeking() const;

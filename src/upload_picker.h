@@ -9,7 +9,7 @@
 // Photos and videos are sent compressed, everything else as unmodified documents.
 class UploadPicker {
 public:
-    enum class Kind { Photo, Video, File };
+    enum class Kind { Photo, Video, File, Media };
     enum class Stage { Closed, Menu, Browse, Review };
     enum class Sort { Newest, Oldest, NameAsc, NameDesc, SizeAsc, SizeDesc, Count };
     struct Entry { std::string name; bool dir = false; int64_t size = 0; uint64_t modified = 0; std::string date; i18n::Text label; std::string full; };
@@ -17,7 +17,7 @@ public:
     static constexpr size_t MaxItems = 10;
 
     Stage stage = Stage::Closed;
-    Kind kind = Kind::Photo;       // type being browsed
+    Kind kind = Kind::Media;       // type being browsed
     std::string path; i18n::Text error;
     std::vector<Entry> entries;
     std::vector<Item> items;       // collected attachments
@@ -41,8 +41,8 @@ public:
     void refresh();
     void changeSort(int direction); // D-pad left/right, without rescanning files
     const char* sortKey() const;
-    // Review rows: "send", items..., "add photo", "add video", "add file", text.
-    int reviewRows() const { return (int)items.size() + 5; }
+    // Review rows: "send", items..., "add multimedia", "add file", text.
+    int reviewRows() const { return (int)items.size() + 4; }
     bool textSelected() const { return stage == Stage::Review && selected == reviewRows() - 1; }
     const char* captionKey() const { return caption.empty() ? "upload.add_text" : "upload.edit_text"; }
     bool reviewActivate();         // true when the batch was released for sending

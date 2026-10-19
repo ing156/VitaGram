@@ -24,7 +24,7 @@ int main() {
 
     auto* page = parse(R"({"inline_query_id":"9007199254740993","next_offset":"page2","results":[
         {"@type":"inlineQueryResultAnimation","id":"one","title":"Dog","animation":{
-          "animation":{"id":21},"width":320,"height":180,"duration":2,
+          "animation":{"id":21,"local":{"path":"dog.mp4","is_downloading_completed":true}},"width":320,"height":180,"duration":2,
           "thumbnail":{"format":{"@type":"thumbnailFormatJpeg"},"file":{"id":22,
             "local":{"is_downloading_completed":true,"path":"dog.jpg"}}}}},
         {"@type":"inlineQueryResultPhoto","id":"ignore"},
@@ -38,6 +38,7 @@ int main() {
     assert(!catalog.pending && !catalog.end && catalog.next_offset == "page2");
     assert(catalog.items.size() == 2);
     assert(catalog.items[0].preview == 22 && catalog.items[0].path == "dog.jpg");
+    assert(catalog.items[0].full_path == "dog.mp4");
     assert(catalog.items[1].fallback == "inline-jpeg:/9j/");
     assert(catalog.items[1].preview == 23 && catalog.items[1].video_preview);
     assert(GifCatalog::previewPath(catalog.items[1], "preview.mp4") == "video-thumb:preview.mp4");
@@ -55,18 +56,20 @@ int main() {
     json_decref(send);
 
     auto* second = parse(R"({"inline_query_id":99,"next_offset":"page2","results":[
-      {"@type":"inlineQueryResultAnimation","id":"three","animation":{"animation":{"id":31}}}]})");
+      {"@type":"inlineQueryResultAnimation","id":"three","animation":{"animation":{"id":31,"local":{"path":"partial.mp4","is_downloading_completed":false}}}}]})");
     catalog.append(second, false, "page2");
     assert(catalog.end && catalog.items.size() == 3); // repeating cursor cannot loop
     assert(catalog.items[0].query_id == 9007199254740993LL && catalog.items[2].query_id == 99);
+    assert(catalog.items[2].full_path.empty());
     json_decref(second); json_decref(page);
 
     catalog.reset(100, 0, 1234, "");
-    auto* saved = parse(R"({"animations":[{"animation":{"id":51},"width":640,"height":360,"duration":3,
+    auto* saved = parse(R"({"animations":[{"animation":{"id":51,"local":{"path":"saved.mp4","is_downloading_completed":true}},"width":640,"height":360,"duration":3,
       "thumbnail":{"format":{"@type":"thumbnailFormatWebp"},"file":{"id":52,"local":{"path":"partial.webp","is_downloading_completed":false}}}},
       {"animation":{"id":0}}]})");
     catalog.append(saved, true, "");
     assert(catalog.end && catalog.items.size() == 1 && catalog.items[0].path.empty());
+    assert(catalog.items[0].full_path == "saved.mp4");
     send = catalog.sendRequest(0);
     assert(!std::strcmp(GifCatalog::string(send, "@type"), "sendMessage"));
     auto* content = json_object_get(send, "input_message_content");

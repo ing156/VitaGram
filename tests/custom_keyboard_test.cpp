@@ -6,8 +6,13 @@
 #include "keyboard_languages.h"
 #include "media_render.h"
 #include "ui_skin.h"
+#include "ui_color.h"
+#include <map>
+#include <array>
+#include <cmath>
 #include "i18n.h"
 #include <psp2/ctrl.h>
+#include <psp2/touch.h>
 #include <psp2/kernel/clib.h>
 #include <algorithm>
 #include <cassert>
@@ -33,20 +38,52 @@ SceInt32 sceImeDialogTerm() { ++ime_terms; return 0; }
 static std::vector<std::string> drawn, previews, language_options;
 struct DrawnKey { int x, baseline; std::string label; };
 static std::vector<DrawnKey> letter_keys;
-struct RenderedText { int x, baseline; std::string label; };
+struct RenderedText { int x, baseline; std::string label; unsigned color; };
 static std::vector<RenderedText> rendered_text;
 static std::vector<int> shortcut_badges;
 static std::vector<std::pair<int, int>> carets;
-void vita2d_draw_rectangle(float x, float y, float w, float h, unsigned) {
+static std::map<std::string,unsigned> palette;
+static int background_calls=0, header_calls=0, key_slices=0;
+static std::vector<unsigned> fills;
+static int smooth_contours=0;
+static bool record_shapes=false;
+struct Shape { float x,y,w,h; unsigned color; };
+static std::vector<Shape> shapes;
+void* vita2d_pool_memalign(size_t bytes,size_t) {
+    static std::array<vita2d_color_vertex,208> pool;
+    assert(bytes<=pool.size()*sizeof(vita2d_color_vertex));return pool.data();
+}
+void vita2d_draw_array(SceGxmPrimitiveType primitive,const vita2d_color_vertex* vertices,size_t count) {
+    for(size_t i=0;i<count;++i)assert(std::isfinite(vertices[i].x) && std::isfinite(vertices[i].y));
+    if(primitive==SCE_GXM_PRIMITIVE_TRIANGLE_STRIP) {
+        assert(count==138);
+        for(size_t i=0;i<count;i+=2) {
+            const auto a=vertices[i],b=vertices[i+1];
+            assert((b.color>>24)==0 && (a.color & 0x00FFFFFFu)==b.color);
+            assert(std::fabs((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)-1)<.001f);
+        }
+        ++smooth_contours;
+    } else {
+        assert(primitive==SCE_GXM_PRIMITIVE_TRIANGLE_FAN && count==70);
+        fills.push_back(vertices[0].color);
+        if(record_shapes) {
+            float x=vertices[1].x,y=vertices[1].y,right=x,bottom=y;
+            for(size_t i=1;i<count;++i){x=std::min(x,vertices[i].x);y=std::min(y,vertices[i].y);right=std::max(right,vertices[i].x);bottom=std::max(bottom,vertices[i].y);}
+            shapes.push_back({x,y,right-x,bottom-y,vertices[0].color});
+        }
+    }
+}
+void vita2d_draw_rectangle(float x, float y, float w, float h, unsigned color) {
+    fills.push_back(color);
     if (w == 2 && h == 22) carets.emplace_back(int(x), int(y));
 }
 void vita2d_draw_fill_circle(float, float, float, unsigned) {}
 void vita2d_draw_line(float, float, float, float, unsigned) {}
 void vita2d_draw_texture_tint_part_scale(const vita2d_texture*, float, float, float, float, float, float, float, float, unsigned) {}
 int rich_text_width(vita2d_pgf*, float, const char* text) { return std::strlen(text) * 10; }
-void rich_text_draw(vita2d_pgf*, int x, int baseline, unsigned, float scale, const char* text) {
+void rich_text_draw(vita2d_pgf*, int x, int baseline, unsigned color, float scale, const char* text) {
     drawn.emplace_back(text);
-    rendered_text.push_back({x, baseline, text});
+    rendered_text.push_back({x, baseline, text, color});
     if (scale >= 1.0f) previews.emplace_back(text);
     if (scale == 0.68f) language_options.emplace_back(text);
     if (scale == 0.82f) letter_keys.push_back({x + int(std::strlen(text))*5, baseline, text});
@@ -54,8 +91,11 @@ void rich_text_draw(vita2d_pgf*, int x, int baseline, unsigned, float scale, con
 namespace ui_skin {
 bool ready() { return false; }
 unsigned surface_color(unsigned fallback) { return fallback; }
-bool background(float, float) { return false; }
-bool nine(Slice, float, float, float, float, unsigned) { return false; }
+unsigned color(const char* role, unsigned fallback) { auto it=palette.find(role); return it==palette.end()?fallback:it->second; }
+bool is_dark(bool fallback) { return palette.empty()?fallback:ui_color::luminance(color("background",0))<ui_color::luminance(color("text",0)); }
+bool header(float) { ++header_calls; return !palette.empty(); }
+bool background(float, float) { ++background_calls; return !palette.empty(); }
+bool nine(Slice, float, float, float, float, unsigned) { ++key_slices; return !palette.empty(); }
 bool button(int index, Sprite&) { shortcut_badges.push_back(index); return false; }
 }
 
@@ -128,8 +168,9 @@ int main(int argc, char** argv) {
     dialog.handle(SCE_CTRL_START, SCE_CTRL_START, false, 0, 0, now++);
     assert(!dialog.active() && dialog.submitted() && dialog.text() == "initial");
     dialog.close(); assert(dialog.text().empty() && !dialog.submitted() && ime_terms == 0);
-    dialog.configure(false, false); dialog.open("system");
+    dialog.configure(false, false); dialog.open("system", false, "draft", true);
     assert(dialog.systemActive() && ime_inits == 1);
+    assert(!(last_ime.option & SCE_IME_OPTION_MULTILINE));
     ime_buffer[0] = 0x044f; ime_buffer[1] = 0xd83d; ime_buffer[2] = 0xde00; ime_buffer[3] = 0;
     ime_finished = true;
     dialog.handle(0, 0, false, 0, 0, now++);
@@ -577,7 +618,7 @@ int main(int argc, char** argv) {
         assert(last_ime.supportedLanguages == masks[i] && last_ime.languagesForced == SCE_TRUE);
         assert(last_ime.initialText[0] == 'd' && last_ime.initialText[4] == 't');
         assert(last_ime.initialText[5] == 0xd83d && last_ime.initialText[6] == 0xde00);
-        assert(last_ime.option & SCE_IME_OPTION_MULTILINE);
+        assert(!(last_ime.option & SCE_IME_OPTION_MULTILINE));
         fallback.close();
     }
     Keyboard password; password.configure(true, true, {"en", "ja"}); password.open("password", true, "draft");
@@ -609,12 +650,111 @@ int main(int argc, char** argv) {
     assert(last_ime.supportedLanguages == (SCE_IME_LANGUAGE_ENGLISH | SCE_IME_LANGUAGE_ENGLISH_GB |
         SCE_IME_LANGUAGE_RUSSIAN | SCE_IME_LANGUAGE_TURKISH | SCE_IME_LANGUAGE_PORTUGUESE_BR));
     native.close();
-    Keyboard japanese; japanese.configure(true, true, {"ja"}); japanese.open("compose");
+    Keyboard japanese; japanese.configure(true, true, {"ja"}); japanese.open("compose", false, "draft", true);
     assert(japanese.systemActive() && last_ime.supportedLanguages == SCE_IME_LANGUAGE_JAPANESE);
+    assert(!(last_ime.option & SCE_IME_OPTION_MULTILINE));
     japanese.close();
     CustomKeyboard vault_keyboard; vault_keyboard.setLanguages({"ja", "ko"}); vault_keyboard.open("", true, false, 128);
     assert(!vault_keyboard.systemRequested() && !vault_keyboard.setLanguage("ja"));
     assert(vault_keyboard.language() == "en");
     i18n::select("en");
-    std::puts("custom keyboard: touch/controller, EN/RU, 300 ms choices, touch slides/controller selection, UTF-8 limits/deletion, multiline, masking, submit/cancel: PASS");
+    // Changing the active palette changes the keyboard, including pressed and disabled glyph contrast.
+    for (const auto accent : {RGBA8(54,158,255,255),RGBA8(255,54,93,255),RGBA8(255,218,0,255)}) {
+        palette={{"background",RGBA8(5,8,15,255)},{"menu",RGBA8(13,17,23,255)},
+            {"surface",RGBA8(22,14,20,255)},{"surface_secondary",RGBA8(41,17,26,255)},
+            {"selected",RGBA8(64,21,33,255)},{"text",RGBA8(255,243,246,255)},
+            {"muted",RGBA8(218,191,201,255)},{"accent",accent},{"focus",RGBA8(200,9,9,255)},
+            {"border",RGBA8(87,78,83,255)},{"header_text",RGBA8(8,6,9,255)}};
+        open("draft",false,true,1023);
+        background_calls=header_calls=key_slices=0;rendered_text.clear();fills.clear();
+        shapes.clear();record_shapes=true;smooth_contours=0;
+        kb.draw(nullptr,false,"themed"); // Palette decides brightness even when the caller passes Light.
+        assert(background_calls==1 && header_calls==1 && key_slices>20);
+        record_shapes=false;assert(smooth_contours>=60);
+        const auto outline=std::find_if(shapes.begin(),shapes.end(),[&](const auto& shape){return shape.color==palette["focus"];});
+        assert(outline!=shapes.end() && outline+1!=shapes.end());
+        const auto face=outline+1;
+        assert(std::fabs(face->x-outline->x-2)<.001f && std::fabs(face->y-outline->y-2)<.001f);
+        assert(std::fabs(outline->w-face->w-4)<.001f && std::fabs(outline->h-face->h-4)<.001f);
+        assert(std::find(fills.begin(),fills.end(),palette["focus"])!=fills.end());
+        auto label_color=[&](const std::string& label){
+            const auto it=std::find_if(rendered_text.begin(),rendered_text.end(),[&](const auto& run){return run.label==label;});
+            assert(it!=rendered_text.end());return it->color;
+        };
+        assert(label_color("themed")==palette["header_text"]);
+        assert(ui_color::contrast(label_color("q"),palette["surface"])>=4.5);
+        assert(label_color(i18n::tr("keyboard.send"))==ui_color::on(accent));
+        assert(ui_color::contrast(label_color(i18n::tr("keyboard.send")),accent)>=4.5);
+        event(0,0,true,890,505);rendered_text.clear();kb.draw(nullptr,false,"themed");
+        assert(ui_color::contrast(label_color(i18n::tr("keyboard.send")),palette["selected"])>=4.5);
+        event();open("",false,true,1023);rendered_text.clear();kb.draw(nullptr,false,"themed");
+        assert(ui_color::contrast(label_color(i18n::tr("keyboard.send")),palette["surface_secondary"])>=4.5);
+        background_calls=header_calls=0;open("secret",true,false,128);rendered_text.clear();
+        kb.draw(nullptr,false,"unlock",true);
+        assert(background_calls==0 && header_calls==0);
+        for(const auto& run:rendered_text)assert(run.label.find("secret")==std::string::npos);
+    }
+    palette.clear();
+    // Real two-contact packets reach the shared keyboard; the whole chord owns its release tail.
+    CustomKeyboard split_keyboard; split_keyboard.setLanguages(keyboard_languages::supported());
+    split_keyboard.open("draft",false,true,1023,false,false);assert(split_keyboard.setLanguage("en"));
+    struct Contact { unsigned char id; int x,y; };
+    uint64_t gesture_now=100000;
+    auto fingers=[&](std::initializer_list<Contact> contacts,uint64_t elapsed=16000,unsigned pressed=0){
+        SceTouchData data{};
+        for(const auto point:contacts){auto& r=data.report[data.reportNum++];r.id=point.id;r.x=point.x*2;r.y=point.y*2;}
+        gesture_now+=elapsed;
+        return split_keyboard.handle(pressed,pressed,data.reportNum!=0,data.report[0].x/2,data.report[0].y/2,gesture_now,&data);
+    };
+    fingers({{7,450,350}});assert(split_keyboard.text()=="draft"); // A plain letter waits for release.
+    fingers({{7,450,350},{9,510,350}});
+    fingers({{9,560,350},{7,400,350}});assert(!split_keyboard.split()); // Below threshold, reordered reports.
+    fingers({{9,610,350},{7,350,350}});assert(split_keyboard.split());
+    fingers({{7,450,350},{9,510,350}});assert(split_keyboard.split()); // One toggle per chord.
+    fingers({{7,50,280}});fingers({});assert(split_keyboard.text()=="draft" && split_keyboard.cursor()==5);
+    letter_keys.clear();split_keyboard.draw(nullptr,true,"split");
+    for(const auto& key:letter_keys)if(key.baseline<478)assert(key.x<410 || key.x>550);
+    fingers({{3,480,350}});fingers({});assert(split_keyboard.text()=="draft"); // Empty center.
+    fingers({{3,480,505}});fingers({});assert(split_keyboard.text()=="draft "); // Wide spacebar retained.
+    for(const auto& profile:keyboard_layout::all())if(!profile.system()) {
+        assert(split_keyboard.setLanguage(profile.code));
+        letter_keys.clear();split_keyboard.draw(nullptr,true,"split");
+        assert(!letter_keys.empty());
+        for(const auto& key:letter_keys)if(key.baseline<478)assert(key.x>=16 && key.x<=944 && (key.x<410 || key.x>550));
+    }
+    assert(split_keyboard.setLanguage("en"));
+    split_keyboard.open("secret",true,false,128,false,false);assert(split_keyboard.split());
+    drawn.clear();split_keyboard.draw(nullptr,true,"unlock",true);
+    for(const auto& line:drawn)assert(line.find("secret")==std::string::npos);
+    fingers({{2,120,350},{6,840,350}});fingers({{6,740,350},{2,220,350}});assert(!split_keyboard.split());
+    fingers({{6,740,350}});fingers({});assert(split_keyboard.text()=="secret");
+    split_keyboard.open("draft",false,true,1023,false,false);
+    // Parallel/vertical drags, one moving finger, changed IDs, third fingers and stale chords cannot switch modes.
+    fingers({{1,350,350},{2,610,350}});fingers({{1,250,350},{2,510,350}});fingers({});assert(!split_keyboard.split());
+    fingers({{1,350,350},{2,610,350}});fingers({{1,350,250},{2,610,450}});fingers({});assert(!split_keyboard.split());
+    fingers({{1,350,350},{2,610,350}});fingers({{1,200,350},{2,610,350}});fingers({});assert(!split_keyboard.split());
+    fingers({{1,350,350},{2,610,350}});fingers({{3,200,350},{2,760,350}});fingers({});assert(!split_keyboard.split());
+    fingers({{1,350,350},{2,610,350}});fingers({{1,200,350},{2,760,350},{3,480,350}});fingers({});assert(!split_keyboard.split());
+    fingers({{1,350,350},{2,610,350}});fingers({{1,200,350},{2,760,350}},1600000);fingers({});assert(!split_keyboard.split());
+    fingers({{1,450,350}});fingers({{1,450,350},{2,510,350}},200000);fingers({{1,350,350},{2,610,350}});fingers({});assert(!split_keyboard.split());
+    assert(split_keyboard.text()=="draft");
+    // Single-finger input still works, including release submission and repeat deletion.
+    fingers({{1,450,350}});fingers({});assert(split_keyboard.text()=="draftg");
+    fingers({{1,900,430}});fingers({});assert(split_keyboard.text()=="draft");
+    fingers({{1,900,430}});fingers({{1,900,430}},350000);assert(split_keyboard.text()=="draf");
+    fingers({{1,900,430}},60000);assert(split_keyboard.text()=="dra");fingers({});assert(split_keyboard.text()=="dra");
+    assert(fingers({{1,890,505}})==Result::None);assert(fingers({})==Result::Submitted);
+    // The public Keyboard wrapper forwards both contacts as well.
+    Keyboard split_wrapper;split_wrapper.configure(true,true,{"en"});split_wrapper.open("compose",false,"draft",true);
+    split_wrapper.handle(0,0,false,0,0,++gesture_now);
+    SceTouchData chord{};chord.reportNum=2;chord.report[0].id=1;chord.report[0].x=700;chord.report[0].y=700;
+    chord.report[1].id=2;chord.report[1].x=1220;chord.report[1].y=700;
+    split_wrapper.handle(0,0,true,350,350,++gesture_now,&chord);
+    chord.report[0].x=400;chord.report[1].x=1520;
+    split_wrapper.handle(0,0,true,200,350,++gesture_now,&chord);
+    chord.reportNum=0;split_wrapper.handle(0,0,false,0,0,++gesture_now,&chord);
+    letter_keys.clear();split_wrapper.draw(nullptr);
+    for(const auto& key:letter_keys)if(key.baseline<478)assert(key.x<410 || key.x>550);
+    split_wrapper.close();
+    std::puts("custom keyboard: touch/controller, EN/RU, 300 ms choices, touch slides/controller selection, UTF-8 limits/deletion, multiline, masking, split gestures/layouts, submit/cancel: PASS");
 }
