@@ -127,3 +127,8 @@ assets/sherwin-williams.json
 /external/webkit-vita/
 /external/webkit-vita-work/
 !docs/webkit-vita.md
+!docs/building.md
+!docs/features.md
+!docs/installation.md
+!docs/licenses.md
+!docs/privacy.md
