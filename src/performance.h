@@ -43,7 +43,9 @@ enum class Metric {
     CacheRead, CacheParse, CacheMerge, CacheStartupSnapshot, CacheIndexRead, CacheDetailsLoad, CachePause, CacheService, JsonRelease, EventSelect, FirstHistoryRequestWait, FirstHistoryRawWait, FirstHistoryUiWait, FirstHistoryApply, FirstHistoryReady, ChatFirstPresent, ChatFirstLivePresent, FirstHistorySend, FirstHistoryResponse, FirstHistoryParse, ForumRequestWait, ForumSend, ForumResponse, ForumReady, TdFileSync, TdFileMeta, FontsFallback, FontsEmoji, CacheHistory,
     DirProfilePhotos, DirThumbnails, DirPhotos, DirStickers, DirTemp, MediaRotate, TrashRemove, FolderReady, ReactionResponse, VideoReady, StickerCompactMiss, MessagesCompactHit, MessagesCompactMiss, MessagesCompactUs, MessagesRememberUs, TdFileMetaSticker, TdFileMetaOther, TdFileMetaTemp, TdFileMetaPhotos, TdFileMetaThumbs, TdFileMetaDb, FolderFirstRow, FolderRequests,
     VideoCaptureRead, VideoCaptureCrop, VideoCapturePreview, VideoCaptureWrite, VideoCaptureGpuWait,
-    VideoCaptureQueuePeak, AudioCaptureQueuePeak, VideoCaptureDropped, Count
+    VideoCaptureQueuePeak, AudioCaptureQueuePeak, VideoCaptureDropped,
+    WebRunLoop, WebPaint, WebBridgeSubmit, WebBridgeReply, WebBridgeLatency, FrameTail, TextPoll,
+    ParsedWait, ParsedOldestAge, RawOldestAge, PumpBudget, PumpBatch, PumpOverrun, StreamRead, StreamWait, VideoDownloadRate, VideoPrefixRate, Count
 };
 constexpr const char* names[] = {
     "frame_us", "ui_work_us", "input_submit_us", "gpu_wait_us", "swap_us", "image_decode_us", "image_upload_us", "emoji_decode_us",
@@ -59,7 +61,9 @@ constexpr const char* names[] = {
     "dir_profile_photos_entries", "dir_thumbnails_entries", "dir_photos_entries", "dir_stickers_entries", "dir_temp_entries",
     "media_rotate_us", "trash_remove_us", "folder_ready_us", "reaction_response_us", "video_ready_us", "sticker_compact_miss", "messages_compact_hit", "messages_compact_miss", "messages_compact_us", "messages_remember_us", "td_file_meta_sticker_us", "td_file_meta_other_us", "td_file_meta_temp_us", "td_file_meta_photos_us", "td_file_meta_thumbs_us", "td_file_meta_db_us", "folder_first_row_us", "folder_requests",
     "video_capture_read_us", "video_capture_crop_us", "video_capture_preview_us", "video_capture_write_us", "video_capture_gpu_wait_us",
-    "video_capture_queue_peak_frames", "audio_capture_queue_peak_blocks", "video_capture_dropped_frames"
+    "video_capture_queue_peak_frames", "audio_capture_queue_peak_blocks", "video_capture_dropped_frames",
+    "web_runloop_us", "web_paint_us", "web_bridge_submit_us", "web_bridge_reply_us", "web_bridge_latency_us", "frame_tail_us", "text_poll_us",
+    "parsed_wait_us", "parsed_oldest_age_us", "raw_oldest_age_us", "pump_budget_us", "pump_batch_events", "pump_overrun_us", "stream_read_us", "stream_wait_us", "video_download_bytes_per_s", "video_prefix_bytes_per_s"
 };
 constexpr size_t metric_count = static_cast<size_t>(Metric::Count);
 static_assert(sizeof(names)/sizeof(*names) == metric_count, "Metric names");
@@ -88,14 +92,37 @@ enum class Gauge { IncomingCount, IncomingBytes, ParsedCount, ParsedWireBytes, O
 constexpr size_t gauge_count = static_cast<size_t>(Gauge::Count);
 constexpr const char* gauge_names[] = {"incoming_count", "incoming_bytes", "parsed_count", "parsed_wire_bytes", "outgoing_count"};
 struct Level { uint64_t current = 0, peak = 0; };
-enum class SlowPhase { Parse, Process, Remember, Copy, Retain, PollScan, Delete, Ui, Release, TdFileMeta, TdFileSync };
-constexpr const char* slow_names[] = {"parse", "process", "remember", "copy", "retain", "poll_scan", "delete", "ui", "release", "td_file_meta", "td_file_sync"};
+enum class Screen { Unknown, Auth, Chats, History, Post, Photo, Video, WebApp, Settings, Topics, Search, Stickers, Gifs, Reactions, Upload, Recorder };
+inline const char* screen_name(Screen screen) {
+    constexpr const char* labels[] = {"unknown", "auth", "chats", "history", "post", "photo", "video", "webapp", "settings", "topics", "search", "stickers", "gifs", "reactions", "upload", "recorder"};
+    const auto i = static_cast<unsigned>(screen);
+    return i < sizeof(labels)/sizeof(*labels) ? labels[i] : "unknown";
+}
+struct FrameContext {
+    uint64_t frame = 0;
+    Screen screen = Screen::Unknown;
+    bool combined = false, keyboard = false, scrolling = false, fullscreen = false;
+    int rotation = 0, web_width = 0, web_height = 0;
+};
+// UI context stays on its owning thread; parser/network events retain frame=0.
+inline thread_local FrameContext frame_context;
+enum class Counter { Received, Parsed, Processed, PumpEmpty, PumpFiltered, PumpBudgetStop, PumpLimitStop, FrameOver33, FrameOver50, FrameOver100, Count };
+constexpr size_t counter_count = static_cast<size_t>(Counter::Count);
+constexpr const char* counter_names[] = {"received_events", "parsed_events", "processed_events", "pump_empty", "pump_filtered", "pump_budget_stop", "pump_limit_stop", "frames_over_33ms", "frames_over_50ms", "frames_over_100ms"};
+static_assert(sizeof(counter_names)/sizeof(*counter_names) == counter_count, "Counter names");
+enum class SlowPhase { Parse, Process, Remember, Copy, Retain, PollScan, Delete, Ui, Release, TdFileMeta, TdFileSync, Storage };
+constexpr const char* slow_names[] = {"parse", "process", "remember", "copy", "retain", "poll_scan", "delete", "ui", "release", "td_file_meta", "td_file_sync", "storage"};
 struct SlowEvent {
     SlowPhase phase = SlowPhase::Parse;
     std::array<char,64> type{};
+    std::array<char,80> file_dir{};
+    int file_fd = -1;
+    int64_t file_offset = -1;
+    uint64_t file_bytes = 0;
     int64_t elapsed = 0, at = 0;
     uint64_t wire_bytes = 0, chats = 0, histories = 0;
     int cpu_start = -1, cpu_end = -1;
+    FrameContext context;
 };
 constexpr size_t slow_limit = 32;
 struct Snapshot {
@@ -106,6 +133,7 @@ struct Snapshot {
     std::array<SlowEvent, slow_limit> slow{};
     size_t slow_count = 0;
     uint64_t slow_dropped = 0;
+    std::array<uint64_t, counter_count> counters{};
     const Histogram& get(Metric m) const { return metrics[static_cast<size_t>(m)]; }
 };
 class Collector {
@@ -117,6 +145,11 @@ public:
         if (!enabled || us < 0) return;
         if (pthread_mutex_trylock(&mutex_)) { dropped_.fetch_add(1, std::memory_order_relaxed); return; }
         window_.metrics[static_cast<size_t>(m)].add(static_cast<uint64_t>(us));
+        if (m == Metric::Frame) {
+            if (us > 33334) ++window_.counters[static_cast<size_t>(Counter::FrameOver33)];
+            if (us > 50000) ++window_.counters[static_cast<size_t>(Counter::FrameOver50)];
+            if (us > 100000) ++window_.counters[static_cast<size_t>(Counter::FrameOver100)];
+        }
         pthread_mutex_unlock(&mutex_);
     }
     // One-shot values (startup milestones) must not be lost to the trylock under load.
@@ -136,13 +169,26 @@ public:
         }
         pthread_mutex_unlock(&mutex_);
     }
+    void count(Counter counter, uint64_t amount = 1) {
+        if (!enabled) return;
+        if (pthread_mutex_trylock(&mutex_)) { dropped_.fetch_add(1, std::memory_order_relaxed); return; }
+        window_.counters[static_cast<size_t>(counter)] += amount;
+        pthread_mutex_unlock(&mutex_);
+    }
     void slow(const SlowEvent& event) {
         if (!enabled || event.elapsed < 50000) return;
         if (pthread_mutex_trylock(&mutex_)) { dropped_.fetch_add(1,std::memory_order_relaxed); return; }
         if (window_.slow_count < slow_limit) window_.slow[window_.slow_count++]=event;
         else {
-            auto smallest=std::min_element(window_.slow.begin(),window_.slow.end(),[](const SlowEvent& a,const SlowEvent& b){return a.elapsed<b.elapsed;});
-            if (event.elapsed>smallest->elapsed) *smallest=event;
+            // Keep specific causes before their enclosing frame/draw totals.
+            auto less = [](const SlowEvent& a, const SlowEvent& b) {
+                auto aggregate = [](const SlowEvent& e) { return e.phase == SlowPhase::Ui &&
+                    (!std::strcmp(e.type.data(), "frame_ui") || !std::strcmp(e.type.data(), "draw")); };
+                if (aggregate(a) != aggregate(b)) return aggregate(a);
+                return a.elapsed < b.elapsed;
+            };
+            auto smallest=std::min_element(window_.slow.begin(),window_.slow.end(),less);
+            if (less(*smallest,event)) *smallest=event;
             ++window_.slow_dropped;
         }
         pthread_mutex_unlock(&mutex_);
@@ -154,7 +200,7 @@ public:
         result = window_; result.until = end;
         result.dropped = dropped_.exchange(0, std::memory_order_relaxed);
         window_.metrics = {}; window_.from = end;
-        window_.slow_count=0; window_.slow_dropped=0;
+        window_.slow_count=0; window_.slow_dropped=0; window_.counters={};
         for (auto& gauge : window_.gauges) gauge.peak = gauge.current;
         pthread_mutex_unlock(&mutex_);
         return result;
@@ -171,6 +217,7 @@ inline Collector& collector() { static Collector instance; return instance; }
 // Application start on the now() clock; startup metrics from other threads measure from it.
 inline std::atomic<int64_t>& startup_origin() { static std::atomic<int64_t> origin{0}; return origin; }
 inline void observe(Metric m, int64_t us) { if (enabled) collector().observe(m, us); }
+inline void count(Counter counter, uint64_t amount = 1) { if (enabled) collector().count(counter, amount); }
 inline void observeAlways(Metric m, int64_t us) { if (enabled) collector().observeAlways(m, us); }
 class Scope {
 public:
@@ -205,13 +252,16 @@ public:
         }
         event_.type[i]=0;
     }
+    void next(const char* type) {
+        finish(); start_ = now(); event_.cpu_start = cpu(); name(type);
+    }
     void counts(uint64_t chats,uint64_t histories) { event_.chats=chats;event_.histories=histories; }
     void since(int64_t start) { if (start_) start_=start; } // Report an interval that began earlier.
     void finish() {
         if (!enabled || !start_) return;
         event_.at=now();event_.elapsed=event_.at-start_;start_=0;
         if (event_.elapsed<50000) return;
-        event_.cpu_end=cpu();collector().slow(event_);
+        event_.cpu_end=cpu();event_.context=frame_context;collector().slow(event_);
     }
     SlowScope(const SlowScope&)=delete;
     SlowScope& operator=(const SlowScope&)=delete;

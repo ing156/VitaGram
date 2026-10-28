@@ -8,6 +8,8 @@
 #include <string>
 
 namespace download_stream {
+constexpr int64_t video_start_bytes = 8 * 1024 * 1024;
+constexpr int64_t video_resume_bytes = 4 * 1024 * 1024;
 // UI publishes TDLib's readable prefix; decoder threads never call TDLib.
 class State {
 public:

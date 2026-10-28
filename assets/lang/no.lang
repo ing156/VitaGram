@@ -2,6 +2,24 @@
 @code = no
 @name = Norsk
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = NO
+@keyboard.rows = qwertyuiopå|asdfghjkløæ|zxcvbnm
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = åæ
+@keyboard.popup.e = é
+@keyboard.popup.o = ø
+@keyboard.popup.' = ‘‚’
+@keyboard.popup." = ”„“«»
+
 account.cleanup_blocked = Dataene fra den forrige kontoen kunne ikke slettes. Frigjør tilgangen til minnekortet, og start appen på nytt.
 account.delete_incomplete = Ikke alle data kunne slettes. Oppryddingen gjentas ved neste oppstart.
 account.deleted = Kontodata slettet. Start VitaGram på nytt for å logge inn.
@@ -19,7 +37,7 @@ anim.gpu_video = Ikke nok grafikkminne til video
 anim.limit_720p = Animasjonen overskrider pikselgrensen for 720p
 anim.limit_720p_media = Videoen/animasjonen overskrider pikselgrensen for 720p
 anim.limit_gif = GIF-grense: 20 MiB
-anim.limit_video = Videogrense: 128 MiB
+anim.limit_video = Videogrense: 1024 MiB
 anim.media_open = Mediefilen kan ikke åpnes
 anim.memory = Ikke nok minne til animasjon
 anim.nv12_failed = NV12-teksturen kunne ikke opprettes
@@ -725,7 +743,7 @@ link.confirm_title = Åpne denne lenken?
 link.cancel = Avbryt
 link.proceed = Åpne
 
-settings.gyroscope = Gyroskop
+settings.gyroscope = Gyroskop i bildevisning
 menu.rotate_left = {l}  Roter til venstre
 menu.rotate_right = {r}  Roter til høyre
 
@@ -960,3 +978,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Meny
+bot.keyboard = Bot-tastatur
+bot.buttons = Bot-knapper
+bot.select_hint = {select}: bot-knapper
+bot.panel_hint = {cross} Velg   {circle} Tilbake   Venstre/Høyre: side
+bot.empty = Ingen knapper tilgjengelig
+bot.wait = Venter på boten…
+bot.unsupported = Denne knappetypen støttes ikke ennå. Ingen data ble sendt.
+bot.webapp_unavailable = Miniapper krever en innebygd nettleser med Telegrams JavaScript-bro.
+sticker.open_set = Åpne klistremerke-/emoji-sett
+sticker.add_set = Legg til sett
+sticker.add_set_hint = {triangle} Legg til sett
+sticker.installed = Sett lagt til
+sticker.no_set = Denne emojien har ikke noe sett
+sticker.preview_set = Dra hit og slipp for å åpne settet
+bot.back = {circle} Tilbake
+bot.response = Botsvar
+
+# Internal Mini Apps
+webapp.confirm = Åpne denne miniappen? Boten mottar Telegram-profildata og gjeldende tema.
+webapp.input = Skriv tekst
+webapp.hint = Venstre spak / Retninger: peker · L/R: rull · Firkant: skriv
+webapp.bridge_error = For mange kommandoer fra miniappen.
+webapp.data_error = Miniappen kan ikke sende disse dataene.
+webapp.unsupported = Miniappen ba om en handling som ikke støttes.
+webapp.open = {cross} Åpne
+webapp.close = {start}  Lukk
+webapp.vault_unavailable = Intern visning er foreløpig ikke tilgjengelig med datakryptering aktivert.
+
+# Classic and combined chat views
+settings.view_mode = Visningsmodus
+settings.view_classic = Klassisk
+settings.view_combined = Kombinert
+chat.focus_list = Chatter > historikk
+chat.focus_history = < chatter | Historikk
+chat.select_chat = Velg en chat
+webapp.payment_unavailable = Betalinger i Mini Apps er ennå ikke tilgjengelige i VitaGram.
+
+# --- Background audio player ---
+player.hint = L+R: spiller
+player.loading = Laster lyd…
+player.previous = Forrige spor
+player.play = Spill / pause
+player.next = Neste spor
+player.seek = Spol · ↑/↓ 10 s
+player.volume = Volum
+player.shuffle = Bland
+player.repeat = Gjenta
+player.speed = Hastighet · ↑/↓
+player.close = Lukk spiller
+player.off = Av
+player.on = På
+player.all = Liste
+player.one = Spor
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = Tastaturspredning
+settings.keyboard_split_small = Liten
+settings.keyboard_split_medium = Middels
+settings.keyboard_split_wide = Bred
+
+# User-installed fonts
+settings.font_family = Skrifttype
+settings.font_default = Standard
+settings.font_loading = Laster skrifttype…
+settings.custom_font_failed = Kunne ikke laste skrifttypen. Den forrige beholdes.
+settings.font_hint = {dpad} Velg · {cross} Bruk · {circle} Tilbake
+
+# Cache settings
+cache.title = Hurtigbuffer
+cache.clear = Rydd hurtigbuffer nå
+cache.cleaning = Rydder…
+cache.done = Ferdig
+cache.failed = Mislyktes
+cache.unavailable = Rydding av hurtigbuffer krever tilkobling til Telegram.
+
+# Settings sections
+settings.section.interface = Grensesnitt
+settings.section.chats = Samtaler
+settings.section.controls = Kontroller og inndata
+settings.section.data = Data og lagring
+settings.section.connection = Tilkobling
+settings.section.security = Databeskyttelse
+settings.section.updates = Oppdateringer og installasjon
+settings.section.about = Om og diagnostikk
+common.back = Tilbake
+settings.cache_cleanup_hint = Bruker grenser for lagringstid og størrelse; sletter ikke alle medier.
+
+# Video quality
+settings.video_quality = Maksimal videokvalitet
+settings.video_minimum = Laveste (sparer data)
+settings.video_360 = Opptil 360p
+settings.video_480 = Opptil 480p
+settings.video_720 = Opptil 720p
+video.quality = Videokvalitet
+video.quality_unavailable = Den valgte kvaliteten er ikke tilgjengelig.

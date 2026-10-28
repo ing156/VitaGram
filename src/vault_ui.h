@@ -13,6 +13,7 @@ struct Env {
     int theme = -1; // Default keeps existing callers compatible; main passes the saved theme ID.
     int scroll_speed = 0;
     std::vector<std::string> keyboard_languages;
+    int keyboard_split = 1;
     // Optional: run once per drawn frame (not while a key is derived) by the settings flows, so the
     // caller keeps pumping its event queues while a vault screen owns the display.
     void (*tick)(void*) = nullptr;

@@ -1,4 +1,4 @@
-"""Adapt VHBB surfaces to VitaGram's manifest/9-slice format (offline, Pillow).
+"""Adapt VHBB surfaces to VitaGram's manifest/9-slice format (offline, Pillow/CairoSVG).
 
 Run with external/font-tools-venv/bin/python from the repository root.
 Only the vhbb theme and its manifest entries are written; existing themes are preserved.
@@ -7,9 +7,9 @@ The original source PNGs are included with their CC BY-NC-SA 4.0 notice.
 from pathlib import Path
 import copy
 import json
-import math
 import shutil
 from PIL import Image, ImageDraw, ImageFont
+from generate_wave_backgrounds import wallpaper
 
 ROOT = Path(__file__).resolve().parent
 BASE = ROOT / 'themes/vhbb'
@@ -31,12 +31,16 @@ def save(image, relative, section, template=None):
     manifest[section][key] = meta
 
 
-def rounded_gradient(source, size, focused=False, flat=None, ring=False):
+def rounded_gradient(source, size, focused=False, flat=None, ring=False, row_focus=False):
     """Sample VHBB's blue/violet gradient, leaving white label bands out of text areas."""
     w, h = size
     scale = 4
     image = Image.new('RGBA', (w*scale, h*scale))
     draw = ImageDraw.Draw(image)
+    if ring:
+        draw.rounded_rectangle((0,0,w*scale-1,h*scale-1),
+                               radius=7*scale, outline=(185,240,255,255), width=2*scale)
+        return image.resize(size, Image.Resampling.LANCZOS)
     for y in range(h*scale):
         sample_y = round((source.height-1) * y / max(1, h*scale-1))
         color = source.getpixel((source.width//2, sample_y))[:3]
@@ -45,16 +49,19 @@ def rounded_gradient(source, size, focused=False, flat=None, ring=False):
         # Darken focus surfaces for readable white labels, including over transparent cards.
         if focused:
             color = tuple(round(c*0.76) for c in color)
+        if row_focus:
+            t = y / max(1, h*scale-1)
+            color = tuple(round(a+(b-a)*t) for a,b in zip((12,106,190),(18,63,133)))
         draw.line((0,y,w*scale,y), fill=(*color,255))
     mask = Image.new('L', image.size)
     ImageDraw.Draw(mask).rounded_rectangle((0,0,w*scale-1,h*scale-1), radius=7*scale, fill=255)
     image.putalpha(mask)
     draw.rounded_rectangle((2,2,w*scale-3,h*scale-3), radius=7*scale,
-                           outline=(139,193,255,255) if focused else (123,141,194,255), width=scale)
-    draw.line((8*scale,scale,(w-8)*scale,scale), fill=(214,232,255,255), width=scale)
-    if ring:
-        ImageDraw.Draw(image).rounded_rectangle((3*scale,3*scale,(w-3)*scale-1,(h-3)*scale-1),
-                                               radius=4*scale, fill=(0,0,0,0))
+                           outline=(185,240,255,255) if row_focus else
+                               (139,193,255,255) if focused else (123,141,194,255),
+                           width=(2 if row_focus else 1)*scale)
+    if not row_focus:
+        draw.line((8*scale,scale,(w-8)*scale,scale), fill=(214,232,255,255), width=scale)
     return image.resize(size, Image.Resampling.LANCZOS)
 
 
@@ -69,28 +76,15 @@ for key, meta in list(manifest['nine_slice'].items()):
     name = meta['name']
     flat = (37,40,45) if name in {'dialog','menu'} else (52,60,121) if name == 'media_frame' else None
     src = dialog if name in {'dialog','menu'} else focus if name in focus_names else normal
-    im = rounded_gradient(src, tuple(meta['size']), name in focus_names, flat, name=='focus_ring')
+    im = rounded_gradient(src, tuple(meta['size']), name in focus_names, flat,
+                          ring=name=='focus_ring', row_focus=name=='row_focused')
     save(im, '9slice/'+name+'.png', 'nine_slice', meta)
 
-# A fresh wallpaper with VHBB's blue glow and translucent squares, without its branding.
-w, h = 960, 544
-bg = Image.new('RGBA', (w,h))
-pixels = bg.load()
-for y in range(h):
-    for x in range(w):
-        glow = math.exp(-((x-320)**2/240000 + (y-255)**2/95000))
-        pixels[x,y] = (round(16+3*glow), round(28+53*glow), round(88+88*glow),255)
-overlay = Image.new('RGBA',bg.size)
-d = ImageDraw.Draw(overlay)
-for i in range(55):
-    x, y, size = (i*173+29)%960, (i*97+13)%544, 12+(i*19)%76
-    d.rectangle((x,y,x+size,y+size), fill=(87,158,239,10+i%4*4))
-for i in range(6):
-    points = [(round(695+80*math.sin(y/245+i*0.17)+i*22), y) for y in range(-20,565,4)]
-    d.line(points, fill=(144,205,255,24+i*5), width=2)
-bg = Image.alpha_composite(bg, overlay)
-for name in ('background_960x544.png','background_alt_960x544.png'):
-    save(bg, 'fixed/'+name, 'textures', {'role':'VHBB-style wallpaper, no branding'})
+# Shared wave geometry with VHBB's own blue/violet palette.
+bg = wallpaper('vhbb')
+for alt, name in enumerate(('background_960x544.png','background_alt_960x544.png')):
+    save(wallpaper('vhbb', bool(alt)) if alt else bg, 'fixed/'+name, 'textures',
+         {'role':'VHBB blue/violet wave wallpaper' + (' (alternative, stronger contrast)' if alt else ' (main, restrained)')})
 header = Image.open(SOURCE/'img_catbar.png').convert('RGBA').resize((960,40),Image.Resampling.LANCZOS)
 header = Image.blend(header,Image.new('RGBA',header.size,(13,32,91,255)),0.32)
 save(header,'fixed/header_960x40.png','textures')

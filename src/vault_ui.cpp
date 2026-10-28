@@ -313,6 +313,7 @@ End read_text(const Env& env, Pad& pad, const Entry& entry, vault::Pin& out) {
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
     CustomKeyboard keyboard;
     keyboard.setLanguages(env.keyboard_languages);
+    keyboard.setSplitLevel(env.keyboard_split);
     keyboard.open("", true, false, vault::kMaxText);
     constexpr int dots_y = 216;
     const std::string message = entry.warning.empty() ? entry.message

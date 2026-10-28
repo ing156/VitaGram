@@ -1,5 +1,6 @@
 #pragma once
 #include <list>
+#include <algorithm>
 #include <unordered_map>
 #include <cstdint>
 #include <iterator>
@@ -164,6 +165,11 @@ public:
     TdEventQueue& operator=(const TdEventQueue&)=delete;
     size_t size() const { return normal_.size()+urgent_.size(); }
     bool empty() const { return normal_.empty() && urgent_.empty(); }
+    int64_t oldestParsedAt() const {
+        const auto normal = normal_.empty() ? 0 : normal_.front().meta.parsed;
+        const auto urgent = urgent_.empty() ? 0 : urgent_.front().meta.parsed;
+        return !normal ? urgent : !urgent ? normal : std::min(normal, urgent);
+    }
     size_t enqueue(json_t* root,const TdEventMetadata& m) {
         size_t removed=0;
         if (m.file) {

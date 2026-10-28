@@ -10,12 +10,14 @@ namespace ui_diagnostics {
 enum class Phase : unsigned {
     Idle, Frame, Pump, Input, Media, Draw, Swap,
     VaultScreen, VaultDerive, VaultScan, VaultSeal, VaultVerify, VaultMigration,
+    WebRunLoop, WebPaint, WebBridge, FrameTail,
 };
 constexpr uint64_t time_mask = (uint64_t{1} << 56) - 1;
 inline std::atomic<uint64_t>& active() { static std::atomic<uint64_t> value{0}; return value; }
 inline const char* name(unsigned phase) {
     constexpr const char* names[] = {"idle", "frame", "pump", "input", "media", "draw", "swap",
-                                    "vault_screen", "vault_derive", "vault_scan", "vault_seal", "vault_verify", "vault_migration"};
+                                    "vault_screen", "vault_derive", "vault_scan", "vault_seal", "vault_verify", "vault_migration",
+                                    "web_runloop", "web_paint", "web_bridge", "frame_tail"};
     return phase < sizeof(names)/sizeof(*names) ? names[phase] : "unknown";
 }
 inline uint64_t enter(Phase phase) {

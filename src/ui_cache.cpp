@@ -69,7 +69,7 @@ bool completed_file(json_t* file) {
 }
 json_t* compact_chat(json_t* chat) {
     json_t* result = json_object();
-    for (const char* key : {"@type", "id", "title", "type", "positions", "photo", "last_read_outbox_message_id", "last_read_inbox_message_id", "accent_color_id", "upgraded_gift_colors"})
+    for (const char* key : {"@type", "id", "title", "type", "positions", "photo", "last_read_outbox_message_id", "last_read_inbox_message_id", "reply_markup_message_id", "accent_color_id", "upgraded_gift_colors"})
         set_copy(result, key, json_object_get(chat, key));
     return result;
 }
@@ -696,11 +696,15 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
     std::string chat_key = std::to_string(number(root, "chat_id"));
     json_t* cached = json_object_get(chats, chat_key.c_str());
     const bool chat_update = !std::strcmp(t, "updateChatAccentColors") || !std::strcmp(t, "updateChatTitle") || !std::strcmp(t, "updateChatPhoto") ||
-        !std::strcmp(t, "updateChatLastMessage") || !std::strcmp(t, "updateChatDraftMessage") || !std::strcmp(t, "updateChatPosition");
+        !std::strcmp(t, "updateChatLastMessage") || !std::strcmp(t, "updateChatDraftMessage") || !std::strcmp(t, "updateChatPosition") || !std::strcmp(t, "updateChatReplyMarkup");
     if (cached && chat_update) {
         cached = measured_copy(cached);
         json_object_set_new(chats, chat_key.c_str(), cached);
         main_changed = true;
+    }
+    if (cached && !std::strcmp(t, "updateChatReplyMarkup")) {
+        json_object_set_new(cached, "reply_markup_message_id", json_integer(number(json_object_get(root, "reply_markup_message"), "id")));
+        changed = true;
     }
     if (cached && !std::strcmp(t, "updateChatAccentColors")) {
         for (const char* field : {"accent_color_id", "upgraded_gift_colors"}) set_copy(cached, field, json_object_get(root, field));
@@ -779,7 +783,7 @@ void UiCache::remember(json_t* root, uint64_t wire_bytes) {
     }
     if (items && !std::strcmp(t, "updateMessageEdited")) {
         json_t* m = json_object_get(items, std::to_string(number(root, "message_id")).c_str());
-        if (m) set_copy(m, "edit_date", json_object_get(root, "edit_date"));
+        if (m) { set_copy(m, "edit_date", json_object_get(root, "edit_date")); set_copy(m, "reply_markup", json_object_get(root, "reply_markup")); }
         changed = true;
     }
     const bool message_change = message_update || !std::strcmp(t, "updateDeleteMessages");

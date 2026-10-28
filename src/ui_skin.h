@@ -30,7 +30,7 @@ bool ready();
 // Apply role->#RRGGBB JSON between frames, without loading/rebuilding PNG files.
 // Unknown roles, duplicate keys and malformed colors leave the previous palette intact.
 bool set_palette(const char* json);
-// Poll ux0:data/vitagram/palette.json at most once per second, outside drawing.
+// Request a background palette check at most once per second and apply ready results on the UI thread.
 void reload_palette();
 unsigned int color(const char* role, unsigned int fallback);
 bool is_dark(bool fallback);
@@ -55,7 +55,7 @@ bool header(float height = 36);                     // header strip scaled to `h
 // rounds video frames without touching the video texture. Only valid over the flat media frame.
 bool corners(float x, float y, float w, float h, float radius);
 // Bottom-corner buttons (attach left, menu right); `glow` 0..1 fades in the sparkle overlay.
-bool corner_button(bool right, float glow, float opacity = 1.f);
+bool corner_button(bool right, float glow, float opacity = 1.f, float bottom = 544.f);
 // Subtle inward-fading scroll hint at a vertical edge; right mirrors the left edge.
 bool edge_glow(bool right, float edge, float y, float height);
 bool indicator(float x, float y, float w, float h);

@@ -1084,7 +1084,7 @@
       "role": "optional overlay for row focus"
     },
     "themes/vhbb/fixed/background_960x544.png": {
-      "role": "VHBB-style wallpaper, no branding",
+      "role": "VHBB blue/violet wave wallpaper (main, restrained)",
       "size": [
         960,
         544
@@ -1092,7 +1092,7 @@
       "theme": "vhbb"
     },
     "themes/vhbb/fixed/background_alt_960x544.png": {
-      "role": "VHBB-style wallpaper, no branding",
+      "role": "VHBB blue/violet wave wallpaper (alternative, stronger contrast)",
       "size": [
         960,
         544

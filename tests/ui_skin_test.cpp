@@ -7,14 +7,24 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <atomic>
+#include <thread>
 #include <iostream>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <psp2/io/stat.h>
 
 static std::string assets;
 static unsigned long long now = 1;
-static int live = 0, allocations = 0, reads = 0;
+static int live = 0, allocations = 0;
+static std::atomic<int> reads{0}, palette_stats{0};
+static std::atomic<bool> block_palette{false}, palette_entered{false};
+static std::atomic<bool> fail_palette_stat{false};
 static const vita2d_texture* last_draw = nullptr;
+static float last_draw_y = 0;
+struct DrawRect { float x, y, w, h; };
+static std::vector<DrawRect> draw_rects;
 unsigned long long sceKernelGetProcessTimeWide() { return now; }
 void sceKernelDelayThread(unsigned) {}
 int sceIoOpen(const char* name, int flags, int mode) {
@@ -26,6 +36,18 @@ int sceIoOpen(const char* name, int flags, int mode) {
 long long sceIoLseek(int fd, long long offset, int whence) { return lseek(fd, offset, whence); }
 int sceIoRead(int fd, void* data, unsigned size) { ++reads; return (int)read(fd, data, size); }
 int sceIoClose(int fd) { return close(fd); }
+int sceIoGetstat(const char* path, SceIoStat* out) {
+    ++palette_stats;
+    if (block_palette) {
+        palette_entered = true;
+        while (block_palette) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (fail_palette_stat) return -EIO;
+    struct stat info{};
+    const int rc = stat(path, &info);
+    if (!rc) out->st_size = info.st_size;
+    return rc ? -errno : 0;
+}
 vita2d_texture* vita2d_create_empty_texture(unsigned w, unsigned h) {
     ++live; ++allocations;
     // Include padding to exercise the real Vita texture stride contract.
@@ -58,16 +80,38 @@ unsigned vita2d_texture_get_height(const vita2d_texture* t) { return t->height; 
 void vita2d_texture_set_filters(vita2d_texture*, unsigned, unsigned) {}
 void vita2d_free_texture(vita2d_texture* t) { --live; delete t; }
 void vita2d_wait_rendering_done() {}
-void vita2d_draw_texture_part_scale(const vita2d_texture* t, float,float,float,float,float,float,float,float) { last_draw = t; }
-void vita2d_draw_texture_tint_part_scale(const vita2d_texture* t, float,float,float,float,float,float,float,float,unsigned) { last_draw = t; }
-void vita2d_draw_texture_part(const vita2d_texture* t, float,float,float,float,float,float) { last_draw = t; }
+void vita2d_draw_texture_part_scale(const vita2d_texture* t, float x,float y,float,float,float w,float h,float sx,float sy) {
+    last_draw = t; last_draw_y = y; draw_rects.push_back({x,y,w*sx,h*sy});
+}
+void vita2d_draw_texture_tint_part_scale(const vita2d_texture* t, float x,float y,float tx,float ty,float w,float h,float sx,float sy,unsigned) {
+    vita2d_draw_texture_part_scale(t,x,y,tx,ty,w,h,sx,sy);
+}
+void vita2d_draw_texture_part(const vita2d_texture* t, float,float y,float,float,float,float) { last_draw = t; last_draw_y = y; }
 void vita2d_draw_texture_scale(const vita2d_texture* t, float,float,float,float) { last_draw = t; }
 void vita2d_draw_rectangle(float,float,float,float,unsigned) {}
 
-static void write_palette(const char* text) {
+static void wait_palette(unsigned expected) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        ui_skin::reload_palette();
+        if (ui_skin::surface_color(0) == expected) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::cerr << "palette timeout expected=" << expected << " actual=" << ui_skin::surface_color(0) << " stats=" << palette_stats << " reads=" << reads << '\n';
+    assert(false && "palette update timed out");
+}
+static void write_palette(const char* text, unsigned expected) {
     std::ofstream("ux0:data/vitagram/palette.json") << text;
     now += 1000000;
+    const int previous = reads;
     ui_skin::reload_palette();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (reads == previous && std::chrono::steady_clock::now() < deadline) {
+        ui_skin::reload_palette();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(reads > previous);
+    wait_palette(expected);
 }
 
 static void check_header_icons() {
@@ -89,6 +133,9 @@ static void check_header_icons() {
         assert(found);
     }
     assert(ui_skin::corner_button(false, 0));
+    assert(last_draw_y == 472);
+    assert(ui_skin::corner_button(true, 0, 1, 472) && last_draw_y == 400);
+    assert(ui_skin::corner_button(false, 0, 0.8f, 422) && last_draw_y == 350);
     const uint32_t ink = ui_skin::color("icon", 0);
     for (unsigned side = 0; side < 2; ++side) {
         bool found = false;
@@ -161,18 +208,48 @@ int main(int argc, char** argv) {
         assert(!ui_skin::set_palette(bad));
         assert(ui_skin::surface_color(0) == RGBA8(255,0,0,255));
     }
-    write_palette("{\"surface\":\"#00FF00\"}");
+    write_palette("{\"surface\":\"#00FF00\"}", RGBA8(0,255,0,255));
     assert(ui_skin::surface_color(0) == RGBA8(0,255,0,255));
+    block_palette = true; palette_entered = false; now += 1000000;
+    ui_skin::reload_palette();
+    const auto blocked_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!palette_entered && std::chrono::steady_clock::now() < blocked_deadline) {
+        ui_skin::reload_palette();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(palette_entered);
+    const auto poll_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 100; ++i) ui_skin::reload_palette();
+    assert(std::chrono::steady_clock::now() - poll_start < std::chrono::milliseconds(250));
+    assert(ui_skin::set_palette("{\"surface\":\"#FF0000\"}"));
+    block_palette = false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    ui_skin::reload_palette();
+    assert(ui_skin::surface_color(0) == RGBA8(255,0,0,255)); // A stale read cannot undo an explicit change.
     // Same-size edits within one timestamp tick must still apply.
-    write_palette("{\"surface\":\"#0000FF\"}");
+    write_palette("{\"surface\":\"#0000FF\"}", RGBA8(0,0,255,255));
     assert(ui_skin::surface_color(0) == RGBA8(0,0,255,255));
+    fail_palette_stat = true;
+    const int previous_stats = palette_stats;
+    now += 1000000; ui_skin::reload_palette();
+    const auto error_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (palette_stats == previous_stats && std::chrono::steady_clock::now() < error_deadline) {
+        ui_skin::reload_palette();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(palette_stats > previous_stats);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ui_skin::reload_palette();
+    assert(ui_skin::surface_color(0) == RGBA8(0,0,255,255));
+    fail_palette_stat = false;
     assert(ui_skin::load(0));
-    assert(ui_skin::surface_color(0) == RGBA8(0,0,255,255));
-    write_palette("{broken");
+    wait_palette(RGBA8(0,0,255,255));
+    write_palette("{broken", RGBA8(0,0,255,255));
     assert(ui_skin::surface_color(0) == RGBA8(0,0,255,255));
     std::filesystem::remove("ux0:data/vitagram/palette.json");
     now += 1000000;
     ui_skin::reload_palette();
+    wait_palette(RGBA8(255,255,255,255));
     assert(ui_skin::surface_color(0) == RGBA8(255,255,255,255));
     check_header_icons();
     const int contrast_reads = reads, contrast_allocations = allocations;
@@ -184,7 +261,7 @@ int main(int argc, char** argv) {
     assert(reads == contrast_reads && allocations == contrast_allocations);
     ui_skin::Sprite battery;
     assert(ui_skin::battery(5, battery));
-    write_palette("{\"surface\":\"#FF0000\"}");
+    write_palette("{\"surface\":\"#FF0000\"}", RGBA8(255,0,0,255));
     double warm_ms = 0;
     for (size_t i = 3; i < ui_themes::themes.size(); ++i) {
         const auto& preset = ui_themes::get((int)i);
@@ -232,6 +309,40 @@ int main(int argc, char** argv) {
         assert(reads == previous_reads && allocations == previous_allocations);
     }
     assert(ui_skin::load(2));
+    // Focus has a solid two-pixel outline and a transparent interior, even at minimum card opacity.
+    assert(ui_skin::nine(ui_skin::Slice::FocusRing, 0, 0, 204, 42));
+    const auto* ring = last_draw;
+    auto rgba = [](const vita2d_texture* texture, unsigned x, unsigned y) {
+        const auto* p = texture->pixels.data() + y * texture->stride + x * 4;
+        return RGBA8(p[0], p[1], p[2], p[3]);
+    };
+    const unsigned edge = rgba(ring, ring->width/2, 1);
+    assert((edge >> 24) >= 220);
+    assert((rgba(ring, ring->width/2, 0) >> 24) >= 220);
+    assert(rgba(ring, ring->width/2, ring->height/2) == 0);
+    for (auto slice : {ui_skin::Slice::Row, ui_skin::Slice::RowFocused, ui_skin::Slice::TabActive}) {
+        assert(ui_skin::nine(slice, 0, 0, 204, 42));
+        const unsigned fill = rgba(last_draw, last_draw->width/2, last_draw->height/2);
+        assert(ui_mask::contrast(edge, fill) >= 3.0);
+        if (slice == ui_skin::Slice::RowFocused)
+            for (unsigned y = 4; y < last_draw->height-4; ++y)
+                assert(ui_mask::contrast(RGBA8(242,247,255,255), rgba(last_draw,last_draw->width/2,y)) >= 4.5);
+    }
+    // The real nine-slice draw calls partition each row: no repeated alpha blending at seams/corners.
+    for (auto slice : {ui_skin::Slice::RowFocused, ui_skin::Slice::FocusRing}) {
+        for (auto box : {DrawRect{0,0,940,41}, DrawRect{0,0,940,42}, DrawRect{0,0,192,42},
+                         DrawRect{0,0,204,42}, DrawRect{0,0,112,48}, DrawRect{0,0,12,12}}) {
+            draw_rects.clear();
+            assert(ui_skin::nine(slice, box.x, box.y, box.w, box.h));
+            for (int y = 0; y < box.h; ++y) for (int x = 0; x < box.w; ++x) {
+                int coverage = 0;
+                for (const auto& rect : draw_rects)
+                    coverage += x+0.5f >= rect.x && x+0.5f < rect.x+rect.w &&
+                                y+0.5f >= rect.y && y+0.5f < rect.y+rect.h;
+                assert(coverage == 1);
+            }
+        }
+    }
     assert(!ui_skin::set_palette("{\"surface\":\"#000000\"}"));
     assert(ui_skin::load(6) && ui_skin::has_buttons());
     std::cout << "Host skin: cold load " << cold_ms << " ms; average cached preset switch " << warm_ms / (ui_themes::themes.size() - 3) << " ms; zero PNG reads/allocations\n";

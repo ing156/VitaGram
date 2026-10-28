@@ -1,6 +1,6 @@
 # Releasing VitaGram / Выпуск VitaGram
 
-[README](README.md) · [Build / Сборка](README.md#building) · [Native checks / Проверки на ПК](tests/README.md)
+[README](README.md) · [Build / Сборка](docs/building.md) · [Native checks / Проверки на ПК](tests/README.md)
 
 Run the relevant native checks and validate installation and updates on a physical
 PS Vita before publishing. Build instructions are in the README.
@@ -68,6 +68,15 @@ The updater has no GitHub token and cannot access private releases.
 `~/.vitagram-release/update-signing.pem`; не добавляйте его в Git и сохраните копию.
 Смена ключа требует ручного распространения клиента с новым открытым ключом.
 У приложения нет токена GitHub для доступа к приватным релизам.
+
+The optional WebKit add-on is published separately as a **pre-release** tagged
+`webkit-abi1-r1`, with `vitagram-webkit-abi1-r1.zip` and its `.zip.sig`.
+Keeping it a pre-release preserves the ordinary application's `releases/latest`.
+See [module signing and device checks](docs/webkit-vita.md#сборка).
+
+Дополнение WebKit публикуется отдельно как **pre-release** с тегом
+`webkit-abi1-r1`: ZIP и его подпись `.zip.sig`. Это сохраняет обычный выпуск
+приложения в `releases/latest`. Подпись не заменяет аппаратную проверку модуля.
 
 ## Updater build details / Сборка вспомогательного установщика
 

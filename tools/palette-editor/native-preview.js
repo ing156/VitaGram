@@ -252,8 +252,8 @@ function drawSearch() {
 function drawPoll() {
   const day=t('17 октября 2026')+'  17:20',width=textWidth(day,.55)+28;
   nine('date_chip',480-width/2,L.history_top,width,22);text(day,494-width/2,L.history_top+16,.5,palette.muted);
-  text(t('Какой цвет выбрать?'),32,102,.7);
-  text(tr('poll.kind.poll')+tr('poll.anonymous')+tr('poll.single'),32,158,.52,palette.muted);
+  text(t('Какой цвет выбрать?'),32,L.poll_question_baseline,.68);
+  text(tr('poll.kind.poll')+tr('poll.anonymous')+tr('poll.single'),32,L.poll_kind_baseline,.52,palette.muted,890);
   [t('Яркий красный'),t('Электрический синий'),t('Графитовый')].forEach((label,index)=>{
     const y=L.poll_top+index*L.poll_step,checked=index===0,cx=52,cy=y+21;
     nine(checked?'row_focused':'row',L.poll_left,y,L.poll_width,L.poll_height);
@@ -271,7 +271,7 @@ function drawPoll() {
       const angle=a*2*Math.PI/32,x=cx+9*Math.cos(angle),pointY=cy+9*Math.sin(angle);
       if(a===0)context.moveTo(x,pointY);else context.lineTo(x,pointY);
     }
-    context.stroke();text(label,76,y+26,.57,palette.text,832);
+    context.stroke();text(label,76,y+22,.57,palette.text,832);
   });
   text(tr('poll.state.choose')+tr('poll.voters','0'),32,467,.53,palette.text,890);
   strip(tr('history.block_ready','100'),true);

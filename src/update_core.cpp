@@ -252,7 +252,7 @@ SignatureVerifier::~SignatureVerifier() {
     delete impl_;
 }
 
-bool SignatureVerifier::begin(const std::string& version, const char* public_key_pem) {
+bool SignatureVerifier::begin(const std::string& version, const char* public_key_pem, Kind kind) {
     const char* pem = public_key_pem ? public_key_pem : VITAGRAM_UPDATE_PUBLIC_KEY;
     BIO* bio = BIO_new_mem_buf((void*)pem, -1);
     if (!bio) return false;
@@ -261,7 +261,7 @@ bool SignatureVerifier::begin(const std::string& version, const char* public_key
     if (!impl_->key) return false;
     impl_->ctx = EVP_MD_CTX_create();
     if (!impl_->ctx || EVP_DigestVerifyInit(impl_->ctx, nullptr, EVP_sha256(), nullptr, impl_->key) != 1) return false;
-    std::string prefix = "vitagram-update-v1\n" + version + "\n";
+    std::string prefix = std::string(kind == Kind::WebKit ? "vitagram-webkit-v1\n" : "vitagram-update-v1\n") + version + "\n";
     return EVP_DigestVerifyUpdate(impl_->ctx, prefix.data(), prefix.size()) == 1;
 }
 

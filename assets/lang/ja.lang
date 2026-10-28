@@ -2,6 +2,19 @@
 @code = ja
 @name = 日本語
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = JA
+@keyboard.rows = ""
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+
 account.cleanup_blocked = 以前のアカウントのデータを削除できませんでした。メモリーカードへのアクセスを解放して、アプリを再起動してください。
 account.delete_incomplete = すべてのデータを削除できませんでした。次回起動時にもう一度クリーンアップします。
 account.deleted = アカウントのデータを削除しました。ログインするにはVitaGramを再起動してください。
@@ -19,7 +32,7 @@ anim.gpu_video = ビデオ用のグラフィックメモリーが足りません
 anim.limit_720p = アニメーションが720pの画素数の上限を超えています
 anim.limit_720p_media = ビデオ/アニメーションが720pの画素数の上限を超えています
 anim.limit_gif = GIFの上限: 20 MiB
-anim.limit_video = ビデオの上限: 128 MiB
+anim.limit_video = ビデオの上限: 1024 MiB
 anim.media_open = メディアファイルを開けません
 anim.memory = アニメーション用のメモリーが足りません
 anim.nv12_failed = NV12テクスチャの作成に失敗しました
@@ -725,7 +738,7 @@ link.confirm_title = このリンクを開きますか？
 link.cancel = キャンセル
 link.proceed = 開く
 
-settings.gyroscope = ジャイロセンサー
+settings.gyroscope = 写真表示時のジャイロ
 menu.rotate_left = {l}  左に回転
 menu.rotate_right = {r}  右に回転
 
@@ -960,3 +973,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = メニュー
+bot.keyboard = ボットのキーボード
+bot.buttons = ボットのボタン
+bot.select_hint = {select}: ボットのボタン
+bot.panel_hint = {cross} 選択   {circle} 戻る   左右: ページ
+bot.empty = 利用可能なボタンはありません
+bot.wait = ボットの応答を待っています…
+bot.unsupported = この種類のボタンは未対応です。データは送信されていません。
+bot.webapp_unavailable = ミニアプリにはTelegram JavaScriptブリッジを備えた内蔵ブラウザーが必要です。
+sticker.open_set = ステッカー・絵文字セットを開く
+sticker.add_set = セットを追加
+sticker.add_set_hint = {triangle} セットを追加
+sticker.installed = セットを追加しました
+sticker.no_set = この絵文字にセットはありません
+sticker.preview_set = ここにスライドして離すとセットを開きます
+bot.back = {circle} 戻る
+bot.response = ボットの応答
+
+# Internal Mini Apps
+webapp.confirm = ミニアプリを開きますか？ボットにTelegramのプロフィール情報と現在のテーマが送信されます。
+webapp.input = テキストを入力
+webapp.hint = 左スティック／方向キー：ポインター · L/R：スクロール · 四角：入力
+webapp.bridge_error = ミニアプリからのコマンドが多すぎます。
+webapp.data_error = ミニアプリはこのデータを送信できません。
+webapp.unsupported = ミニアプリが未対応の操作を要求しました。
+webapp.open = {cross} 開く
+webapp.close = {start}  閉じる
+webapp.vault_unavailable = データ暗号化が有効な場合、内蔵ビューはまだ利用できません。
+
+# Classic and combined chat views
+settings.view_mode = 表示モード
+settings.view_classic = クラシック
+settings.view_combined = 分割表示
+chat.focus_list = チャット > 履歴
+chat.focus_history = < チャット | 履歴
+chat.select_chat = チャットを選択
+webapp.payment_unavailable = VitaGram では Mini Apps の支払いはまだ利用できません。
+
+# --- Background audio player ---
+player.hint = L+R: プレーヤー
+player.loading = 音声を読み込み中…
+player.previous = 前の曲
+player.play = 再生 / 一時停止
+player.next = 次の曲
+player.seek = シーク · ↑/↓ 10秒
+player.volume = 音量
+player.shuffle = シャッフル
+player.repeat = リピート
+player.speed = 速度 · ↑/↓
+player.close = プレーヤーを閉じる
+player.off = オフ
+player.on = オン
+player.all = リスト
+player.one = 曲
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = キーボードの間隔
+settings.keyboard_split_small = 狭い
+settings.keyboard_split_medium = 標準
+settings.keyboard_split_wide = 広い
+
+# User-installed fonts
+settings.font_family = フォント
+settings.font_default = 標準
+settings.font_loading = フォントを読み込み中…
+settings.custom_font_failed = フォントを読み込めません。以前のフォントを維持します。
+settings.font_hint = {dpad} 選択 · {cross} 適用 · {circle} 戻る
+
+# Cache settings
+cache.title = キャッシュ
+cache.clear = 今すぐキャッシュを整理
+cache.cleaning = 整理中…
+cache.done = 完了
+cache.failed = 失敗
+cache.unavailable = キャッシュの整理にはTelegramへの接続が必要です。
+
+# Settings sections
+settings.section.interface = インターフェース
+settings.section.chats = チャット
+settings.section.controls = 操作と入力
+settings.section.data = データとストレージ
+settings.section.connection = 接続
+settings.section.security = データ保護
+settings.section.updates = 更新とインストール
+settings.section.about = アプリ情報と診断
+common.back = 戻る
+settings.cache_cleanup_hint = 保存期間と容量の上限を適用します。すべてのメディアは削除しません。
+
+# Video quality
+settings.video_quality = 動画の最高画質
+settings.video_minimum = 最低（データ節約）
+settings.video_360 = 最大 360p
+settings.video_480 = 最大 480p
+settings.video_720 = 最大 720p
+video.quality = 動画の画質
+video.quality_unavailable = 選択した画質は利用できません。

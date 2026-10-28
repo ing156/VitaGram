@@ -223,7 +223,7 @@ inline bool keeps(Shape shape, const std::string& name) {
     // Members chatFromJson, parseChat and the UI cache (compact_chat) read; "type",
     // "permissions" and "positions" stay whole.
     case Shape::Chat: return wanted(name, {"@type", "id", "type", "title", "photo", "permissions", "positions", "last_message",
-        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id", "last_read_inbox_message_id", "accent_color_id", "upgraded_gift_colors"});
+        "unread_count", "is_marked_as_unread", "last_read_outbox_message_id", "last_read_inbox_message_id", "reply_markup_message_id", "accent_color_id", "upgraded_gift_colors"});
     case Shape::ChatPhoto: return wanted(name, {"@type", "small"});
     }
     return false;

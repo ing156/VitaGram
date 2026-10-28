@@ -36,6 +36,14 @@ int main() {
                           "ux0:data/vitagram/files/videos", "ux0:data/vitagram/db", "ux0:data/vitagram/db/stickers",
                           "ux0:data/vitagram/db/thumbnails", "ux0:data/vitagram/db/thumbnails/b1", "ux0:data/vitagram/db/old.trash"})
         assert(!mkdir(d, 0777));
+    {
+        AppSettings settings; settings.font_file = u8"Мой шрифт.TTF"; assert(settings.save());
+        AppSettings restored; restored.load(); assert(restored.font_file == settings.font_file);
+        spit("ux0:data/vitagram/settings.json", R"({"font_file":"../outside.ttf"})");
+        restored.load(); assert(restored.font_file.empty());
+        spit("ux0:data/vitagram/settings.json", "{}");
+        restored.load(); assert(restored.font_file.empty());
+    }
     const std::string files = "ux0:data/vitagram/files", db = "ux0:data/vitagram/db";
     assert(!mkdir(ui_themes::directory, 0777));
     const std::string custom_palette = R"({"background":"#080609","surface":"#160E14","text":"#FFF3F6","muted":"#DABFC9","accent":"#FF365D"})";
@@ -114,6 +122,19 @@ int main() {
         }
     }
 
+    // Video quality survives saving; malformed preferences retain the conservative default.
+    {
+        for (int quality = 0; quality <= 3; ++quality) {
+            AppSettings settings; settings.video_quality = quality; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.video_quality == quality);
+        }
+        for (const char* json : {"{}", R"({"video_quality":-1})", R"({"video_quality":4})",
+                                R"({"video_quality":"720p"})", R"({"video_quality":true})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(loaded.video_quality == 0);
+        }
+    }
+
     // Every scroll preset persists; missing or malformed preferences retain Normal.
     {
         for (int mode = 0; mode < ScrollRepeat::kSpeedChoices; ++mode) {
@@ -152,6 +173,18 @@ int main() {
         }
     }
 
+    // Layout survives a settings round trip; old or malformed files keep classic mode.
+    {
+        for (bool combined : {false, true}) {
+            AppSettings settings; settings.combined_view = combined; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.combined_view == combined);
+        }
+        for (const char* json : {"{}", R"({"combined_view":1})", R"({"combined_view":"true"})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(!loaded.combined_view);
+        }
+    }
+
     // Keyboard choice persists; old or malformed files retain the system keyboard.
     {
         for (bool custom : {false, true}) {
@@ -161,6 +194,19 @@ int main() {
         for (const char* json : {"{}", R"({"custom_keyboard":1})", R"({"custom_keyboard":"true"})"}) {
             spit("ux0:data/vitagram/settings.json", json);
             AppSettings loaded; loaded.load(); assert(!loaded.custom_keyboard);
+        }
+    }
+
+    // Split spread persists; absent or invalid preferences use the medium level.
+    {
+        for (int level = 0; level < 3; ++level) {
+            AppSettings settings; settings.keyboard_split = level; assert(settings.save());
+            AppSettings loaded; loaded.load(); assert(loaded.keyboard_split == level);
+        }
+        for (const char* json : {"{}", R"({"keyboard_split":-1})", R"({"keyboard_split":3})",
+                                R"({"keyboard_split":true})", R"({"keyboard_split":"wide"})"}) {
+            spit("ux0:data/vitagram/settings.json", json);
+            AppSettings loaded; loaded.load(); assert(loaded.keyboard_split == 1);
         }
     }
 
@@ -174,6 +220,10 @@ int main() {
         }
         spit("ux0:data/vitagram/settings.json", R"({"keyboard_languages":["ru","en-GB","ru",null,"unknown"]})");
         loaded.load(); assert(loaded.keyboard_languages == std::vector<std::string>({"ru", "en"}));
+        keyboard_languages::registry().push_back("xx");
+        loaded.keyboard_languages = {"en", "xx"}; assert(loaded.save()); loaded.load();
+        assert(loaded.keyboard_languages == std::vector<std::string>({"en", "xx"}));
+        keyboard_languages::registry().pop_back();
         loaded.keyboard_languages.clear(); assert(loaded.save()); loaded.load(); assert(loaded.keyboard_languages.empty());
     }
 

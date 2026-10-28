@@ -2,6 +2,23 @@
 @code = fi
 @name = Suomi
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = FI
+@keyboard.rows = qwertyuiopå|asdfghjklöä|zxcvbnm
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = äå
+@keyboard.popup.o = ö
+@keyboard.popup.s = š
+@keyboard.popup.z = ž
+
 account.cleanup_blocked = Edellisen tilin tietoja ei voitu poistaa. Vapauta muistikortin käyttö ja käynnistä sovellus uudelleen.
 account.delete_incomplete = Kaikkia tietoja ei voitu poistaa. Siivous toistetaan seuraavalla käynnistyskerralla.
 account.deleted = Tilin tiedot poistettu. Käynnistä VitaGram uudelleen kirjautuaksesi sisään.
@@ -19,7 +36,7 @@ anim.gpu_video = Grafiikkamuisti ei riitä videolle
 anim.limit_720p = Animaatio ylittää 720p:n pikselirajan
 anim.limit_720p_media = Video/animaatio ylittää 720p:n pikselirajan
 anim.limit_gif = GIF-raja: 20 MiB
-anim.limit_video = Videoraja: 128 MiB
+anim.limit_video = Videoraja: 1024 MiB
 anim.media_open = Mediatiedostoa ei voi avata
 anim.memory = Muisti ei riitä animaatiolle
 anim.nv12_failed = NV12-tekstuurin luonti epäonnistui
@@ -725,7 +742,7 @@ link.confirm_title = Avataanko linkki?
 link.cancel = Peruuta
 link.proceed = Avaa
 
-settings.gyroscope = Gyroskooppi
+settings.gyroscope = Gyroskooppi kuvakatselimessa
 menu.rotate_left = {l}  Kierrä vasemmalle
 menu.rotate_right = {r}  Kierrä oikealle
 
@@ -960,3 +977,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Valikko
+bot.keyboard = Botin näppäimistö
+bot.buttons = Botin painikkeet
+bot.select_hint = {select}: botin painikkeet
+bot.panel_hint = {cross} Valitse   {circle} Takaisin   Vasen/Oikea: sivu
+bot.empty = Ei käytettävissä olevia painikkeita
+bot.wait = Odotetaan bottia…
+bot.unsupported = Tätä painiketyyppiä ei vielä tueta. Tietoja ei lähetetty.
+bot.webapp_unavailable = Minisovellukset tarvitsevat sisäisen selaimen ja Telegramin JavaScript-sillan.
+sticker.open_set = Avaa tarra-/emojipaketti
+sticker.add_set = Lisää paketti
+sticker.add_set_hint = {triangle} Lisää paketti
+sticker.installed = Paketti lisätty
+sticker.no_set = Tällä emojilla ei ole pakettia
+sticker.preview_set = Vedä tähän ja vapauta avataksesi paketin
+bot.back = {circle} Takaisin
+bot.response = Botin vastaus
+
+# Internal Mini Apps
+webapp.confirm = Avataanko minisovellus? Botti saa Telegram-profiilitietoja ja nykyisen teeman.
+webapp.input = Kirjoita teksti
+webapp.hint = Vasen sauva / Suunnat: osoitin · L/R: vieritä · Neliö: kirjoita
+webapp.bridge_error = Liikaa komentoja minisovelluksesta.
+webapp.data_error = Minisovellus ei voi lähettää näitä tietoja.
+webapp.unsupported = Minisovellus pyysi toimintoa, jota ei tueta.
+webapp.open = {cross} Avaa
+webapp.close = {start}  Sulje
+webapp.vault_unavailable = Sisäinen näkymä ei ole vielä käytettävissä, kun tietojen salaus on käytössä.
+
+# Classic and combined chat views
+settings.view_mode = Näkymätila
+settings.view_classic = Perinteinen
+settings.view_combined = Yhdistetty
+chat.focus_list = Keskustelut > viestit
+chat.focus_history = < keskustelut | Viestit
+chat.select_chat = Valitse keskustelu
+webapp.payment_unavailable = Mini Apps -maksut eivät ole vielä käytettävissä VitaGramissa.
+
+# --- Background audio player ---
+player.hint = L+R: soitin
+player.loading = Ladataan ääntä…
+player.previous = Edellinen kappale
+player.play = Toista / tauko
+player.next = Seuraava kappale
+player.seek = Kelaa · ↑/↓ 10 s
+player.volume = Äänenvoim.
+player.shuffle = Sekoita
+player.repeat = Uudelleentoisto
+player.speed = Nopeus · ↑/↓
+player.close = Sulje soitin
+player.off = Pois
+player.on = Päällä
+player.all = Lista
+player.one = Kappale
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = Näppäimistön väli
+settings.keyboard_split_small = Pieni
+settings.keyboard_split_medium = Keskikokoinen
+settings.keyboard_split_wide = Leveä
+
+# User-installed fonts
+settings.font_family = Fontti
+settings.font_default = Oletus
+settings.font_loading = Ladataan fonttia…
+settings.custom_font_failed = Fontin lataus epäonnistui. Edellinen säilytetään.
+settings.font_hint = {dpad} Valitse · {cross} Käytä · {circle} Takaisin
+
+# Cache settings
+cache.title = Välimuisti
+cache.clear = Tyhjennä välimuisti nyt
+cache.cleaning = Tyhjennetään…
+cache.done = Valmis
+cache.failed = Epäonnistui
+cache.unavailable = Välimuistin tyhjentäminen vaatii yhteyden Telegramiin.
+
+# Settings sections
+settings.section.interface = Käyttöliittymä
+settings.section.chats = Keskustelut
+settings.section.controls = Ohjaus ja syöttö
+settings.section.data = Tiedot ja tallennustila
+settings.section.connection = Yhteys
+settings.section.security = Tietosuoja
+settings.section.updates = Päivitykset ja asennus
+settings.section.about = Tietoja ja diagnostiikka
+common.back = Takaisin
+settings.cache_cleanup_hint = Noudattaa säilytysaikaa ja kokorajaa; ei poista kaikkea mediaa.
+
+# Video quality
+settings.video_quality = Videon enimmäislaatu
+settings.video_minimum = Pienin (säästää dataa)
+settings.video_360 = Enintään 360p
+settings.video_480 = Enintään 480p
+settings.video_720 = Enintään 720p
+video.quality = Videon laatu
+video.quality_unavailable = Valittu laatu ei ole saatavilla.

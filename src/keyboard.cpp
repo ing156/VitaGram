@@ -36,8 +36,9 @@ std::string utf16_to_utf8(const unsigned short* s) {
 }
 
 Keyboard::Keyboard() = default;
-void Keyboard::configure(bool custom, bool dark, const std::vector<std::string>& languages) {
+void Keyboard::configure(bool custom, bool dark, const std::vector<std::string>& languages, int split_level) {
     prefer_custom_ = custom; dark_ = dark;
+    custom_.setSplitLevel(split_level);
     languages_ = keyboard_languages::normalize(languages);
 }
 
@@ -82,8 +83,9 @@ void Keyboard::openSystem(const std::string& title, bool secret, const std::stri
     const auto selected = language.empty() ? keyboard_languages::resolve(languages_, i18n::systemLanguage()) :
         std::vector<std::string>{language};
     param_.supportedLanguages = 0;
-    for (size_t i = 0; i < keyboard_languages::supported().size(); ++i)
-        if (keyboard_languages::contains(selected, keyboard_languages::supported()[i])) param_.supportedLanguages |= masks[i];
+    for (size_t i = 0; i < keyboard_languages::native().size(); ++i)
+        if (keyboard_languages::contains(selected, keyboard_languages::native()[i])) param_.supportedLanguages |= masks[i];
+    if (!param_.supportedLanguages) param_.supportedLanguages = SCE_IME_LANGUAGE_ENGLISH;
     param_.languagesForced = SCE_TRUE;
     // Secrets (2FA password, vault passphrase) are masked by the system dialog.
     param_.type = SCE_IME_TYPE_DEFAULT;
@@ -120,6 +122,7 @@ void Keyboard::handle(unsigned int pressed, unsigned int held, bool touching, in
     if (active_ && custom_active_) {
         // The button/tap that opened the dialog belongs to the underlying screen.
         if (suppress_opening_input_) {
+            custom_.ignoreTouchHistory(touches);
             if (!held && !touching) suppress_opening_input_ = false;
             return;
         }

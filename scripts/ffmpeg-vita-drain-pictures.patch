@@ -1,0 +1,107 @@
+--- a/libavcodec/vitadec_video.c
++++ b/libavcodec/vitadec_video.c
+@@ -866,24 +866,30 @@
+     SceAvcdecArrayPicture ap = {0};
+     void *frame_output = NULL;
+ 
+-    // is it a corner use case?
+-    // some developers may send SPS and PPS through side data,
+-    // but a more proper way may be sending them through packet.
+-    size_t side_data_size = 0;
+-    uint8_t *side_data_buf = av_packet_get_side_data(avpkt, AV_PKT_DATA_NEW_EXTRADATA, &side_data_size);
+-    if (side_data_buf)
+-        do_parse_meta_data_raw(avctx, side_data_buf, side_data_size, true);
+-
+-    // it's necessary to probe SPS or PPS for every packet
+-    // 1. there is no extradata being passed when decoding a raw h264 stream with a parser
+-    // 2. the new SPS or PPS only appears in packets when decoding a mixed h264 stream
+-    //    containing different-sized video data
+-    do_parse_meta_data_probed(avctx, avpkt);
+-
+-    if (ctx->flags & VITA_DECODE_VIDEO_FLAG_INIT_POSTPONED) {
+-        ctx->flags &= ~VITA_DECODE_VIDEO_FLAG_INIT_POSTPONED;
+-        do_init(avctx);
+-    }
++    if (avpkt) {
++        // is it a corner use case?
++        // some developers may send SPS and PPS through side data,
++        // but a more proper way may be sending them through packet.
++        size_t side_data_size = 0;
++        uint8_t *side_data_buf = av_packet_get_side_data(avpkt, AV_PKT_DATA_NEW_EXTRADATA, &side_data_size);
++        if (side_data_buf)
++            do_parse_meta_data_raw(avctx, side_data_buf, side_data_size, true);
++
++        // it's necessary to probe SPS or PPS for every packet
++        // 1. there is no extradata being passed when decoding a raw h264 stream with a parser
++        // 2. the new SPS or PPS only appears in packets when decoding a mixed h264 stream
++        //    containing different-sized video data
++        do_parse_meta_data_probed(avctx, avpkt);
++
++        if (ctx->flags & VITA_DECODE_VIDEO_FLAG_INIT_POSTPONED) {
++            ctx->flags &= ~VITA_DECODE_VIDEO_FLAG_INIT_POSTPONED;
++            do_init(avctx);
++        }
++
++    }
++
++    if (!avpkt && !(ctx->flags & VITA_DECODE_VIDEO_FLAG_DECODER_READY))
++        return 0;
+ 
+     // reject any decode invocations if init failed
+     if (!(ctx->flags & VITA_DECODE_VIDEO_FLAG_DECODER_READY)) {
+@@ -905,7 +911,14 @@
+     ap.numOfElm = 1;
+     ap.pPicture = pp;
+ 
+-    if (!avpkt->size) {
++    if (!avpkt) {
++        SceAvcdecArrayPicture work = {0};
++        ret = sceAvcdecDecodeGetPictureWithWorkPictureInternal(&ctx->decoder_ctrl, &ap, &work, &ctx->decoder_picture_int);
++        if (ret < 0) {
++            av_log(avctx, AV_LOG_ERROR, "vita_h264 decode: poll picture failed 0x%x\n", ret);
++            return AVERROR_UNKNOWN;
++        }
++    } else if (!avpkt->size) {
+         ret = sceAvcdecDecodeStop(&ctx->decoder_ctrl, &ap);
+         if (ret < 0) {
+             av_log(avctx, AV_LOG_ERROR, "vita_h264 decode: flush failed 0x%x\n", ret);
+@@ -960,6 +973,30 @@
+ done:
+     // the decoder has consumed the all data input
+     return 0;
++}
++
++// Drain ready pictures independently of input: one AU need not yield one picture immediately.
++static int vita_receive_frame(AVCodecContext *avctx, AVFrame *frame)
++{
++    for (;;) {
++        AVPacket packet = {0};
++        int got_frame = 0;
++        int ret = vita_decode(avctx, frame, &got_frame, NULL);
++        if (ret < 0 || got_frame)
++            return ret;
++
++        ret = ff_decode_get_packet(avctx, &packet);
++        if (ret == AVERROR_EOF) {
++            ret = vita_decode(avctx, frame, &got_frame, &packet);
++            return ret < 0 ? ret : got_frame ? 0 : AVERROR_EOF;
++        }
++        if (ret < 0)
++            return ret;
++        ret = vita_decode(avctx, frame, &got_frame, &packet);
++        av_packet_unref(&packet);
++        if (ret < 0 || got_frame)
++            return ret;
++    }
+ }
+ 
+ static const AVOption vita_h264_options[] = {
+@@ -990,7 +1027,7 @@
+     .init               = vita_init,
+     .close              = vita_close,
+     .flush              = vita_flush,
+-    FF_CODEC_DECODE_CB(vita_decode),
++    FF_CODEC_RECEIVE_FRAME_CB(vita_receive_frame),
+     .bsfs               = "h264_mp4toannexb",
+     .p.priv_class       = &vita_h264_dec_class,
+     .p.capabilities     = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,

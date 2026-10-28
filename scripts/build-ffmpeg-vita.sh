@@ -15,7 +15,7 @@ build_dir="$root/build-$ffmpeg_version"
 rm -rf -- "$build_dir" "$root/install"
 mkdir -p "$build_dir"
 cd "$build_dir"
-# Only the components the app uses; no network, filters, GPL or nonfree code.
+# Only the components the app uses, including pitch-preserving audio tempo; no network, GPL or nonfree code.
 "$source_dir/configure" \
   --prefix="$root/install" \
   --enable-cross-compile --cross-prefix="$VITASDK/bin/arm-vita-eabi-" \
@@ -23,7 +23,8 @@ cd "$build_dir"
   --disable-shared --enable-static --disable-autodetect \
   --disable-runtime-cpudetect --disable-armv5te --disable-armv6t2 \
   --disable-programs --disable-doc --disable-debug --enable-small \
-  --disable-everything --disable-network --disable-avdevice --disable-avfilter \
+  --disable-everything --disable-network --disable-avdevice --enable-avfilter \
+  --enable-filter=abuffer,abuffersink,atempo,aresample \
   --enable-avformat --enable-avcodec --enable-avutil --enable-swscale --enable-swresample \
   --enable-decoder=gif,h264,h264_vita,vp8,vp9,opus,aac,mp3,flac,vorbis,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
   --enable-encoder=opus,aac \

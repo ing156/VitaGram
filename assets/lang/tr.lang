@@ -2,6 +2,27 @@
 @code = tr
 @name = Türkçe
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = TR
+@keyboard.rows = qwertyuıopğü|asdfghjklşi|zxcvbnmöç
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHİJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = â
+@keyboard.popup.ı = iî
+@keyboard.popup.i = ıî
+@keyboard.popup.o = ö
+@keyboard.popup.u = üû
+@keyboard.popup.s = ş
+@keyboard.popup.g = ğ
+@keyboard.popup.c = ç
+
 account.cleanup_blocked = Önceki hesabın verileri silinemedi. Bellek kartı erişimini serbest bırakın ve uygulamayı yeniden başlatın.
 account.delete_incomplete = Tüm veriler silinemedi. Temizlik bir sonraki açılışta tekrarlanacak.
 account.deleted = Hesap verileri silindi. Giriş yapmak için VitaGram'ı yeniden başlatın.
@@ -19,7 +40,7 @@ anim.gpu_video = Video için yeterli grafik belleği yok
 anim.limit_720p = Animasyon 720p piksel sınırını aşıyor
 anim.limit_720p_media = Video/animasyon 720p piksel sınırını aşıyor
 anim.limit_gif = GIF sınırı: 20 MiB
-anim.limit_video = Video sınırı: 128 MiB
+anim.limit_video = Video sınırı: 1024 MiB
 anim.media_open = Medya dosyası açılamıyor
 anim.memory = Animasyon için yeterli bellek yok
 anim.nv12_failed = NV12 dokusu oluşturulamadı
@@ -725,7 +746,7 @@ link.confirm_title = Bu bağlantı açılsın mı?
 link.cancel = İptal
 link.proceed = Aç
 
-settings.gyroscope = Jiroskop
+settings.gyroscope = Fotoğraf görüntüleyicide jiroskop
 menu.rotate_left = {l}  Sola döndür
 menu.rotate_right = {r}  Sağa döndür
 
@@ -960,3 +981,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Menü
+bot.keyboard = Bot klavyesi
+bot.buttons = Bot düğmeleri
+bot.select_hint = {select}: bot düğmeleri
+bot.panel_hint = {cross} Seç   {circle} Geri   Sol/Sağ: sayfa
+bot.empty = Kullanılabilir düğme yok
+bot.wait = Bot bekleniyor…
+bot.unsupported = Bu düğme türü henüz desteklenmiyor. Veri gönderilmedi.
+bot.webapp_unavailable = Mini uygulamalar Telegram JavaScript köprüsüne sahip dahili bir tarayıcı gerektirir.
+sticker.open_set = Çıkartma / emoji setini aç
+sticker.add_set = Set ekle
+sticker.add_set_hint = {triangle} Set ekle
+sticker.installed = Set eklendi
+sticker.no_set = Bu emojinin seti yok
+sticker.preview_set = Seti açmak için buraya kaydırıp bırakın
+bot.back = {circle} Geri
+bot.response = Bot yanıtı
+
+# Internal Mini Apps
+webapp.confirm = Mini uygulama açılsın mı? Bot, Telegram profil verilerini ve geçerli temayı alacak.
+webapp.input = Metin girin
+webapp.hint = Sol çubuk / Yön tuşları: imleç · L/R: kaydır · Kare: giriş
+webapp.bridge_error = Mini uygulamadan çok fazla komut geldi.
+webapp.data_error = Mini uygulama bu verileri gönderemiyor.
+webapp.unsupported = Mini uygulama desteklenmeyen bir işlem istedi.
+webapp.open = {cross} Aç
+webapp.close = {start}  Kapat
+webapp.vault_unavailable = Veri şifreleme açıkken dahili görüntüleme henüz kullanılamıyor.
+
+# Classic and combined chat views
+settings.view_mode = Görünüm modu
+settings.view_classic = Klasik
+settings.view_combined = Birleşik
+chat.focus_list = Sohbetler > geçmiş
+chat.focus_history = < sohbetler | Geçmiş
+chat.select_chat = Sohbet seçin
+webapp.payment_unavailable = Mini Apps ödemeleri henüz VitaGram içinde kullanılamıyor.
+
+# --- Background audio player ---
+player.hint = L+R: oynatıcı
+player.loading = Ses yükleniyor…
+player.previous = Önceki parça
+player.play = Oynat / duraklat
+player.next = Sonraki parça
+player.seek = Sar · ↑/↓ 10 sn
+player.volume = Ses
+player.shuffle = Karıştır
+player.repeat = Tekrarla
+player.speed = Hız · ↑/↓
+player.close = Oynatıcıyı kapat
+player.off = Kapalı
+player.on = Açık
+player.all = Liste
+player.one = Parça
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = Klavye ayrıklığı
+settings.keyboard_split_small = Az
+settings.keyboard_split_medium = Orta
+settings.keyboard_split_wide = Geniş
+
+# User-installed fonts
+settings.font_family = Yazı tipi
+settings.font_default = Varsayılan
+settings.font_loading = Yazı tipi yükleniyor…
+settings.custom_font_failed = Yazı tipi yüklenemedi. Önceki yazı tipi korundu.
+settings.font_hint = {dpad} Seç · {cross} Uygula · {circle} Geri
+
+# Cache settings
+cache.title = Önbellek
+cache.clear = Önbelleği şimdi temizle
+cache.cleaning = Temizleniyor…
+cache.done = Tamamlandı
+cache.failed = Başarısız
+cache.unavailable = Önbelleği temizlemek için Telegram bağlantısı gerekir.
+
+# Settings sections
+settings.section.interface = Arayüz
+settings.section.chats = Sohbetler
+settings.section.controls = Kontroller ve giriş
+settings.section.data = Veri ve depolama
+settings.section.connection = Bağlantı
+settings.section.security = Veri koruması
+settings.section.updates = Güncellemeler ve kurulum
+settings.section.about = Hakkında ve tanılama
+common.back = Geri
+settings.cache_cleanup_hint = Saklama süresi ve boyut sınırlarını uygular; tüm medyayı silmez.
+
+# Video quality
+settings.video_quality = En yüksek video kalitesi
+settings.video_minimum = En düşük (veri tasarrufu)
+settings.video_360 = En fazla 360p
+settings.video_480 = En fazla 480p
+settings.video_720 = En fazla 720p
+video.quality = Video kalitesi
+video.quality_unavailable = Seçilen kalite kullanılamıyor.

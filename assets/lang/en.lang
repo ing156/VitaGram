@@ -8,6 +8,27 @@
 @code = en
 @name = English
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = EN
+@keyboard.rows = qwertyuiop|asdfghjkl|zxcvbnm
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = àáâäæãåā
+@keyboard.popup.e = éèêëē
+@keyboard.popup.i = íîïīì
+@keyboard.popup.o = óôöòœøōõ
+@keyboard.popup.u = úûüùū
+@keyboard.popup.s = ß
+@keyboard.popup.n = ñ
+@keyboard.popup.c = ç
+
 # --- account ---
 account.cleanup_blocked = Could not delete the previous account's data. Free access to the memory card and restart the app.
 account.delete_incomplete = Could not delete all data. Cleanup will repeat at the next launch.
@@ -28,7 +49,7 @@ anim.gpu_video = Not enough GPU memory for video
 anim.limit_720p = Animation exceeds 720p pixel limit
 anim.limit_720p_media = Video/animation exceeds 720p pixel limit
 anim.limit_gif = GIF limit: 20 MiB
-anim.limit_video = Video limit: 128 MiB
+anim.limit_video = Video limit: 1024 MiB
 anim.media_open = Cannot open media file
 anim.memory = Not enough memory for animation
 anim.nv12_failed = NV12 texture init failed
@@ -828,7 +849,7 @@ link.confirm_title = Open this link?
 link.cancel = Cancel
 link.proceed = Open
 
-settings.gyroscope = Gyroscope
+settings.gyroscope = Gyroscope in photo viewer
 menu.rotate_left = {l}  Rotate left
 menu.rotate_right = {r}  Rotate right
 
@@ -1048,12 +1069,12 @@ radial.sticker_detail = sticker pack
 radial.left = {l}
 radial.right = {r}
 
-sticker.open_set=Open sticker / emoji set
-sticker.add_set=Add set
-sticker.add_set_hint={triangle} Add set
-sticker.installed=Set added
-sticker.no_set=This emoji has no set
-sticker.preview_set=Slide here and release to open set
+sticker.open_set = Open sticker / emoji set
+sticker.add_set = Add set
+sticker.add_set_hint = {triangle} Add set
+sticker.installed = Set added
+sticker.no_set = This emoji has no set
+sticker.preview_set = Slide here and release to open set
 
 # Chat opening position
 settings.chat_open = When opening a chat
@@ -1070,3 +1091,100 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Menu
+bot.keyboard = Bot keyboard
+bot.buttons = Bot buttons
+bot.select_hint = {select}: bot buttons
+bot.panel_hint = {cross} Select   {circle} Back   Left/Right: page
+bot.empty = No buttons available
+bot.wait = Waiting for the bot…
+bot.unsupported = This button type is not supported yet. No data was sent.
+bot.webapp_unavailable = Mini Apps need an embedded browser with the Telegram JavaScript bridge.
+bot.back = {circle} Back
+bot.response = Bot response
+
+# Internal Mini Apps
+webapp.confirm = Open this Mini App? The bot will receive Telegram profile data and the current theme.
+webapp.input = Enter text
+webapp.hint = Left stick / D-pad: pointer · L/R: scroll · Square: input
+webapp.bridge_error = Too many commands from the Mini App.
+webapp.data_error = This Mini App cannot send these data.
+webapp.unsupported = This Mini App requested an unsupported action.
+webapp.open = {cross} Open
+webapp.close = {start}  Close
+webapp.vault_unavailable = Internal viewing is not yet available with data encryption enabled.
+
+# Classic and combined chat views
+settings.view_mode = Display mode
+settings.view_classic = Classic
+settings.view_combined = Combined
+chat.focus_list = Chats > history
+chat.focus_history = < chats | History
+chat.select_chat = Select a chat
+webapp.payment_unavailable = Payments in Mini Apps are not available in VitaGram yet.
+
+# --- Background audio player ---
+player.hint = L+R: player
+player.loading = Loading audio…
+player.previous = Previous track
+player.play = Play / pause
+player.next = Next track
+player.seek = Seek · ↑/↓ 10 s
+player.volume = Volume
+player.shuffle = Shuffle
+player.repeat = Repeat
+player.speed = Speed · ↑/↓
+player.close = Close player
+player.off = Off
+player.on = On
+player.all = Playlist
+player.one = Track
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.video_quality = Maximum video quality
+settings.video_minimum = Minimum (save data)
+settings.video_360 = Up to 360p
+settings.video_480 = Up to 480p
+settings.video_720 = Up to 720p
+
+video.quality = Quality
+video.quality_unavailable = No quality within the configured maximum
+
+settings.keyboard_split = Keyboard spread
+settings.keyboard_split_small = Small
+settings.keyboard_split_medium = Medium
+settings.keyboard_split_wide = Wide
+
+# User-installed fonts
+settings.font_family = Font
+settings.font_default = Default
+settings.font_loading = Loading font…
+settings.custom_font_failed = Could not load the font. Previous font kept.
+settings.font_hint = {dpad} Select · {cross} Apply · {circle} Back
+
+# Cache settings
+cache.title = Cache
+cache.clear = Clean cache now
+cache.cleaning = Cleaning…
+cache.done = Done
+cache.failed = Failed
+cache.unavailable = Cache cleanup requires a connection to Telegram.
+
+# Settings sections
+settings.section.interface = Interface
+settings.section.chats = Chats
+settings.section.controls = Controls and input
+settings.section.data = Data and storage
+settings.section.connection = Connection
+settings.section.security = Data protection
+settings.section.updates = Updates and installation
+settings.section.about = About and diagnostics
+common.back = Back
+settings.cache_cleanup_hint = Applies retention and size limits; does not clear all media.

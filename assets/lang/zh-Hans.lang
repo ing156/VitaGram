@@ -2,6 +2,19 @@
 @code = zh-Hans
 @name = 简体中文
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = ZH-CN
+@keyboard.rows = ""
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+
 account.cleanup_blocked = 无法删除上一个账号的数据。请释放对存储卡的占用，然后重新启动应用。
 account.delete_incomplete = 未能删除全部数据。下次启动时将再次清理。
 account.deleted = 账号数据已删除。请重新启动 VitaGram 后登录。
@@ -19,7 +32,7 @@ anim.gpu_video = 视频所需的显存不足
 anim.limit_720p = 动画超过 720p 像素上限
 anim.limit_720p_media = 视频/动画超过 720p 像素上限
 anim.limit_gif = GIF 上限：20 MiB
-anim.limit_video = 视频上限：128 MiB
+anim.limit_video = 视频上限：1024 MiB
 anim.media_open = 无法打开媒体文件
 anim.memory = 动画内存不足
 anim.nv12_failed = 创建 NV12 纹理失败
@@ -725,7 +738,7 @@ link.confirm_title = 打开此链接？
 link.cancel = 取消
 link.proceed = 打开
 
-settings.gyroscope = 陀螺仪
+settings.gyroscope = 查看照片时使用陀螺仪
 menu.rotate_left = {l}  向左旋转
 menu.rotate_right = {r}  向右旋转
 
@@ -960,3 +973,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = 菜单
+bot.keyboard = 机器人键盘
+bot.buttons = 机器人按钮
+bot.select_hint = {select}：机器人按钮
+bot.panel_hint = {cross} 选择   {circle} 返回   左右：翻页
+bot.empty = 没有可用按钮
+bot.wait = 等待机器人回复…
+bot.unsupported = 暂不支持此按钮类型，未发送任何数据。
+bot.webapp_unavailable = 迷你应用需要带有 Telegram JavaScript 桥接的内置浏览器。
+sticker.open_set = 打开贴纸 / 表情包
+sticker.add_set = 添加表情包
+sticker.add_set_hint = {triangle} 添加表情包
+sticker.installed = 表情包已添加
+sticker.no_set = 此表情没有所属表情包
+sticker.preview_set = 滑到这里并松开以打开表情包
+bot.back = {circle} 返回
+bot.response = 机器人回复
+
+# Internal Mini Apps
+webapp.confirm = 打开小程序？机器人将收到 Telegram 个人资料和当前主题。
+webapp.input = 输入文字
+webapp.hint = 左摇杆／方向键：指针 · L/R：滚动 · 方块：输入
+webapp.bridge_error = 小程序发送的命令过多。
+webapp.data_error = 小程序无法发送这些数据。
+webapp.unsupported = 小程序请求了不支持的操作。
+webapp.open = {cross} 打开
+webapp.close = {start}  关闭
+webapp.vault_unavailable = 启用数据加密时，暂时无法使用内部视图。
+
+# Classic and combined chat views
+settings.view_mode = 显示模式
+settings.view_classic = 经典
+settings.view_combined = 合并视图
+chat.focus_list = 聊天 > 记录
+chat.focus_history = < 聊天 | 记录
+chat.select_chat = 选择聊天
+webapp.payment_unavailable = VitaGram 暂不支持 Mini Apps 付款。
+
+# --- Background audio player ---
+player.hint = L+R：播放器
+player.loading = 正在加载音频…
+player.previous = 上一曲
+player.play = 播放 / 暂停
+player.next = 下一曲
+player.seek = 跳转 · ↑/↓ 10秒
+player.volume = 音量
+player.shuffle = 随机播放
+player.repeat = 循环播放
+player.speed = 速度 · ↑/↓
+player.close = 关闭播放器
+player.off = 关闭
+player.on = 开启
+player.all = 列表
+player.one = 单曲
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = 键盘分开间距
+settings.keyboard_split_small = 小
+settings.keyboard_split_medium = 中
+settings.keyboard_split_wide = 宽
+
+# User-installed fonts
+settings.font_family = 字体
+settings.font_default = 默认
+settings.font_loading = 正在加载字体…
+settings.custom_font_failed = 无法加载字体。保留原字体。
+settings.font_hint = {dpad} 选择 · {cross} 应用 · {circle} 返回
+
+# Cache settings
+cache.title = 缓存
+cache.clear = 立即清理缓存
+cache.cleaning = 正在清理…
+cache.done = 完成
+cache.failed = 失败
+cache.unavailable = 清理缓存需要连接到Telegram。
+
+# Settings sections
+settings.section.interface = 界面
+settings.section.chats = 聊天
+settings.section.controls = 操作与输入
+settings.section.data = 数据与存储
+settings.section.connection = 连接
+settings.section.security = 数据保护
+settings.section.updates = 更新与安装
+settings.section.about = 关于与诊断
+common.back = 返回
+settings.cache_cleanup_hint = 按保留时间和容量限制清理，不会删除所有媒体。
+
+# Video quality
+settings.video_quality = 视频最高画质
+settings.video_minimum = 最低（节省流量）
+settings.video_360 = 最高 360p
+settings.video_480 = 最高 480p
+settings.video_720 = 最高 720p
+video.quality = 视频画质
+video.quality_unavailable = 所选画质不可用。

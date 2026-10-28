@@ -1,8 +1,12 @@
+#include "video_diagnostics.h"
+#include "video_packet_pacer.h"
+#include "video_sync.h"
 #include "diag_log.h"
 #include "performance.h"
 #include "i18n.h"
 #include "animation_player.h"
 #include "media_decode_policy.h"
+#include "media_limits.h"
 #include "webm_alpha.h"
 #include "portrait_video.h"
 #include "vault.h"
@@ -238,16 +242,22 @@ void AnimationPlayer::detachDisplayedFrame() {
     av_frame_free(&shown);   // returns the surface to the decoder pool
 }
 
-void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare, bool cache_only, download_stream::Shared stream) {
+void AnimationPlayer::setSource(const std::string& path, bool video, bool round, bool prepare, bool cache_only, download_stream::Shared stream, int32_t file_id) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_setSource");
     pthread_mutex_lock(&mutex_);
-    if (path == source_ && video_ == video && round_ == round && prepare_ == prepare && cache_only_ == cache_only && stream_ == stream) { pthread_mutex_unlock(&mutex_); return; }
-    source_ = path; stream_ = stream;
+    if (video_ == video && round_ == round && prepare_ == prepare && cache_only_ == cache_only &&
+        ((path == source_ && stream_ == stream && source_file_id_ == file_id) ||
+         (file_id && file_id == source_file_id_ && !source_.empty() && !finished_))) {
+        pthread_mutex_unlock(&mutex_); return;
+    }
+    source_ = path; stream_ = stream; source_file_id_ = file_id;
     video_ = video; round_ = round; prepare_ = prepare; cache_only_ = cache_only;
     preparation_required_ = false;
     preparation_checked_ = !prepare || !cache_only;
     paused_ = video; finished_ = false; position_us_ = 0; start_us_ = 0; duration_us_ = 0; duration_hint_us_ = 0;
     awaiting_frame_ = video; last_frame_us_ = 0;
+    audio_.videoFrameStalled() = false;
+    audio_.videoFrameLagging() = false;
     playback_ready_ = false;
     ++generation_;
     ready_ = false;
@@ -299,6 +309,8 @@ void AnimationPlayer::seekTo(int64_t us) {
     pending_direct_ = false;
     ready_ = false;   // the dropped frame must not fall through to the RGBA upload with an empty buffer
     awaiting_frame_ = true;
+    audio_.videoFrameStalled() = false;
+    audio_.videoFrameLagging() = false;
     pthread_mutex_unlock(&mutex_);
     // Keep the last picture on screen (as an own copy) under the loading indicator until the new one is decoded.
     if (yuv_valid_) { vita2d_wait_rendering_done(); detachDisplayedFrame(); }
@@ -321,6 +333,8 @@ void AnimationPlayer::toggle() {
     if (replay) { audio_.setSource(""); if (!prepare_) audio_.setSource(source_, true, false, stream_); }
     paused_ = replay ? false : !paused_.load();
     bool play = !paused_;
+    audio_.videoFrameStalled() = false;
+    audio_.videoFrameLagging() = false;
     if (play) last_frame_us_ = sceKernelGetSystemTimeWide();   // a pause is not a stall
     pthread_mutex_unlock(&mutex_);
     audio_.setPlaying(play);
@@ -329,6 +343,11 @@ void AnimationPlayer::toggle() {
 void AnimationPlayer::upload() {
     performance::SlowScope slow(performance::SlowPhase::Ui,"animationplayer_upload");
     if (video_ && finished_) audio_.setPlaying(false);
+    audio_.videoFrameStalled() = !awaiting_frame_ && !audio_.finished() && buffering();
+    const bool sync = video_ && !round_ && !prepare_ && !paused_ && !finished_ && !awaiting_frame_ &&
+        !audio_.finished() && audio_.clockReady();
+    audio_.videoFrameLagging() = sync && video_audio_ahead(audio_.positionUs(), position_us_, frame_step_us_,
+                                                          audio_.videoFrameLagging());
     pthread_mutex_lock(&mutex_);
     bool pending = ready_;
     pthread_mutex_unlock(&mutex_);
@@ -614,7 +633,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         }
         file.close();
     }
-    if (file_size <= 0 || file_size > (video ? 128 : 20) * 1024 * 1024) {
+    if (file_size <= 0 || file_size > (video ? media_limits::video_bytes : 20LL * 1024 * 1024)) {
         early_error(video ? i18n::text("anim.limit_video") : i18n::text("anim.limit_gif")); return;
     }
     AVFormatContext* format = avformat_alloc_context();
@@ -629,12 +648,13 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     FILE* hardware_log = nullptr;
     bool logged_first_hardware_frame = false;
     unsigned packets_read = 0, frames_decoded = 0;
+    bool had_frame = false;
     auto cleanup = [&]() {
         logged_codec = nullptr;
         if (hardware_log) {
-            if (generation == generation_)
-                std::fprintf(hardware_log, "summary packets=%u frames=%u uploads=%u audio_clock=%lld\n",
-                    packets_read, frames_decoded, uploaded_frames_.load(), (long long)audio_.positionUs());
+            std::fprintf(hardware_log, "summary current=%d packets=%u frames=%u uploads=%u audio_clock=%lld video_position=%lld\n",
+                generation == generation_ ? 1 : 0, packets_read, frames_decoded, uploaded_frames_.load(),
+                (long long)audio_.positionUs(), (long long)position_us_.load());
             std::fclose(hardware_log); hardware_log = nullptr;
         }
         for (AVFrame* queued : reordered_frames) av_frame_free(&queued);
@@ -646,7 +666,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     };
     auto fail = [&](const i18n::Text& message) {
         // A seek that the decoder cannot start from (open GOP, missing parameter sets) degrades to playing from the beginning.
-        if (!interrupted(&job) && video && start_us_.load() > 0 && !prepare) {
+        if (!interrupted(&job) && video && start_us_.load() > 0 && !prepare && !had_frame) {
             pthread_mutex_lock(&mutex_);
             const bool current = generation == generation_;
             if (FILE* fl = diag_log::open(diag_log::Kind::Video, "ux0:data/vitagram/video-seek.log", "a")) {
@@ -686,14 +706,19 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     const auto stream_state = download ? download->snapshot() : download_stream::State::Snapshot{};
     const std::string input_path = download ? stream_state.path : path;
     const bool growing = download && !(stream_state.complete && vault::is_sealed(input_path));
-    const int sealed = growing ? growing_input.attach(format, download) : sealed_input.attach(format, input_path);
+    const int sealed = growing ? growing_input.attach(format, download, video ? &audio_.videoBuffering() : nullptr,
+        video && !round ? download_stream::video_resume_bytes : 0,
+        video && !round ? download_stream::video_start_bytes : 0, video) : sealed_input.attach(format, input_path);
     int rc = sealed < 0 ? AVERROR(EIO)
                         : avformat_open_input(&format, sealed ? input_path.c_str() : ("file:" + input_path).c_str(), nullptr, &options);
     av_dict_free(&options);
+    if (rc >= 0 && growing) growing_input.finishOpen(format);
     // GIF/MOV/WebM headers provide stream parameters; do not decode probe frames before validating dimensions.
     if (rc < 0) { fail(decoder_error("Open", rc)); return; }
     int stream_index = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (stream_index < 0) { fail(decoder_error("Video stream", stream_index)); return; }
+    if (video) for (unsigned i = 0; i < format->nb_streams; ++i)
+        if (static_cast<int>(i) != stream_index) format->streams[i]->discard = AVDISCARD_ALL;
     AVStream* stream = format->streams[stream_index];
     // Without avformat_find_stream_info only the header durations exist; fragmented MP4 has none at file level.
     if (video && format->duration > 0) duration_us_ = format->duration;
@@ -771,7 +796,6 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     std::vector<unsigned char> rgba;
     CircleMask circle_mask;
     int64_t origin_pts = AV_NOPTS_VALUE, origin_wall = 0, next_wall = 0, last_output = 0;
-    bool had_frame = false;
     i18n::Text frame_error;
     int64_t video_wall = 0, tail_wall = 0, tail_position = 0, video_end = 0;
     int64_t audio_wait_started = 0;
@@ -794,6 +818,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         if (wall_fallback) return seek_base + now - video_wall;
         if (!audio_.finished()) {
             if (!audio_.clockReady()) {
+                if (audio_.videoBuffering()) { audio_wait_started = 0; return -1; }
                 if (!audio_wait_started) audio_wait_started = now;
                 if (now - audio_wait_started >= 2000000) {
                     wall_fallback = true;
@@ -815,15 +840,28 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         }
         return seek_base + now - video_wall;
     };
+    video_diagnostics::Playback diagnostic_playback;
+    auto decoder_stage = [&](const char* stage) {
+        diagnostic_playback.paused = paused_;
+        diagnostic_playback.audio_playing = audio_.playing();
+        diagnostic_playback.clock_ready = audio_.clockReady();
+        diagnostic_playback.buffering = audio_.videoBuffering();
+        diagnostic_playback.stalled = audio_.videoFrameStalled();
+        diagnostic_playback.lagging = audio_.videoFrameLagging();
+        if (video) video_diagnostics::update(&job, stage, packets_read, frames_decoded, audio_.positionUs(), position_us_.load(), diagnostic_playback);
+    };
+    struct DecoderTraceCleanup { const void* job; ~DecoderTraceCleanup() { video_diagnostics::remove(job); } } trace_cleanup{&job};
     auto wait_video = [&](int64_t due) -> int64_t {
+        diagnostic_playback.due = due;
         while (!interrupted(&job)) {
+            decoder_stage("wait_clock");
             // Notes and paused seeks need one preview frame without advancing
             // playback or starting the audio clock.
             if ((round || seek_base > 0) && !had_frame && paused_) return due;
             if (paused_) {
                 reservation.reset();
                 int64_t start = sceKernelGetSystemTimeWide();
-                while (paused_ && !interrupted(&job)) sceKernelDelayThread(10000);
+                while (paused_ && !interrupted(&job)) { decoder_stage("paused"); sceKernelDelayThread(10000); }
                 int64_t delay = sceKernelGetSystemTimeWide() - start;
                 if (video_wall) video_wall += delay;
                 if (tail_wall) tail_wall += delay;
@@ -831,7 +869,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 continue;
             }
             int64_t time = video_time();
-            if (time >= due) return time;
+            if (audio_.videoFrameStalled() || time >= due) return std::max(time, due);
             sceKernelDelayThread(5000);
         }
         return due;
@@ -893,6 +931,8 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                         audio_.setPlaying(!paused_);
                     }
                 }
+                diagnostic_playback.frame_pts = presentation_pts == AV_NOPTS_VALUE ? -1 :
+                    av_sat_sub64(av_rescale_q(presentation_pts, stream->time_base, AV_TIME_BASE_Q), timeline_origin_us);
                 int64_t clock = wait_video(video_due);
                 now = sceKernelGetSystemTimeWide();
                 if (seek_base > 0 && (frames_decoded <= 3 || frames_decoded % 20 == 0) && frames_decoded <= 140) {
@@ -913,7 +953,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 // A slow decoder can remain behind the audio clock for the
                 // whole clip. Refresh the displayed frame periodically even
                 // while dropping late frames, otherwise the picture freezes.
-                if (had_frame && clock - video_due > 100000 &&
+                if (had_frame && !audio_.videoFrameLagging() && clock - video_due > 100000 &&
                     last_output && now - last_output < 150000) {
                     av_frame_unref(frame); return true;
                 }
@@ -1012,6 +1052,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     auto receive = [&]() -> bool {
         frame_error.clear();
         while (!interrupted(&job)) {
+            decoder_stage("receive_frame");
             int result = avcodec_receive_frame(codec, frame);
             if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return true;
             if (result < 0) { frame_error = decoder_error("Receive frame", result); return false; }
@@ -1095,22 +1136,31 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
     if (generation == generation_ && video) playback_ready_ = true;
     pthread_mutex_unlock(&mutex_);
     bool hardware_recovered = false;
+    VideoPacketPacer packet_pacer;
+    unsigned packets_without_frame = 0;
     while (!interrupted(&job)) {
         if (video && paused_ && !((round || seek_base > 0) && !had_frame)) {
+            decoder_stage("paused");
             reservation.reset();
-            while (paused_ && !interrupted(&job)) sceKernelDelayThread(10000);
+            while (paused_ && !interrupted(&job)) { decoder_stage("paused"); sceKernelDelayThread(10000); }
             if (interrupted(&job)) break;
         }
         if (video && !reservation) reservation.emplace(cpu_scheduler::Role::Video);
-        // The hardware decoder swallows packets faster than it outputs pictures; when late frames are dropped nothing
-        // paces the feed and its elementary stream buffer overflows ("Send packet" failure). Keep the pipeline shallow.
-        if (video && direct_video) {
-            for (int waited = 0; waited < 400 && !interrupted(&job) && packets_read > frames_decoded + 250; ++waited) {
+        // Lost or non-picture packets must not permanently throttle later frames.
+        if (video && direct_video && packets_without_frame > 250) {
+            decoder_stage("throttle");
+            const unsigned before = frames_decoded;
+            for (int waited = 0; waited < 400 && !interrupted(&job) && frames_decoded == before; ++waited) {
                 sceKernelDelayThread(5000);
                 if (!receive()) { fail(frame_error); return; }
             }
+            packets_without_frame = 0;
         }
+        decoder_stage("read_packet");
+        const int64_t read_started = sceKernelGetSystemTimeWide();
         rc = av_read_frame(format, packet);
+        // Waiting for data must not count toward the audio startup timeout.
+        if (sceKernelGetSystemTimeWide() - read_started >= 500000) audio_wait_started = 0;
         if (rc == AVERROR_EOF) {
             rc = avcodec_send_packet(codec, nullptr);
             if (rc < 0) { fail(decoder_error("Send EOF", rc)); return; }
@@ -1141,7 +1191,29 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
         }
         if (rc < 0) { fail(decoder_error("Read packet", rc)); return; }
         if (packet->stream_index == stream_index) {
+            diagnostic_playback.packet_dts = packet->dts == AV_NOPTS_VALUE ? -1 :
+                av_sat_sub64(av_rescale_q(packet->dts, stream->time_base, AV_TIME_BASE_Q), timeline_origin_us);
+            diagnostic_playback.packet_pts = packet->pts == AV_NOPTS_VALUE ? -1 :
+                av_sat_sub64(av_rescale_q(packet->pts, stream->time_base, AV_TIME_BASE_Q), timeline_origin_us);
+            // Keep the hardware ES buffer bounded for both growing and completed files.
+            if (video && direct_video && packet->dts != AV_NOPTS_VALUE) {
+                const int64_t packet_us = av_sat_sub64(av_rescale_q(packet->dts, stream->time_base, AV_TIME_BASE_Q), timeline_origin_us);
+                while (!interrupted(&job)) {
+                    decoder_stage("pace_packet");
+                    if (paused_ && seek_base > 0 && !had_frame) break; // paused seek preview
+                    if (packet_pacer.ready(packet_us, had_frame ? video_time() : -1, sceKernelGetSystemTimeWide(),
+                                           audio_.videoFrameStalled() || audio_.videoFrameLagging(), paused_)) break;
+                    // Hardware can finish pictures while no new packet is submitted.
+                    const unsigned before = frames_decoded;
+                    if (!receive()) { fail(frame_error); return; }
+                    if (frames_decoded != before) packets_without_frame = 0;
+                    sceKernelDelayThread(5000);
+                }
+                if (interrupted(&job)) { av_packet_unref(packet); break; }
+            }
             ++packets_read;
+            const unsigned frames_before_packet = frames_decoded;
+            ++packets_without_frame;
             if (!frame_step_known && packet->duration > 0) {
                 frame_step_known = true;
                 fallback_delay = std::max<int64_t>(10000, std::min<int64_t>(1000000,
@@ -1154,6 +1226,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             }
             rc = alpha.send(packet, codec);
             if (rc < 0) { fail(decoder_error("WebM alpha packet", rc)); return; }
+            decoder_stage("send_packet");
             rc = avcodec_send_packet(codec, packet);
             if (rc < 0) {
                 // A failed access unit can leave SceVideodec's state unusable.
@@ -1195,7 +1268,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                                 std::fprintf(hardware_log, "recovery_open=%d\n", open_result);
                                 std::fflush(hardware_log);
                             }
-                            if (open_result >= 0) { logged_decoder_error_length = 0; logged_decoder_error[0] = '\0'; continue; }
+                            if (open_result >= 0) { packets_without_frame = 0; logged_decoder_error_length = 0; logged_decoder_error[0] = '\0'; continue; }
                         }
                     }
                 }
@@ -1204,6 +1277,7 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
             if (seek_pts_queue && packet->pts != AV_NOPTS_VALUE && seek_pts.size() < 1024)
                 seek_pts.insert(std::upper_bound(seek_pts.begin(), seek_pts.end(), packet->pts), packet->pts);
             if (!receive()) { fail(frame_error); return; }
+            if (frames_decoded != frames_before_packet) packets_without_frame = 0;
             av_packet_unref(packet);
         } else av_packet_unref(packet);
     }

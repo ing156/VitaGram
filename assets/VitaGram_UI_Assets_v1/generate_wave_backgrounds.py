@@ -19,6 +19,12 @@ PALETTES = {
     'wave1':'#1682E2','wave2':'#0B51AC', 'ribbon':'#51AAFC',
     'highlight':'#7ACBFF', 'edge':'#B7E6FF', 'mist':'#185CBD'
   },
+  'vhbb': {
+    'base_top':'#101C58','base_mid':'#12246B','base_bottom':'#343C79',
+    'halo':'#427ECA','under':'#29265F','mid':'#4652A0',
+    'wave1':'#117BDD','wave2':'#50448D', 'ribbon':'#829DCE',
+    'highlight':'#95D6FF', 'edge':'#C2CFED', 'mist':'#343C79'
+  },
   'light': {
     'base_top':'#F7FBFF','base_mid':'#E8F5FF','base_bottom':'#D5EAFD',
     'halo':'#A6DBFF','under':'#94C6F2','mid':'#73B4EF',
@@ -31,7 +37,7 @@ def svg_wallpaper(theme: str, alt: bool = False) -> str:
   c=PALETTES[theme]
   b=1.6 if alt else 1.0
   # Base layers remain quiet behind messages; waves concentrated in lower 2/3.
-  dark = theme=='dark'
+  dark = theme!='light'
   def op(v): return f'{min(v*b, 1):.3f}'
   svg=f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 544" width="960" height="544">
 <defs>
@@ -92,16 +98,19 @@ def svg_wallpaper(theme: str, alt: bool = False) -> str:
 </svg>'''
   return svg
 
+def wallpaper(theme: str, alt: bool = False) -> Image.Image:
+    svg = svg_wallpaper(theme, alt)
+    raw = cairosvg.svg2png(bytestring=svg.encode('utf-8'), output_width=1920, output_height=1088)
+    return Image.open(io.BytesIO(raw)).convert('RGBA').resize((W,H), Image.Resampling.LANCZOS)
+
 def generate(out: Path):
     paths=[]
-    for theme in ('dark','light'):
+    for theme in PALETTES:
         for alt in (False, True):
             label='background_alt_960x544.png' if alt else 'background_960x544.png'
             path=out/'themes'/theme/'fixed'/label
             path.parent.mkdir(parents=True, exist_ok=True)
-            svg=svg_wallpaper(theme, alt)
-            raw=cairosvg.svg2png(bytestring=svg.encode('utf-8'), output_width=1920,output_height=1088)
-            img=Image.open(io.BytesIO(raw)).convert('RGBA').resize((W,H),Image.Resampling.LANCZOS)
+            img=wallpaper(theme, alt)
             img.save(path, optimize=True)
             paths.append(path)
     return paths

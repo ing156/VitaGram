@@ -1,8 +1,10 @@
 #include "performance.h"
+#include "startup_trace.h"
 #include "utf8_decode.h"
 #include "media_render.h"
 #include "vault.h"
 #include "font_fallback.h"
+#include "user_fonts.h"
 #include "text_layout_cache.h"
 #include "text_font.h"
 #include "ui_skin.h"
@@ -29,13 +31,14 @@ FT_Library library = nullptr;
 FT_Face face = nullptr;
 // Faces retain their in-memory font buffers until the raster cache is released.
 struct TextFace { FT_Face coverage=nullptr; std::unique_ptr<TextFont> font; std::vector<unsigned char> data; };
-std::array<TextFace,6> text_faces;
+std::array<TextFace,7> text_faces;
+constexpr size_t custom_slot = 6;
 // Slot 2 holds the font of the interface language (Korean/Chinese) and is placed ahead of the
 // Japanese font so shared Han characters use the glyph shapes of that language. It has no fixed
 // path: rich_text_set_language_font() fills it.
 constexpr size_t language_slot = 2;
 const char* const text_paths[] = {"app0:assets/NotoSans-Regular.ttf",
-    "app0:assets/NotoSansCoptic-Regular.ttf", nullptr, "app0:assets/NotoSansJP-Regular.otf", "app0:assets/NotoSansMath-Regular.ttf", "app0:assets/NotoSansSymbols2-Regular.ttf"};
+    "app0:assets/NotoSansCoptic-Regular.ttf", nullptr, "app0:assets/NotoSansJP-Regular.otf", "app0:assets/NotoSansMath-Regular.ttf", "app0:assets/NotoSansSymbols2-Regular.ttf", nullptr};
 std::string language_font_path;
 // One active CJK face and at most one recently used/prepared face.
 TextFace spare_language_face;
@@ -46,13 +49,15 @@ struct LanguageLoader {
     std::atomic<bool> done{false};
     std::string reading, wanted, failed;
     std::vector<unsigned char> data;
-} language_loader;
+} language_loader, custom_loader;
+std::string custom_font_path, spare_custom_path;
+TextFace spare_custom_face;
 const char* const emoji_path = "app0:assets/NotoColorEmoji.ttf";
 // Fallback fonts and the emoji font (~11 MB) are read off the UI thread after
 // the main font; only the UI thread creates FreeType faces and vita2d fonts.
 struct FontLoader {
     pthread_t thread{}; bool started=false;
-    std::array<std::vector<unsigned char>,6> text;
+    std::array<std::vector<unsigned char>,7> text;
     std::vector<unsigned char> emoji;
     // `text_done` comes first: text fallbacks are adopted without waiting for the emoji font.
     std::atomic<bool> text_done{false}; std::atomic<bool> done{false}; std::atomic<bool> stop{false};
@@ -68,7 +73,8 @@ std::array<FontChoice,4096> font_choices;
 TextFont* font_for(uint32_t code) {
     auto& choice=font_choices[code%font_choices.size()];
     if (choice.valid && choice.code==code) return text_faces[choice.index].font.get();
-    size_t index=font_fallback_index(code,text_faces.size(),[](size_t i,uint32_t c) {
+    size_t index = text_faces[custom_slot].coverage && FT_Get_Char_Index(text_faces[custom_slot].coverage, code) ? custom_slot :
+        font_fallback_index(code,text_faces.size(),[](size_t i,uint32_t c) {
         return text_faces[i].font && text_faces[i].coverage && FT_Get_Char_Index(text_faces[i].coverage,c);
     });
     choice={code,index,true};
@@ -123,13 +129,14 @@ int render(vita2d_pgf* font, int x, int baseline, unsigned int color, float scal
             flush();
             // All controller icons share one on-screen height in the 960x544 UI.
             constexpr float size = 22.0f;
+            const unsigned int tint = 0x00ffffffu | (color & 0xff000000u); // Keep icon colors, follow the text fade.
             ui_skin::Sprite sprite;
             if (ui_skin::button(code - 0xe000, sprite)) {
                 const float factor = size / sprite.vh, width = sprite.vw * factor;
                 if (draw) {
                     const float top = baseline - size + (size - text_size * 0.7f) * 0.5f + 1.5f;
-                    vita2d_draw_texture_part_scale(sprite.texture, x + advance - sprite.vx * factor, top - sprite.vy * factor,
-                        sprite.x, sprite.y, sprite.w, sprite.h, factor, factor);
+                    vita2d_draw_texture_tint_part_scale(sprite.texture, x + advance - sprite.vx * factor, top - sprite.vy * factor,
+                        sprite.x, sprite.y, sprite.w, sprite.h, factor, factor, tint);
                 }
                 advance += width + 3 * scale;
                 continue;
@@ -140,8 +147,9 @@ int render(vita2d_pgf* font, int x, int baseline, unsigned int color, float scal
             if (draw && icon) {
                 // Center the icon on the visible text body instead of its baseline.
                 float top = baseline - size + (size - text_size * 0.7f) * 0.5f + 1.5f;
-                vita2d_draw_texture_scale(icon, x + advance, top,
-                    width / vita2d_texture_get_width(icon), size / vita2d_texture_get_height(icon));
+                vita2d_draw_texture_tint_part_scale(icon, x + advance, top,
+                    0, 0, vita2d_texture_get_width(icon), vita2d_texture_get_height(icon),
+                    width / vita2d_texture_get_width(icon), size / vita2d_texture_get_height(icon), tint);
             }
             advance += width + 3 * scale;
             continue;
@@ -167,12 +175,12 @@ int render(vita2d_pgf* font, int x, int baseline, unsigned int color, float scal
 }
 
 namespace {
-bool read_file(const char* path, std::vector<unsigned char>& out) {
+bool read_file(const char* path, std::vector<unsigned char>& out, size_t maximum = 64 * 1024 * 1024) {
     FILE* file=std::fopen(path,"rb");
     if (!file) return false;
     bool ok=!std::fseek(file,0,SEEK_END);
     const long size=ok ? std::ftell(file) : -1;
-    ok=ok && size>0 && !std::fseek(file,0,SEEK_SET);
+    ok=ok && size>0 && static_cast<unsigned long long>(size) <= maximum && !std::fseek(file,0,SEEK_SET);
     if (ok) { out.resize(static_cast<size_t>(size)); ok=std::fread(out.data(),1,out.size(),file)==out.size(); }
     std::fclose(file);
     if (!ok) std::vector<unsigned char>().swap(out);
@@ -204,44 +212,52 @@ void release_text_face(TextFace& text) {
     if (text.coverage) FT_Done_Face(text.coverage);
     text = {};
 }
-void* load_language_font(void*) {
+void* load_language_font(void* context) {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Storage);
-    read_file(language_loader.reading.c_str(), language_loader.data);
-    language_loader.done = true;
+    auto& task = *static_cast<LanguageLoader*>(context);
+    if (&task != &custom_loader || user_fonts::valid_file(task.reading))
+        read_file(task.reading.c_str(), task.data, &task == &custom_loader ? user_fonts::max_bytes : 64 * 1024 * 1024);
+    task.done = true;
     return nullptr;
 }
-void poll_language_font() {
-    auto& task = language_loader;
+void poll_language_font(LanguageLoader& task, TextFace& spare, std::string& spare_path) {
     if (!task.started || !task.done) return;
     pthread_join(task.thread, nullptr);
     task.started = false;
     if (task.reading == task.wanted) {
         TextFace candidate;
-        if (create_text_face(candidate, std::move(task.data))) {
+        if (create_text_face(candidate, std::move(task.data)) &&
+            (&task != &custom_loader || (FT_IS_SCALABLE(candidate.coverage) &&
+                !FT_Select_Charmap(candidate.coverage, FT_ENCODING_UNICODE)))) {
             vita2d_wait_rendering_done();
-            release_text_face(spare_language_face);
-            spare_language_face = std::move(candidate);
-            spare_language_path = task.reading;
-        } else task.failed = task.reading;
+            release_text_face(spare);
+            spare = std::move(candidate);
+            spare_path = task.reading;
+        } else { release_text_face(candidate); task.failed = task.reading; }
     }
     std::vector<unsigned char>().swap(task.data);
 }
 }
 
 bool rich_text_init() {
+    startup_trace::write("Loading controller icons");
     widths.clear();run_widths.clear();font_choices={};
     const char* icon_names[] = {"triangle", "square", "cross", "circle", "dpad", "start", "select", "L", "R"};
     for (size_t i=0; i<controller_icons.size(); ++i) {
         std::string path = std::string(i < 7 ? "app0:assets/controller-icons/" : "app0:ui/themes/dark/buttons/") + icon_names[i] + ".png";
         controller_icons[i] = vita2d_load_PNG_file(path.c_str());
     }
+    startup_trace::write("Initializing FreeType");
     if (FT_Init_FreeType(&library)) return false;
     // The main font is needed for the first frame; fallbacks arrive later.
     std::vector<unsigned char> main_font;
+    startup_trace::write("Loading main text font");
     if (read_file(text_paths[0],main_font)) adopt_text_face(0,std::move(main_font));
+    startup_trace::write("Opening emoji font");
     if (FT_New_Face(library, emoji_path, 0, &face)) face = nullptr;
     if (face && (!face->num_fixed_sizes || FT_Select_Size(face, 0))) { FT_Done_Face(face); face = nullptr; }
     loader.text_done=false; loader.done=false; loader.stop=false; loader.text_adopted=false; loader.adopted=false; loader.started_at=performance::now();
+    startup_trace::write("Starting fallback font loader");
     pthread_attr_t attributes; pthread_attr_init(&attributes);
     pthread_attr_setstacksize(&attributes, 64 * 1024);
     loader.started = pthread_create(&loader.thread, &attributes, load_fallback_fonts, nullptr) == 0;
@@ -268,7 +284,8 @@ void rich_text_skin_changed() {
     widths.clear(); run_widths.clear(); ++font_revision;
 }
 void rich_text_poll() {
-    poll_language_font();
+    poll_language_font(language_loader, spare_language_face, spare_language_path);
+    poll_language_font(custom_loader, spare_custom_face, spare_custom_path);
     bool reset = false;
     for (const auto& text : text_faces) if (text.font && text.font->needs_reset()) reset = true;
     if (reset) {
@@ -307,52 +324,76 @@ LanguageFontStatus rich_text_japanese_font_status() {
     if (text_faces[3].font) return LanguageFontStatus::Ready;
     return loader.text_adopted ? LanguageFontStatus::Failed : LanguageFontStatus::Loading;
 }
-LanguageFontStatus rich_text_prepare_language_font(const char* path) {
+static LanguageFontStatus prepare_font(const char* path, LanguageLoader& task, size_t slot,
+        const std::string& active_path, const TextFace& spare, const std::string& spare_path) {
     const std::string wanted = path ? path : "";
-    auto& task = language_loader;
     if (task.wanted != wanted) { task.wanted = wanted; task.failed.clear(); }
-    if (wanted.empty() || (wanted == language_font_path && text_faces[language_slot].font) ||
-        (wanted == spare_language_path && spare_language_face.font)) return LanguageFontStatus::Ready;
+    if (wanted.empty() || (wanted == active_path && text_faces[slot].font) ||
+        (wanted == spare_path && spare.font)) return LanguageFontStatus::Ready;
     if (task.failed == wanted) return LanguageFontStatus::Failed;
     if (!task.started) {
         task.reading = wanted;
         task.done = false;
         pthread_attr_t attributes; pthread_attr_init(&attributes);
         pthread_attr_setstacksize(&attributes, 64 * 1024);
-        task.started = pthread_create(&task.thread, &attributes, load_language_font, nullptr) == 0;
+        task.started = pthread_create(&task.thread, &attributes, load_language_font, &task) == 0;
         pthread_attr_destroy(&attributes);
         if (!task.started) { task.failed = wanted; return LanguageFontStatus::Failed; }
     }
     return LanguageFontStatus::Loading;
 }
-bool rich_text_set_language_font(const char* path) {
+static bool set_font(const char* path, size_t index, std::string& active_path,
+        TextFace& spare, std::string& spare_path) {
     const std::string wanted = path ? path : "";
-    if (!library) { language_font_path = wanted; return true; }
-    if (wanted == language_font_path && (wanted.empty() || text_faces[language_slot].font)) return true;
+    if (!library) { active_path = wanted; return true; }
+    if (wanted == active_path && (wanted.empty() || text_faces[index].font)) return true;
     TextFace candidate;
     if (!wanted.empty()) {
-        if (wanted == spare_language_path && spare_language_face.font) {
-            candidate = std::move(spare_language_face);
-            spare_language_face = {};
-            spare_language_path.clear();
+        if (wanted == spare_path && spare.font) {
+            candidate = std::move(spare);
+            spare = {};
+            spare_path.clear();
         } else {
             // Startup callers can load synchronously; settings prepare in the worker first.
             std::vector<unsigned char> data;
-            if (!read_file(wanted.c_str(), data) || !create_text_face(candidate, std::move(data))) return false;
+            if ((index == custom_slot && !user_fonts::valid_file(wanted)) ||
+                !read_file(wanted.c_str(), data, index == custom_slot ? user_fonts::max_bytes : 64 * 1024 * 1024) ||
+                !create_text_face(candidate, std::move(data))) return false;
+            if (index == custom_slot && (!FT_IS_SCALABLE(candidate.coverage) ||
+                FT_Select_Charmap(candidate.coverage, FT_ENCODING_UNICODE))) {
+                release_text_face(candidate); return false;
+            }
         }
     }
     vita2d_wait_rendering_done();
-    auto& slot = text_faces[language_slot];
+    auto& slot = text_faces[index];
     if (slot.font) {
-        release_text_face(spare_language_face);
-        spare_language_face = std::move(slot);
-        spare_language_path = language_font_path;
+        release_text_face(spare);
+        spare = std::move(slot);
+        spare_path = active_path;
     }
     slot = std::move(candidate);
-    language_font_path = wanted;
+    active_path = wanted;
     widths.clear(); run_widths.clear(); font_choices={}; ++font_revision;
     return true;
 }
+LanguageFontStatus rich_text_prepare_language_font(const char* path) {
+    return prepare_font(path, language_loader, language_slot, language_font_path, spare_language_face, spare_language_path);
+}
+bool rich_text_set_language_font(const char* path) {
+    return set_font(path, language_slot, language_font_path, spare_language_face, spare_language_path);
+}
+LanguageFontStatus rich_text_prepare_custom_font(const std::string& filename) {
+    if (!filename.empty() && !user_fonts::valid_filename(filename)) return LanguageFontStatus::Failed;
+    const auto path = filename.empty() ? std::string() : user_fonts::path(filename);
+    return prepare_font(path.c_str(), custom_loader, custom_slot, custom_font_path, spare_custom_face, spare_custom_path);
+}
+bool rich_text_set_custom_font(const std::string& filename) {
+    if (!filename.empty() && !user_fonts::valid_filename(filename)) return false;
+    const auto path = filename.empty() ? std::string() : user_fonts::path(filename);
+    return set_font(path.c_str(), custom_slot, custom_font_path, spare_custom_face, spare_custom_path);
+}
+
 void emoji_load_one() {
     if (!face || requested.empty()) return;
     performance::Scope measurement(performance::Metric::EmojiDecode);
@@ -390,6 +431,11 @@ void emoji_load_one() {
     performance::cdram_glyphs = (int64_t)cache.size() * 256 * 1024;
 }
 void rich_text_shutdown() {
+    if (custom_loader.started) { pthread_join(custom_loader.thread, nullptr); custom_loader.started = false; }
+    std::vector<unsigned char>().swap(custom_loader.data);
+    custom_loader.wanted.clear(); custom_loader.failed.clear();
+    release_text_face(spare_custom_face);
+    spare_custom_path.clear(); custom_font_path.clear();
     if (language_loader.started) {
         pthread_join(language_loader.thread, nullptr);
         language_loader.started = false;
@@ -417,7 +463,7 @@ void rich_text_shutdown() {
     std::vector<unsigned char>().swap(emoji_data);
 }
 static float ui_font_scale = 1.0f;
-void rich_text_set_scale(float scale) { if (scale!=ui_font_scale) { widths.clear();run_widths.clear(); } ui_font_scale = scale; }
+void rich_text_set_scale(float scale) { if (scale!=ui_font_scale) { widths.clear();run_widths.clear(); ++font_revision; } ui_font_scale = scale; }
 int rich_text_width(vita2d_pgf* font, float scale, const char* text) {
     performance::SlowScope slow(performance::SlowPhase::Ui,"text_width");
     return widths.get(text,reinterpret_cast<uintptr_t>(font),scale*ui_font_scale,[&]{return render(font,0,0,0,scale*ui_font_scale,text,false);});

@@ -2,6 +2,27 @@
 @code = nl
 @name = Nederlands
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = NL
+@keyboard.rows = qwertyuiop|asdfghjkl|zxcvbnm
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = áäâà
+@keyboard.popup.e = éëêè
+@keyboard.popup.i = íïìîĳ
+@keyboard.popup.o = óöôò
+@keyboard.popup.u = úüûù
+@keyboard.popup.y = ýÿ
+@keyboard.popup.' = ‘‚’
+@keyboard.popup." = “„”
+
 account.cleanup_blocked = De gegevens van het vorige account konden niet worden verwijderd. Maak de toegang tot de geheugenkaart vrij en start de app opnieuw.
 account.delete_incomplete = Niet alle gegevens konden worden verwijderd. Het opruimen wordt bij de volgende start herhaald.
 account.deleted = Accountgegevens verwijderd. Start VitaGram opnieuw om in te loggen.
@@ -19,7 +40,7 @@ anim.gpu_video = Onvoldoende videogeheugen voor video
 anim.limit_720p = Animatie overschrijdt de 720p-pixellimiet
 anim.limit_720p_media = Video/animatie overschrijdt de 720p-pixellimiet
 anim.limit_gif = GIF-limiet: 20 MiB
-anim.limit_video = Videolimiet: 128 MiB
+anim.limit_video = Videolimiet: 1024 MiB
 anim.media_open = Mediabestand kan niet worden geopend
 anim.memory = Onvoldoende geheugen voor animatie
 anim.nv12_failed = NV12-textuur kon niet worden gemaakt
@@ -725,7 +746,7 @@ link.confirm_title = Deze link openen?
 link.cancel = Annuleren
 link.proceed = Openen
 
-settings.gyroscope = Gyroscoop
+settings.gyroscope = Gyroscoop bij fotoweergave
 menu.rotate_left = {l}  Linksom draaien
 menu.rotate_right = {r}  Rechtsom draaien
 
@@ -960,3 +981,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Menu
+bot.keyboard = Bottoetsenbord
+bot.buttons = Botknoppen
+bot.select_hint = {select}: botknoppen
+bot.panel_hint = {cross} Kiezen   {circle} Terug   Links/Rechts: pagina
+bot.empty = Geen knoppen beschikbaar
+bot.wait = Wachten op de bot…
+bot.unsupported = Dit type knop wordt nog niet ondersteund. Er zijn geen gegevens verzonden.
+bot.webapp_unavailable = Mini Apps vereisen een ingebouwde browser met de JavaScript-brug van Telegram.
+sticker.open_set = Sticker-/emojiset openen
+sticker.add_set = Set toevoegen
+sticker.add_set_hint = {triangle} Set toevoegen
+sticker.installed = Set toegevoegd
+sticker.no_set = Deze emoji heeft geen set
+sticker.preview_set = Schuif hierheen en laat los om de set te openen
+bot.back = {circle} Terug
+bot.response = Antwoord van de bot
+
+# Internal Mini Apps
+webapp.confirm = Deze mini-app openen? De bot ontvangt Telegram-profielgegevens en het huidige thema.
+webapp.input = Tekst invoeren
+webapp.hint = Linkerstick / D-pad: aanwijzer · L/R: scrollen · Vierkant: invoer
+webapp.bridge_error = Te veel opdrachten van de mini-app.
+webapp.data_error = De mini-app kan deze gegevens niet verzenden.
+webapp.unsupported = De mini-app vraagt om een niet ondersteunde actie.
+webapp.open = {cross} Openen
+webapp.close = {start}  Sluiten
+webapp.vault_unavailable = Interne weergave is nog niet beschikbaar wanneer gegevensversleuteling is ingeschakeld.
+
+# Classic and combined chat views
+settings.view_mode = Weergavemodus
+settings.view_classic = Klassiek
+settings.view_combined = Gecombineerd
+chat.focus_list = Chats > berichten
+chat.focus_history = < chats | Berichten
+chat.select_chat = Selecteer een chat
+webapp.payment_unavailable = Betalingen in Mini Apps zijn nog niet beschikbaar in VitaGram.
+
+# --- Background audio player ---
+player.hint = L+R: speler
+player.loading = Audio laden…
+player.previous = Vorig nummer
+player.play = Afspelen / pauze
+player.next = Volgend nummer
+player.seek = Spoelen · ↑/↓ 10 s
+player.volume = Volume
+player.shuffle = Willekeurig
+player.repeat = Herhalen
+player.speed = Snelheid · ↑/↓
+player.close = Speler sluiten
+player.off = Uit
+player.on = Aan
+player.all = Lijst
+player.one = Nummer
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = Toetsenbordspreiding
+settings.keyboard_split_small = Klein
+settings.keyboard_split_medium = Gemiddeld
+settings.keyboard_split_wide = Breed
+
+# User-installed fonts
+settings.font_family = Lettertype
+settings.font_default = Standaard
+settings.font_loading = Lettertype laden…
+settings.custom_font_failed = Laden mislukt. Vorig lettertype blijft actief.
+settings.font_hint = {dpad} Kiezen · {cross} Toepassen · {circle} Terug
+
+# Cache settings
+cache.title = Cache
+cache.clear = Cache nu opschonen
+cache.cleaning = Opschonen…
+cache.done = Gereed
+cache.failed = Mislukt
+cache.unavailable = Voor het opschonen van de cache is verbinding met Telegram nodig.
+
+# Settings sections
+settings.section.interface = Interface
+settings.section.chats = Chats
+settings.section.controls = Bediening en invoer
+settings.section.data = Gegevens en opslag
+settings.section.connection = Verbinding
+settings.section.security = Gegevensbescherming
+settings.section.updates = Updates en installatie
+settings.section.about = Over en diagnostiek
+common.back = Terug
+settings.cache_cleanup_hint = Past bewaartermijn en groottelimiet toe; verwijdert niet alle media.
+
+# Video quality
+settings.video_quality = Maximale videokwaliteit
+settings.video_minimum = Minimaal (bespaart data)
+settings.video_360 = Tot 360p
+settings.video_480 = Tot 480p
+settings.video_720 = Tot 720p
+video.quality = Videokwaliteit
+video.quality_unavailable = De gekozen kwaliteit is niet beschikbaar.

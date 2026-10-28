@@ -42,4 +42,5 @@ cp "$root/assets/cacert.pem" "$work/cacert.pem"
 openssl ecparam -name prime256v1 -genkey -noout -out "$work/key.pem" 2>/dev/null
 openssl ec -in "$work/key.pem" -pubout -out "$work/pub.pem" 2>/dev/null
 { printf 'vitagram-update-v1\n9.9.9\n'; cat "$work/good.zip"; } | openssl dgst -sha256 -sign "$work/key.pem" -out "$work/good.sig"
+{ printf 'vitagram-webkit-v1\nwebkit-abi1-r1\n'; cat "$work/good.zip"; } | openssl dgst -sha256 -sign "$work/key.pem" -out "$work/addon.sig"
 "$work/update_test" "$work"

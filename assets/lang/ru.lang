@@ -8,6 +8,21 @@
 @code = ru
 @name = Русский
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = RU
+@keyboard.rows = йцукенгшщзх|фывапролджэ|ячсмитьбю
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 1
+@keyboard.popup.е = ё
+@keyboard.popup.ь = ъ
+
 # --- account ---
 account.cleanup_blocked = Не удалось удалить данные прошлого аккаунта. Освободите доступ к карте и перезапустите приложение.
 account.delete_incomplete = Не удалось полностью удалить данные. Очистка повторится при запуске.
@@ -28,7 +43,7 @@ anim.gpu_video = Недостаточно видеопамяти для виде
 anim.limit_720p = Анимация превышает лимит 720p по площади кадра
 anim.limit_720p_media = Видео/анимация превышает лимит 720p по площади кадра
 anim.limit_gif = Лимит GIF: 20 МиБ
-anim.limit_video = Лимит видео: 128 МиБ
+anim.limit_video = Лимит видео: 1024 МиБ
 anim.media_open = Не удалось открыть медиафайл
 anim.memory = Недостаточно памяти для анимации
 anim.nv12_failed = Не удалось создать NV12-текстуру
@@ -828,7 +843,7 @@ link.confirm_title = Перейти по ссылке?
 link.cancel = Отмена
 link.proceed = Перейти
 
-settings.gyroscope = Гироскоп
+settings.gyroscope = Гироскоп при просмотре фото
 menu.rotate_left = {l}  Повернуть влево
 menu.rotate_right = {r}  Повернуть вправо
 
@@ -1048,12 +1063,12 @@ radial.sticker_detail = стикерпак
 radial.left = {l}
 radial.right = {r}
 
-sticker.open_set=Открыть набор стикеров / эмодзи
-sticker.add_set=Добавить набор
-sticker.add_set_hint={triangle} Добавить набор
-sticker.installed=Набор добавлен
-sticker.no_set=У этого эмодзи нет набора
-sticker.preview_set=Сдвиньте сюда и отпустите: открыть набор
+sticker.open_set = Открыть набор стикеров / эмодзи
+sticker.add_set = Добавить набор
+sticker.add_set_hint = {triangle} Добавить набор
+sticker.installed = Набор добавлен
+sticker.no_set = У этого эмодзи нет набора
+sticker.preview_set = Сдвиньте сюда и отпустите: открыть набор
 
 # Chat opening position
 settings.chat_open = При открытии окна чата
@@ -1070,3 +1085,100 @@ history.open_retry = {cross} Повторить   {circle} Назад
 history.open_timeout = Telegram не ответил вовремя. Проверьте соединение и повторите попытку.
 history.target_missing = Сообщение недоступно или было удалено.
 history.target_offline = Сообщения нет в кэше устройства. Подключитесь к Telegram и повторите попытку.
+
+# Bot controls
+bot.menu = Меню
+bot.keyboard = Клавиатура бота
+bot.buttons = Кнопки бота
+bot.select_hint = {select}: кнопки бота
+bot.panel_hint = {cross} Выбрать   {circle} Назад   Влево/вправо: страница
+bot.empty = Нет доступных кнопок
+bot.wait = Ждём ответа бота…
+bot.unsupported = Этот тип кнопки пока не поддерживается. Данные не отправлены.
+bot.webapp_unavailable = Для мини-приложений нужен встроенный браузер с JavaScript-мостом Telegram.
+bot.back = {circle} Назад
+bot.response = Ответ бота
+
+# Internal Mini Apps
+webapp.confirm = Открыть мини-приложение? Бот получит данные профиля Telegram и текущую тему.
+webapp.input = Введите текст
+webapp.hint = Левый стик / стрелки: курсор · L/R: прокрутка · Квадрат: ввод
+webapp.bridge_error = Слишком много команд от мини-приложения.
+webapp.data_error = Мини-приложение не может отправить эти данные.
+webapp.unsupported = Мини-приложение запросило неподдерживаемое действие.
+webapp.open = {cross} Перейти
+webapp.close = {start}  Закрыть
+webapp.vault_unavailable = Внутренний просмотр пока недоступен при включённом шифровании данных.
+
+# Classic and combined chat views
+settings.view_mode = Режим отображения
+settings.view_classic = Классический
+settings.view_combined = Совмещённый
+chat.focus_list = Чаты > переписка
+chat.focus_history = < чаты | Переписка
+chat.select_chat = Выберите чат
+webapp.payment_unavailable = Оплата в Mini Apps пока недоступна в VitaGram.
+
+# --- Background audio player ---
+player.hint = L+R: плеер
+player.loading = Загрузка аудио…
+player.previous = Предыдущий трек
+player.play = Пуск / пауза
+player.next = Следующий трек
+player.seek = Перемотка · ↑/↓ 10 с
+player.volume = Громкость
+player.shuffle = Перемешивание
+player.repeat = Повтор
+player.speed = Скорость · ↑/↓
+player.close = Закрыть плеер
+player.off = Выкл.
+player.on = Вкл.
+player.all = Список
+player.one = Трек
+
+webapp.engine_needed = Для мини-приложений нужен дополнительный движок WebKit. Скачайте его один раз; обычные кнопки ботов работают без него.
+webapp.engine_checking = Проверка дополнения WebKit…
+webapp.engine_downloading = Загрузка / подготовка WebKit…
+webapp.engine_download = {cross} Скачать
+webapp.engine_retry = {cross} Повторить
+
+settings.video_quality = Максимальное качество видео
+settings.video_minimum = Минимальное (экономия трафика)
+settings.video_360 = До 360p
+settings.video_480 = До 480p
+settings.video_720 = До 720p
+
+video.quality = Качество
+video.quality_unavailable = Нет качества в заданном максимуме
+
+settings.keyboard_split = Раздвигание клавиатуры
+settings.keyboard_split_small = Небольшое
+settings.keyboard_split_medium = Среднее
+settings.keyboard_split_wide = Широкое
+
+# User-installed fonts
+settings.font_family = Шрифт
+settings.font_default = Стандартный
+settings.font_loading = Загрузка шрифта…
+settings.custom_font_failed = Не удалось загрузить шрифт. Предыдущий шрифт сохранён.
+settings.font_hint = {dpad} Выбор · {cross} Применить · {circle} Назад
+
+# Cache settings
+cache.title = Кеш
+cache.clear = Очистить кеш сейчас
+cache.cleaning = Очистка…
+cache.done = Готово
+cache.failed = Ошибка
+cache.unavailable = Для очистки кеша нужно подключение к Telegram.
+
+# Settings sections
+settings.section.interface = Интерфейс
+settings.section.chats = Чаты
+settings.section.controls = Управление и ввод
+settings.section.data = Данные и память
+settings.section.connection = Подключение
+settings.section.security = Защита данных
+settings.section.updates = Обновления и установка
+settings.section.about = О приложении и диагностика
+common.back = Назад
+settings.cache_cleanup_hint = Очистка по сроку хранения и лимиту объёма, без удаления всех медиа.

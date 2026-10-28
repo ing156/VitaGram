@@ -7,6 +7,9 @@
 #include "media_render.h"
 #include "ui_skin.h"
 #include "ui_color.h"
+#include "performance.h"
+#include "touch_history.h"
+#include "diag_log.h"
 #include <array>
 #include <cmath>
 #include <psp2/ctrl.h>
@@ -14,6 +17,7 @@
 #include <algorithm>
 #include <vector>
 #include <cstdlib>
+#include <cstdio>
 
 namespace {
 struct Colors {
@@ -154,8 +158,9 @@ size_t count_chars(const std::string& text) {
 
 struct CustomKeyboard::Impl {
     bool split_layout = false;
+    int split_level = 1; // Small, medium, wide.
     struct Gesture {
-        bool captured = false, armed = false;
+        bool captured = false, armed = false, finished = false, rejected = false;
         int single_id = -1, left_id = -1, right_id = -1;
         int left_x = 0, left_y = 0, right_x = 0, right_y = 0;
         uint64_t single_since = 0, since = 0;
@@ -167,6 +172,7 @@ struct CustomKeyboard::Impl {
             gesture = Gesture{};
             return captured;
         }
+        if (gesture.rejected) return false;
         if (!gesture.captured && touches.reportNum == 1) {
             if (gesture.single_id != touches.report[0].id) {
                 gesture.single_id = touches.report[0].id; gesture.single_since = now;
@@ -174,9 +180,9 @@ struct CustomKeyboard::Impl {
             return false;
         }
         if (!gesture.captured) {
-            gesture.captured = true; gesture.since = now;
+            gesture.since = now;
             if (touches.reportNum != 2 || (gesture.single_id >= 0 &&
-                (now < gesture.single_since || now - gesture.single_since > 180000))) return true;
+                (now < gesture.single_since || now - gesture.single_since > 180000))) return false;
             const auto& a = touches.report[touches.report[0].x < touches.report[1].x ? 0 : 1];
             const auto& b = touches.report[touches.report[0].x < touches.report[1].x ? 1 : 0];
             gesture.left_id=a.id; gesture.right_id=b.id;
@@ -185,7 +191,8 @@ struct CustomKeyboard::Impl {
                 gesture.left_y < 544 && gesture.right_y < 544 && std::abs(gesture.left_y-gesture.right_y) <= 100 &&
                 (split_layout ? gesture.left_x < 400 && gesture.right_x > 560 :
                  gesture.left_x >= 240 && gesture.left_x < 480 && gesture.right_x > 480 && gesture.right_x <= 720);
-            return true;
+            gesture.captured = gesture.armed;
+            return gesture.captured;
         }
         if (touches.reportNum != 2 || now < gesture.since || now-gesture.since > 1500000) gesture.armed = false;
         if (!gesture.armed) return true;
@@ -199,7 +206,7 @@ struct CustomKeyboard::Impl {
         }
         const int direction=split_layout ? -1 : 1;
         if (direction*(gesture.left_x-left->x/2)>=56 && direction*(right->x/2-gesture.right_x)>=56) {
-            split_layout=!split_layout; gesture.armed=false;
+            split_layout=!split_layout; gesture.armed=false; gesture.finished=true;
         }
         return true;
     }
@@ -217,7 +224,7 @@ struct CustomKeyboard::Impl {
     void apply_languages() {
         enabled = keyboard_languages::resolve(preferences, i18n::systemLanguage());
         enabled.erase(std::remove_if(enabled.begin(), enabled.end(), [&](const std::string& value) {
-            return !allow_system && keyboard_layout::get(value).system();
+            return keyboard_layout::get(value).code != value || (!allow_system && keyboard_layout::get(value).system());
         }), enabled.end());
         if (enabled.empty()) enabled.push_back("en");
     }
@@ -382,8 +389,7 @@ struct CustomKeyboard::Impl {
         constexpr int keys_top = 262, key_h = 64, gap = 8;
         // Geometry is shared by rendering, controller focus and touch hit testing.
         grid.clear();
-        static const std::vector<std::string> symbol_rows = {"1234567890!@#$", "%^&*()-_=+[]{}", "\\|;:'\",.<>/?`~"};
-        const auto& rows = symbols ? symbol_rows : layout().rows;
+        const auto& rows = symbols ? layout().symbols : layout().rows;
         if (layout().system()) return;
         int y = keys_top;
         for (size_t r = 0; r < rows.size(); ++r) {
@@ -398,7 +404,7 @@ struct CustomKeyboard::Impl {
             if (last) { line.push_back({x, y, side, key_h, Act::Shift, ""}); x += side + gap; }
             for (size_t k = 0; k < labels.size(); ++k) {
                 line.push_back({x, y, kw, key_h, Act::Char,
-                    code == "fr" && labels[k] == "'" && casing.explicitUpper() && !symbols ? "?" :
+                    !symbols && casing.explicitUpper() && layout().shifted.count(labels[k]) ? layout().shifted.at(labels[k]) :
                     shifted && !symbols ? keyboard_layout::upper(labels[k], code) : labels[k],
                     keyboard_layout::alternatives(layout(), labels[k], symbols ? 3 : r, k, shifted && !symbols)});
                 x += kw + gap;
@@ -434,17 +440,17 @@ struct CustomKeyboard::Impl {
             add(88, Act::Symbols, symbols ? "abc" : "?123");
             add(72, Act::Language, layout().badge);
             add(52, Act::Char, ",");
-            line.back().alternatives = {";", ":"};
+            line.back().alternatives = keyboard_layout::alternatives(layout(), ",", 3, 0, false);
             add(message ? 352 : 440, Act::Space);
             add(52, Act::Char, ".");
-            line.back().alternatives = code == "es" ? std::vector<std::string>{"?", "!", "…", "¿", "¡"} :
-                std::vector<std::string>{"?", "!", "…"};
+            line.back().alternatives = keyboard_layout::alternatives(layout(), ".", 3, 0, false);
             if (message) add(80, Act::Newline);
             add(112, Act::Ok, tr(message ? "keyboard.send" : "vault.kb.ok"));
         }
         grid.push_back(std::move(line));
         if (split_layout) {
-            constexpr int side_width=384, gap=8;
+            const int side_width=384-80*split_level;
+            constexpr int gap=8;
             size_t largest=0;
             for (size_t r=0;r+1<grid.size();++r) largest=std::max(largest,(grid[r].size()+1)/2);
             const int width=std::min(64,(side_width-(int(largest)-1)*gap)/int(largest));
@@ -501,14 +507,74 @@ struct CustomKeyboard::Impl {
         }
         return false;
     }
+    int contact_id = -1, contact_x = 0, contact_y = 0;
+    std::array<bool, 256> previous_contacts{};
+    struct TouchSample { SceTouchData data; uint64_t time; };
+    std::vector<TouchSample> gesture_samples;
+    TouchHistory touch_history;
+    uint64_t input_clock=0;
+    unsigned previous_held=0;
     Result handle(unsigned pressed, unsigned held, bool touch_down, int tx, int ty, uint64_t now, const SceTouchData* touches) {
         clock = now;
-        if (touches && split_gesture(*touches,now)) {
+        if (!touches) return handle_keys(pressed, held, touch_down, tx, ty, now, false);
+        const bool finished = gesture.finished;
+        if (split_gesture(*touches,now)) {
+            if (pressed & (SCE_CTRL_SELECT | SCE_CTRL_CIRCLE)) return Result::Cancelled;
+            if (!finished && !gesture.finished) {
+                // Only a completed split gesture may discard typing; replay failed candidates.
+                if (touches->reportNum && gesture.armed && gesture_samples.size() < 128 && !pressed) {
+                    gesture_samples.push_back({*touches,now});
+                    return Result::None;
+                }
+                if (touches->reportNum) { gesture.captured=false; gesture.rejected=true; }
+                for (const auto& sample : gesture_samples) {
+                    const auto result=handle_contacts(0,held,sample.data,sample.time);
+                    if (result != Result::None) { gesture_samples.clear(); return result; }
+                }
+                gesture_samples.clear();
+                return handle_contacts(pressed,held,*touches,now);
+            }
+            gesture_samples.clear();
             hold=Hold{}; deletion=DeleteRepeat{}; pending_touch_active=false;
             feedback_down=false; feedback_until=0; was_touching=false;
+            contact_id=-1;
+            previous_contacts.fill(false);
+            for (unsigned i=0;i<touches->reportNum;++i) previous_contacts[touches->report[i].id]=true;
             geometry();
-            return pressed & (SCE_CTRL_SELECT | SCE_CTRL_CIRCLE) ? Result::Cancelled : Result::None;
+            return Result::None;
         }
+        return handle_contacts(pressed,held,*touches,now);
+    }
+    Result handle_contacts(unsigned pressed, unsigned held, const SceTouchData& data, uint64_t now) {
+        const auto* touches=&data;
+        const auto previous = previous_contacts;
+        previous_contacts.fill(false);
+        for (unsigned i = 0; i < touches->reportNum; ++i) previous_contacts[touches->report[i].id]=true;
+        const SceTouchReport* current = nullptr;
+        for (unsigned i = 0; i < touches->reportNum; ++i)
+            if (touches->report[i].id == contact_id) current = &touches->report[i];
+        if (current) { contact_x=current->x/2; contact_y=current->y/2; }
+        bool handled = false;
+        for (unsigned i = 0; i < touches->reportNum; ++i) {
+            const auto& next = touches->report[i];
+            if (previous[next.id]) continue;
+            // A new contact ends the previous key even when no empty frame was sampled.
+            if (contact_id >= 0) {
+                const auto result=handle_keys(0,held,false,contact_x,contact_y,now,true);
+                if (result != Result::None) return result;
+            }
+            contact_id=next.id; contact_x=next.x/2; contact_y=next.y/2;
+            const auto result=handle_keys(handled ? 0 : pressed,held,true,contact_x,contact_y,now,true);
+            handled=true;
+            if (result != Result::None) return result;
+        }
+        if (handled) return Result::None;
+        const auto result=handle_keys(pressed,held,current != nullptr,contact_x,contact_y,now,true);
+        if (!current) contact_id=-1;
+        return result;
+    }
+    Result handle_keys(unsigned pressed, unsigned held, bool touch_down, int tx, int ty, uint64_t now, bool defer_touch) {
+        clock = now;
         if (pending_touch_active) {
             const auto key=pending_touch;
             const bool inside=tx>=key.x && tx<key.x+key.w && ty>=key.y && ty<key.y+key.h;
@@ -586,7 +652,7 @@ struct CustomKeyboard::Impl {
                     if (tx >= key.x && tx < key.x + key.w && ty >= key.y && ty < key.y + key.h) {
                         row = r; col = k;
                         // Immediate touch actions commit on release, so a second finger can claim the gesture.
-                        if (touches && !((key.act==Act::Char || key.act==Act::Language) && !key.alternatives.empty())) {
+                        if (defer_touch && !((key.act==Act::Char || key.act==Act::Language) && !key.alternatives.empty())) {
                             pending_touch=key; pending_touch_active=true; pending_touch_since=now;
                             touch_mode=true; show_press(key);
                         } else activate(key, true);
@@ -598,11 +664,47 @@ struct CustomKeyboard::Impl {
         geometry(); // Layout changes are visible in the same frame.
         return Result::None;
     }
+    struct DraftLayout {
+        std::string text;
+        size_t cursor = 0, cursor_line = 0;
+        int cursor_width = 0;
+        vita2d_pgf* font = nullptr;
+        unsigned revision = 0;
+        std::vector<std::string> lines;
+    };
+    mutable DraftLayout draft;
+    const DraftLayout& draft_layout(vita2d_pgf* font) const {
+        const auto revision=rich_text_revision();
+        if (!draft.lines.empty() && draft.text==text && draft.cursor==cursor &&
+            draft.font==font && draft.revision==revision) return draft;
+        draft={text,cursor,0,0,font,revision,{""}};
+        for (size_t i=0;i<text.size();) {
+            size_t n=1;
+            while (i+n<text.size() && (static_cast<unsigned char>(text[i+n])&0xc0)==0x80) ++n;
+            const auto glyph=text.substr(i,n);
+            if (glyph!="\n" && rich_text_width(font,0.65f,(draft.lines.back()+glyph).c_str())>868)
+                draft.lines.emplace_back();
+            if (i==cursor) {
+                draft.cursor_line=draft.lines.size()-1;
+                draft.cursor_width=rich_text_width(font,0.65f,draft.lines.back().c_str());
+            }
+            if (glyph=="\n") draft.lines.emplace_back();
+            else draft.lines.back()+=glyph;
+            i+=n;
+        }
+        if (cursor==text.size()) {
+            draft.cursor_line=draft.lines.size()-1;
+            draft.cursor_width=rich_text_width(font,0.65f,draft.lines.back().c_str());
+        }
+        return draft;
+    }
     void draw(vita2d_pgf* font, bool dark, const std::string& title, bool keyboard_only) const {
+        performance::SlowScope text_draw(performance::SlowPhase::Ui,"keyboard_text");
         const Colors c = colors(dark);
         const bool shifted = casing.upper(context());
         if (!keyboard_only) {
-            if (!ui_skin::background()) vita2d_draw_rectangle(0, 0, 960, 544, c.background);
+            vita2d_draw_rectangle(0, 0, 960, 544, c.background | 0xff000000u);
+            ui_skin::background();
             const bool header = ui_skin::header();
             const int title_width = rich_text_width(font, 0.74f, title.c_str());
             const float title_scale = title_width > 728 ? 0.74f * 728 / title_width : 0.74f;
@@ -618,27 +720,10 @@ struct CustomKeyboard::Impl {
                 rich_text_draw(font, 28, 63, c.muted, help_scale, help.c_str());
                 rounded_key_base(20, 78, 920, 164, 12, c.separator);
                 rounded_key_base(22, 80, 916, 160, 10, c.key);
-                std::vector<std::string> lines(1);
-                size_t cursor_line = 0;
-                int cursor_width = 0;
-                for (size_t i = 0; i < text.size();) {
-                    size_t n = 1;
-                    while (i + n < text.size() && (static_cast<unsigned char>(text[i+n]) & 0xc0) == 0x80) ++n;
-                    const std::string glyph = text.substr(i, n);
-                    if (glyph != "\n" && rich_text_width(font, 0.65f, (lines.back() + glyph).c_str()) > 868)
-                        lines.emplace_back();
-                    if (i == cursor) {
-                        cursor_line = lines.size() - 1;
-                        cursor_width = rich_text_width(font, 0.65f, lines.back().c_str());
-                    }
-                    if (glyph == "\n") lines.emplace_back();
-                    else lines.back() += glyph;
-                    i += n;
-                }
-                if (cursor == text.size()) {
-                    cursor_line = lines.size() - 1;
-                    cursor_width = rich_text_width(font, 0.65f, lines.back().c_str());
-                }
+                const auto& layout=draft_layout(font);
+                const auto& lines=layout.lines;
+                const auto cursor_line=layout.cursor_line;
+                const auto cursor_width=layout.cursor_width;
                 // Keep the insertion point visible when navigating a long draft.
                 const size_t first = cursor_line > 4 ? cursor_line - 4 : 0;
                 const size_t last = std::min(lines.size(), first + 5);
@@ -662,6 +747,11 @@ struct CustomKeyboard::Impl {
                     vita2d_draw_rectangle(480 - shown*11 + (before-first)*22, 205, 2, 22, c.accent);
             }
         }
+        text_draw.finish();
+        performance::SlowScope keys_draw(performance::SlowPhase::Ui,"keyboard_keys");
+        const bool trace_keys=performance::enabled && diag_log::enabled(diag_log::Kind::Performance);
+        auto stamp=[&] { return trace_keys ? performance::now() : int64_t(0); };
+        int64_t faces_us=0,theme_us=0,labels_us=0,hints_us=0;
         vita2d_draw_rectangle(0, 250, 960, 294, c.panel);
         vita2d_draw_rectangle(0, 250, 960, 1, c.separator);
         for (int r = 0; r < (int)grid.size(); ++r)
@@ -684,11 +774,14 @@ struct CustomKeyboard::Impl {
                 const int inset = pressed ? 2 : 0;
                 const int radius = split_layout && (ok || key.act==Act::Symbols) ? 28 : 10;
                 // Soft key faces, with one precise controller focus outline.
+                auto part=stamp();
                 rounded_key_base(key.x - 2, key.y - 2, key.w + 4, key.h + 4, radius + 2, selected ? c.focus : c.separator);
                 rounded_key_base(key.x + inset, key.y + inset, key.w - 2*inset, key.h - 2*inset, radius, fill);
+                auto end=stamp(); faces_us+=end-part; part=end;
                 if (fill == c.key || fill == c.active)
                     ui_skin::nine(fill == c.active ? ui_skin::Slice::RowFocused : ui_skin::Slice::Row,
                         key.x + inset + 2, key.y + inset + 2, key.w - 2*inset - 4, key.h - 2*inset - 4);
+                end=stamp(); theme_us+=end-part; part=end;
                 const float cx = key.x + key.w / 2.0f;
                 const float cy = key.y + key.h / 2.0f;
                 if (key.act == Act::Shift) {
@@ -732,6 +825,7 @@ struct CustomKeyboard::Impl {
                         vita2d_draw_line(cx - 16, cy + 20, cx + 16, cy + 20, hint_ink);
                     }
                 }
+                end=stamp(); labels_us+=end-part; part=end;
                 if (secret) {
                     const unsigned badge_color = color;
                     const int shortcut = key.act == Act::Delete ? 1 : key.act == Act::Space ? 0 :
@@ -759,7 +853,16 @@ struct CustomKeyboard::Impl {
                         hint_ink,
                         scale, hint.c_str());
                 }
+                hints_us+=stamp()-part;
             }
+        if (trace_keys) {
+            char detail[96];
+            std::snprintf(detail,sizeof(detail),"keyboard_keys_f%lld_s%lld_l%lld_h%lld",
+                (long long)faces_us,(long long)theme_us,(long long)labels_us,(long long)hints_us);
+            keys_draw.name(detail);
+        }
+        keys_draw.finish();
+        performance::SlowScope preview_draw(performance::SlowPhase::Ui,"keyboard_preview");
         if (hold.active && hold.fired) {
             const Popup popup = popup_geometry();
             const int count = popup_count();
@@ -803,6 +906,10 @@ CustomKeyboard::CustomKeyboard() : impl_(new Impl) {}
 CustomKeyboard::~CustomKeyboard() { clear(); }
 void CustomKeyboard::clear() {
     impl_->gesture = Impl::Gesture{}; impl_->pending_touch_active=false;
+    impl_->contact_id=-1; impl_->previous_contacts.fill(false);
+    impl_->gesture_samples.clear();
+    impl_->touch_history.ignore(nullptr); impl_->input_clock=0; impl_->previous_held=0;
+    impl_->draft=Impl::DraftLayout{};
     std::fill(impl_->text.begin(), impl_->text.end(), '\0'); impl_->text.clear(); impl_->cursor = 0;
     impl_->hold = Impl::Hold{};
     impl_->deletion = Impl::DeleteRepeat{};
@@ -812,10 +919,12 @@ void CustomKeyboard::open(const std::string& initial, bool secret, bool message,
     const std::string language = impl_->language_chosen ? impl_->code : keyboard_languages::canonical(i18n::systemLanguage());
     const bool chosen = impl_->language_chosen;
     const bool split = impl_->split_layout;
+    const int split_level = impl_->split_level;
     const auto preferences = impl_->preferences;
     clear();
     *impl_ = Impl{};
     impl_->split_layout = split;
+    impl_->split_level = split_level;
     impl_->allow_system = allow_system;
     impl_->preferences = preferences;
     impl_->apply_languages();
@@ -836,12 +945,40 @@ void CustomKeyboard::open(const std::string& initial, bool secret, bool message,
     impl_->geometry();
 }
 CustomKeyboard::Result CustomKeyboard::handle(unsigned pressed, unsigned held, bool touch_down, int x, int y, uint64_t now, const SceTouchData* touches) {
-    return impl_->handle(pressed, held, touch_down, x, y, now, touches);
+    if (touches && touches->reportNum>SCE_TOUCH_MAX_REPORT) return Result::None;
+    const auto count=impl_->touch_history.poll(touches,[](SceTouchData* data,unsigned size) {
+        return sceTouchRead(SCE_TOUCH_PORT_FRONT,data,size);
+    });
+    const auto previous_held=impl_->previous_held;
+    impl_->previous_held=held;
+    if (!count) {
+        impl_->input_clock=std::max(impl_->input_clock,now);
+        return impl_->handle(pressed,held,touch_down,x,y,impl_->input_clock,touches);
+    }
+    const uint64_t latest=impl_->touch_history.samples[count-1].timeStamp;
+    for (unsigned i=0;i<count;++i) {
+        const auto& sample=impl_->touch_history.samples[i];
+        const auto age=std::min<uint64_t>(now,latest-sample.timeStamp);
+        impl_->input_clock=std::max(impl_->input_clock,now-age);
+        const bool last=i+1==count;
+        const auto result=impl_->handle(last ? pressed : 0,last ? held : previous_held,
+            sample.reportNum!=0,sample.report[0].x/2,sample.report[0].y/2,impl_->input_clock,&sample);
+        if (result!=Result::None) return result;
+    }
+    return Result::None;
 }
+void CustomKeyboard::ignoreTouchHistory(const SceTouchData* touches) { impl_->touch_history.ignore(touches); }
 void CustomKeyboard::draw(vita2d_pgf* font, bool dark, const std::string& title, bool keyboard_only) const { impl_->draw(font, dark, title, keyboard_only); }
 const std::string& CustomKeyboard::text() const { return impl_->text; }
 bool CustomKeyboard::split() const { return impl_->split_layout; }
 size_t CustomKeyboard::cursor() const { return impl_->cursor; }
+
+void CustomKeyboard::setSplitLevel(int level) {
+    level = std::max(0, std::min(2, level));
+    if (impl_->split_level == level) return;
+    impl_->split_level = level;
+    impl_->geometry();
+}
 
 void CustomKeyboard::setLanguages(const std::vector<std::string>& codes) {
     impl_->preferences = keyboard_languages::normalize(codes);

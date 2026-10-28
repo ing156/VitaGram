@@ -78,6 +78,31 @@ int main() {
     // Stats survive close().
     { ReadAhead ahead; assert(ahead.open(open_reader(path))); char b[1000]; ahead.read(b, 1000); usleep(50000); ahead.close(); assert(ahead.stats().bytes > 0); }
 
+    // Large files are encrypted and read in bounded chunks, including seeks past 128 MiB.
+    const auto large_path=dir+"/large";
+    const auto block=blob(65536);
+    const int64_t large_size=170LL*1024*1024+13;
+    {
+        Writer writer; assert(writer.open(large_path));
+        for (int64_t at=0;at<large_size;at+=block.size())
+            assert(writer.write(block.data(),std::min<int64_t>(block.size(),large_size-at)));
+        assert(writer.close());
+    }
+    {
+        ReadAhead ahead; assert(ahead.open(open_reader(large_path)) && ahead.size()==large_size);
+        const int64_t offsets[]={128LL*1024*1024-16,large_size-64};
+        for (const auto at:offsets) {
+            assert(ahead.seek(at,SEEK_SET)==at);
+            char buffer[64]; size_t done=0;
+            while (done<sizeof(buffer)) {
+                const auto got=ahead.read(buffer+done,sizeof(buffer)-done);
+                assert(got>0); done+=got;
+            }
+            for (size_t i=0;i<sizeof(buffer);++i) assert(buffer[i]==block[(at+i)%block.size()]);
+        }
+        assert(ahead.read(nullptr,0)==0);
+    }
+
     std::string cmd = "rm -rf " + dir; (void)!system(cmd.c_str());
-    std::cout << "Vault read-ahead: sequential, random seeks, close while busy PASS\n";
+    std::cout << "Vault read-ahead: sequential, random seeks, close while busy, encrypted 170 MiB file PASS\n";
 }

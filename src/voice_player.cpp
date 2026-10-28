@@ -3,7 +3,9 @@
 #include "audio_startup_trace.h"
 #include "i18n.h"
 #include "voice_player.h"
+#include "audio_tempo.h"
 #include "media_decode_policy.h"
+#include "media_limits.h"
 #include "cpu_scheduler.h"
 #include "vault.h"
 #include "vault_avio.h"
@@ -94,6 +96,20 @@ void VoicePlayer::shutdown() {
     stop_ = true;
     if (started_) { pthread_join(thread_, nullptr); started_ = false; }
 }
+int64_t VoicePlayer::seekLimitUs(int64_t duration) {
+    pthread_mutex_lock(&mutex_); auto stream = stream_; pthread_mutex_unlock(&mutex_);
+    const int64_t end = std::max<int64_t>(0, duration - 300000);
+    if (!stream) return end;
+    const auto state = stream->snapshot();
+    if (state.complete) return end;
+    // Leave a decode reserve inside the readable prefix of a progressive download.
+    return state.size > 0 ? std::max<int64_t>(0, std::min(end,
+        (int64_t)(duration * (double)state.prefix / state.size) - 1000000)) : 0;
+}
+void VoicePlayer::setSpeed(int percent) {
+    percent = std::max(50, std::min(200, percent));
+    if (speed_.exchange(percent) != percent) seekTo((int64_t)(positionSeconds() * 1000000));
+}
 void* VoicePlayer::entry(void* self) { static_cast<VoicePlayer*>(self)->run(); return nullptr; }
 void VoicePlayer::run() {
     cpu_scheduler::Thread scheduling(cpu_scheduler::Role::Audio);
@@ -105,6 +121,8 @@ void VoicePlayer::run() {
     }
 }
 void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool music, download_stream::Shared stream) {
+    const int speed = video ? 100 : speed_.load();
+    AudioTempo tempo;
     const int64_t trace_origin = performance::now();
     auto trace = [&](const char* stage, int rc = 0) { audio_startup_trace::record(this, gen, stage, rc, trace_origin, stream); };
     trace(video ? "decode_video_audio" : music ? "decode_music" : "decode_voice");
@@ -148,10 +166,14 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         unsigned peak_queued = 0;
         std::atomic<bool>* player_stop = nullptr;
         std::atomic<bool>* playing = nullptr;
+        std::atomic<bool>* video_buffering = nullptr;
+        std::atomic<bool>* video_frame_stalled = nullptr;
+        std::atomic<bool>* video_frame_lagging = nullptr;
         std::atomic<unsigned>* generation = nullptr;
         std::atomic<int64_t>* samples = nullptr;
         std::atomic<int64_t>* clock = nullptr;
         std::atomic<bool>* clock_ready = nullptr;
+        std::atomic<int>* volume = nullptr;
         unsigned gen = 0;
         const void* trace_player = nullptr;
         int64_t trace_origin = 0;
@@ -161,10 +183,14 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     ring.start_us = &audio_start_us;
     ring.player_stop = &stop_;
     ring.playing = &playing_;
+    ring.video_buffering = &video_buffering_;
+    ring.video_frame_stalled = &video_frame_stalled_;
+    ring.video_frame_lagging = &video_frame_lagging_;
     ring.generation = &generation_;
     ring.samples = &samples_;
     ring.clock = &clock_us_;
     ring.clock_ready = &clock_ready_;
+    ring.volume = &volume_;
     ring.gen = gen;
     ring.trace_player = this;
     ring.trace_origin = trace_origin;
@@ -172,6 +198,8 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
     bool output_started = false;
     auto current = [&] { return !stop_ && generation_ == gen; };
     auto wait = [&] { while (current() && !playing_) sceKernelDelayThread(10000); return current(); };
+    int applied_volume = -1;
+    int sample_remainder = 0;
     auto submit = [&](const int16_t* data, int frames) {
         if (!wait()) return false;
         if (video) {
@@ -198,6 +226,14 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         int16_t* buffer = audio_buffers + next_buffer * block_samples;
         std::memcpy(buffer, data, frames * 2 * sizeof(int16_t));
         std::fill(buffer + frames * 2, buffer + block_samples, 0);
+        const int volume = volume_.load();
+        if (volume != applied_volume) {
+            int levels[] = {SCE_AUDIO_VOLUME_0DB * volume / 100, SCE_AUDIO_VOLUME_0DB * volume / 100};
+            if (sceAudioOutSetVolume(port, (SceAudioOutChannelFlag)(SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH), levels) < 0) {
+                error = i18n::text("voice.output_failed"); return false;
+            }
+            applied_volume = volume;
+        }
         if (first_output) trace("first_output_begin");
         const int output_result = sceAudioOutOutput(port, buffer);
         if (first_output) { trace("first_output_end", output_result); first_output = false; }
@@ -205,9 +241,11 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         next_buffer ^= 1;
         pthread_mutex_lock(&mutex_);
         if (current()) {
-            samples_ += frames;
+            sample_remainder += frames * speed;
+            samples_ += sample_remainder / 100;
+            sample_remainder %= 100;
             int rest = std::max(0, sceAudioOutGetRestSample(port));
-            clock_us_ = audio_start_us + std::max<int64_t>(0, samples_.load() - rest) * 1000000 / 48000;
+            clock_us_ = audio_start_us + std::max<int64_t>(0, samples_.load() - rest * speed / 100) * 1000000 / 48000;
             clock_ready_ = true;
         }
         pthread_mutex_unlock(&mutex_);
@@ -226,11 +264,18 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         pending.erase(pending.begin(), pending.begin() + offset);
         return true;
     };
+    auto paced_output = [&](const int16_t* data, int frames) {
+        if (speed == 100) return output(data, frames);
+        const int rc = tempo.push(data, frames, output);
+        if (rc < 0 && current()) result = rc;
+        return rc >= 0;
+    };
     do {
+        if (speed != 100 && (result = tempo.open(speed)) < 0) break;
         trace("file_info_begin");
         const int64_t file_size = stream ? stream->snapshot().size : vault::plain_size(path); // sealed files report their plain size
         trace("file_info_end");
-        if (file_size <= 0 || file_size > ((video || music) ? 128 : 20) * 1024 * 1024) { error = i18n::text("voice.unavailable"); break; }
+        if (file_size <= 0 || file_size > (video ? media_limits::video_bytes : (music ? 128LL : 20LL) * 1024 * 1024)) { error = i18n::text("voice.unavailable"); break; }
         if (!packet || !frame || !audio_buffers) { error = i18n::text("voice.memory"); break; }
         if (music || video || stream) {
             format = avformat_alloc_context();
@@ -250,12 +295,13 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
         const std::string input_path = stream ? stream_state.path : path;
         const bool growing = stream && !(stream_state.complete && vault::is_sealed(input_path));
         trace(growing ? "attach_download_begin" : "attach_file_begin");
-        const int sealed = growing ? growing_input.attach(format, stream) : format ? sealed_input.attach(format, input_path) : 0;
+        const int sealed = growing ? growing_input.attach(format, stream, nullptr, 0, 0, video) : format ? sealed_input.attach(format, input_path) : 0;
         trace("attach_end", sealed);
         trace("open_input_begin");
         result = sealed < 0 ? AVERROR(EIO)
                             : avformat_open_input(&format, sealed ? input_path.c_str() : ("file:" + input_path).c_str(), nullptr, &options);
         av_dict_free(&options);
+        if (result >= 0 && growing) growing_input.finishOpen(format);
         trace("open_input_end", result);
         if (result < 0) break;
         // Stream analysis takes tens of seconds on Vita; raw audio parameters come from decoded frames.
@@ -304,6 +350,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                 if (priority > 34)
                     sceKernelChangeThreadPriority(sceKernelGetThreadId(), priority - 2);
                 int64_t last_output_us = 0;
+                int applied_volume = -1;
                 while (!queue->stop && !*queue->player_stop && *queue->generation == queue->gen) {
                     if (!queue->grains && !queue->done) {
                         pthread_mutex_lock(&queue->mutex);
@@ -317,7 +364,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                         pthread_mutex_unlock(&queue->mutex);
                         if (empty) break;
                     }
-                    if (!*queue->playing) { sceKernelDelayThread(2000); continue; }
+                    if (!*queue->playing || *queue->video_buffering || *queue->video_frame_stalled || *queue->video_frame_lagging) { sceKernelDelayThread(2000); continue; }
                     pthread_mutex_lock(&queue->mutex);
                     bool available = queue->queued != 0;
                     unsigned slot = queue->head;
@@ -334,6 +381,14 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                         continue;
                     }
                     int16_t* buffer = queue->storage + slot * block_samples;
+                    const int volume = queue->volume->load();
+                    if (volume != applied_volume) {
+                        int levels[] = {SCE_AUDIO_VOLUME_0DB * volume / 100, SCE_AUDIO_VOLUME_0DB * volume / 100};
+                        if (sceAudioOutSetVolume(queue->port, (SceAudioOutChannelFlag)(SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH), levels) < 0) {
+                            queue->failed = true; break;
+                        }
+                        applied_volume = volume;
+                    }
                     if (!queue->grains) audio_startup_trace::record(queue->trace_player, queue->gen, "first_output_begin", 0, queue->trace_origin);
                     const int output_result = sceAudioOutOutput(queue->port, buffer);
                     if (!queue->grains) audio_startup_trace::record(queue->trace_player, queue->gen, "first_output_end", output_result, queue->trace_origin);
@@ -400,7 +455,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                     int16_t tail[8192]; uint8_t* dest = reinterpret_cast<uint8_t*>(tail);
                     int n;
                     while ((n = swr_convert(resampler, &dest, 4096, nullptr, 0)) > 0 && current())
-                        if (!output(tail, n)) break;
+                        if (!paced_output(tail, n)) break;
                     swr_free(&resampler);
                     av_channel_layout_uninit(&resampler_layout);
                 }
@@ -424,7 +479,7 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                 result = swr_convert(resampler, &dest, capacity, (const uint8_t**)frame->extended_data, frame->nb_samples);
                 if (first_pcm) { trace("first_pcm_end", result); first_pcm = false; }
                 av_frame_unref(frame);
-                if (result < 0 || !output(pcm.data(), result)) { done = true; break; }
+                if (result < 0 || !paced_output(pcm.data(), result)) { done = true; break; }
             }
             if (result < 0 || eof) break;
         }
@@ -433,10 +488,11 @@ void VoicePlayer::decode(const std::string& path, unsigned gen, bool video, bool
                 int16_t tail[8192]; uint8_t* dest = reinterpret_cast<uint8_t*>(tail);
                 int n;
                 while ((n = swr_convert(resampler, &dest, 4096, nullptr, 0)) > 0 && current())
-                    if (!output(tail, n)) break;
+                    if (!paced_output(tail, n)) break;
                 if (n < 0) result = n;
             }
-            if (!pending.empty() && wait() && error.empty()) {
+            if (speed != 100 && current() && result >= 0) result = tempo.push(nullptr, 0, output);
+            if (!pending.empty() && wait() && error.empty() && result >= 0) {
                 submit(pending.data(), static_cast<int>(pending.size() / 2));
             }
         }

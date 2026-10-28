@@ -1,15 +1,21 @@
 #include <psp2/gxm.h>
+#include <psp2/display.h>
+#include "startup_trace.h"
 #include <cstdio>
 
 namespace {
 // Rendering uses one GXM context on the UI thread, including vita2d's static library.
 bool failed_scene = false;
 int last_error = 0;
+unsigned logged_errors = 0;
 
 int failed(const char* operation, int error) {
     failed_scene = true;
-    if (error != last_error) {
-        std::fprintf(stderr, "GXM: %s failed (0x%08X); skipping scene\n", operation, (unsigned)error);
+    if (error != last_error && logged_errors < 16) {
+        ++logged_errors;
+        char message[128];
+        std::snprintf(message, sizeof(message), "GXM: %s failed (0x%08X); skipping scene", operation, (unsigned)error);
+        startup_trace::write(message);
         last_error = error;
     }
     return error;
@@ -38,6 +44,8 @@ int __real_sceGxmReserveVertexDefaultUniformBuffer(SceGxmContext*, void**);
 int __real_sceGxmReserveFragmentDefaultUniformBuffer(SceGxmContext*, void**);
 int __real_sceGxmSetUniformDataF(void*, const SceGxmProgramParameter*, unsigned int, unsigned int, const float*);
 int __real_sceGxmDraw(SceGxmContext*, SceGxmPrimitiveType, SceGxmIndexFormat, const void*, unsigned int);
+int __real_sceGxmEndScene(SceGxmContext*, const SceGxmNotification*, const SceGxmNotification*);
+void __real_vita2d_swap_buffers();
 
 int __wrap_sceGxmBeginScene(SceGxmContext* context, unsigned int flags, const SceGxmRenderTarget* target,
     const SceGxmValidRegion* region, SceGxmSyncObject* vertex_sync, SceGxmSyncObject* fragment_sync,
@@ -66,6 +74,20 @@ int __wrap_sceGxmSetUniformDataF(void* buffer, const SceGxmProgramParameter* par
 int __wrap_sceGxmDraw(SceGxmContext* context, SceGxmPrimitiveType primitive, SceGxmIndexFormat format,
     const void* indices, unsigned int count) {
     if (failed_scene) return SCE_GXM_ERROR_RESERVE_FAILED;
-    return __real_sceGxmDraw(context, primitive, format, indices, count);
+    const int result = __real_sceGxmDraw(context, primitive, format, indices, count);
+    return result < 0 ? failed("Draw", result) : result;
+}
+
+int __wrap_sceGxmEndScene(SceGxmContext* context, const SceGxmNotification* vertex,
+    const SceGxmNotification* fragment) {
+    // Close even a partially drawn scene so the next BeginScene can recover.
+    const int result = __real_sceGxmEndScene(context, vertex, fragment);
+    return result < 0 ? failed("EndScene", result) : result;
+}
+
+void __wrap_vita2d_swap_buffers() {
+    // Failed scenes leave old/partial contents in the back buffers; presenting them causes flicker.
+    if (failed_scene) { sceDisplayWaitVblankStart(); return; }
+    __real_vita2d_swap_buffers();
 }
 }

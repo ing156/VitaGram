@@ -1,5 +1,6 @@
 set(VITA_UPDATER_TITLEID "VGUPDATE1")
-add_executable(vitagram-updater main.cpp ${CMAKE_SOURCE_DIR}/src/package_promote.cpp)
+add_executable(vitagram-updater main.cpp ${CMAKE_SOURCE_DIR}/src/package_promote.cpp ${CMAKE_SOURCE_DIR}/src/vita2d_texture_guard.cpp)
+target_link_options(vitagram-updater PRIVATE "-Wl,--wrap=vita2d_create_empty_texture" "-Wl,--wrap=vita2d_create_empty_texture_format")
 target_include_directories(vitagram-updater PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(vitagram-updater
   vita2d

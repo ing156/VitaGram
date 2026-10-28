@@ -8,6 +8,11 @@ struct Layout {
     std::string code, badge, name;
     std::vector<std::string> rows;
     std::map<std::string, std::vector<std::string>> popups;
+    std::map<std::string, std::string> uppercase;
+    std::vector<std::string> digits;
+    size_t digit_start = 0;
+    std::vector<std::string> symbols;
+    std::map<std::string, std::string> shifted;
     bool system() const { return rows.empty(); }
 };
 const std::vector<Layout>& all();

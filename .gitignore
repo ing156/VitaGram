@@ -53,6 +53,7 @@ tests/fixtures/palettes/*
 !tests/font-stubs/
 !tests/net-stubs/
 !tests/ui-skin-stubs/
+!tests/audio-playback-stubs/
 !tests/radial-stubs/
 tests/font-stubs/*
 !tests/font-stubs/vita2d.h
@@ -121,3 +122,8 @@ assets/sherwin-williams.json
 
 # Explicitly retained catalogue for the application and Palette Studio
 !assets/little-greene.json
+
+# Experimental WebKit sources, dependencies and staged archives
+/external/webkit-vita/
+/external/webkit-vita-work/
+!docs/webkit-vita.md

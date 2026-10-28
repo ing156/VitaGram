@@ -1,5 +1,67 @@
 # Native checks
 
+`bash tests/run-video-tests.sh` also compiles the production video-note routing
+with fake decoders: navigation, independent GIF/sticker/upload previews, reopening
+without restarting, browsing another note before Play, background seek/volume and
+exclusive audio playback. Transfer checks verify that background video downloads
+survive navigation and are cancelled when the player closes. Actual decoding,
+sound continuity and floating-circle controls across menus still need a physical Vita.
+
+The skin suite holds the palette metadata operation blocked on a fake device:
+UI polling must remain responsive and an old result cannot overwrite a newer
+manual palette. It also checks asynchronous same-size edits, deletion, invalid
+files and theme switches. `run-download-stream-tests.sh` exercises both POSIX
+and mocked Vita positioned reads, including concurrent audio/video, interruption,
+I/O errors, sparse offsets up to 1 GiB, completion and rename. On real Vita,
+check palette changes and deletion, theme switching, long slow 720p downloads,
+pausing/seeking, and completed as well as encrypted media. Host mocks cannot
+establish kernel file-handle behavior or card throughput.
+
+Streaming video and its audio each use a bounded 4 MiB RAM read-ahead queue
+(plus one 256 KiB read in flight). The download-stream suite stalls the reader
+while consuming cached data, then checks cancellation and stale-data rejection
+after seeking. Real MP4 decoding also runs through the read-ahead path. Storage
+stalls longer than the buffered playback time still require a hardware check.
+
+For interrupted video downloads, `run-download-stream-tests.sh` checks that a
+missing prefix raises the buffering signal after 500 ms and clears it on data or
+cancellation. `run-audio-playback-tests.sh` connects a real growing input to
+the video audio ring and checks that sound pauses and resumes with the input.
+The Performance log records `stream_read_us` for file reads and `stream_wait_us`
+for missing-byte waits; these do not measure network throughput. The cache worker
+writes its next report after active video playback releases its storage reservation.
+`video_download_bytes_per_s` and `video_prefix_bytes_per_s` sample changes in
+TDLib's downloaded count and contiguous readable prefix once per second; zero
+can also mean delayed TDLib updates, not necessarily a network outage.
+On Vita repeat 720p streaming, pause, seek, slow and interrupted downloads, and
+compare the log after stopping playback; audible synchronization and download
+throughput require device testing.
+
+`bash tests/run-audio-playback-tests.sh [music.mp3 music.m4a]` uses the native
+FFmpeg build (run `bash scripts/build-native-ffmpeg.sh` after updating the filter
+configuration). Under ASan/UBSan it checks the audio bar's shared render/touch
+geometry in Classic/Combined and above the bot toolbar, dead space and boundaries,
+volume/seek clamps, all seven speeds, duration and pitch against a 440 Hz signal,
+and filter cancellation. It also runs the real VoicePlayer with mocked Vita output:
+pause/seek/replay, speed changes, media-time counters, volume clamping and application,
+streaming seek limits, video-audio staying at 1×, output/volume failures and cleanup.
+Optional MP3/M4A files exercise the real decoder at 1×/2× and a 30-second seek.
+`bash tests/run-transfer-tests.sh` covers previous/next, both ends, all repeat modes,
+shuffle without missing/duplicated tracks, preserving the current track, chat changes,
+bounded prefetch/cancellation and the 64-track limit. `bash tests/run-ui-mask-tests.sh`
+checks moved corner buttons with real light/dark/custom skin resources.
+On a physical Vita still check sound quality and CPU load at every speed, live
+progressive downloads, touch/controller transitions, loading/paused/finished states,
+Classic/Combined, bot toolbar, modal tools, light/dark/custom palettes and all font
+sizes. Host checks do not establish on-device rendering or audible performance.
+
+`bash tests/run-chat-scroll-tests.sh` also checks pixel scrolling of variable-height
+history rows, one-pixel movement, both limits, button reveal, tall messages,
+empty/shrunk history and preserving the visible message ID and partial offset
+when older/newer pages arrive. On Vita verify touch tracking in Classic/Combined,
+crossing the pane divider, date chips, reply/voice/comment taps, page loading,
+all font sizes and Light/Dark/custom palettes.
+
 ## Что хранится в tests
 
 - `*_test.cpp`, `*_test.js`, `*_test.py` — код проверок; `run-*.sh` — запуск.
@@ -55,6 +117,21 @@ Music now skips stream analysis, so new logs go from `open_input_end` to
 stale output pointers, scene and uniform-write failures, skipped GPU draws and
 recovery at the next successful scene. Uses installed VitaSDK headers (set `VITASDK`
 if needed), with GXM calls mocked; actual GPU recovery requires a PS Vita check.
+It also checks Draw/EndScene failures, suppression of failed buffer swaps, vblank
+pacing while skipping frames, and startup-log gating/reset. To investigate a hang
+at `1/5 Loading fonts and emoji`, enable **Start → Diagnostic logs → Performance**
+on a successful launch, then reproduce and collect `ux0:data/vitagram/startup.log`
+before launching again (the next launch replaces it). The log records font/theme
+startup steps and up to 16 distinct consecutive GXM errors, without account data.
+This does not establish the cause of an intermittent device hang: repeated cold
+launches, the loading-screen transition and graphics recovery require a Vita check.
+The same suite checks initialization of ordinary vita2d textures against poisoned
+heap contents under ASan/UBSan, preserving image/palette ownership and allocation
+failures. The installed SDK leaves `gxm_rtgt` and `depth_UID` uninitialized;
+its texture destructor reads both, potentially destroying unrelated GPU resources.
+The client and updater wrap both ordinary texture constructors; render-target
+textures retain their original constructor. Check repeated startup, theme changes,
+image/sticker/video playback and camera previews on physical hardware.
 
 `python3 scripts/build-palette-editor.py && node tests/palette_editor_test.js`
 checks the offline Windows/Linux editor bundle, all 19 locales, translation keys and
@@ -102,6 +179,10 @@ Theme-hint tests cover legacy single digits, two-digit IDs, newlines, invalid
 suffixes, overflow and out-of-range values.
 Every warm preset switch and swatch lookup must perform zero file reads and zero
 GPU texture allocations; VHBB transitions still exercise full loading and cleanup.
+VHBB checks verify the two-pixel focus outline, transparent ring interior, at least
+3:1 outline contrast against normal/opened/focused rows and 4.5:1 focused text
+contrast. Actual nine-slice draw calls cover each pixel once at Classic/Combined
+row sizes, folder rows and reduced corner sizes.
 Skin checks also inspect rendered corner glyphs and all six battery states for
 every masked preset. Battery tones must contrast at least 3:1 with both header
 endpoints; live changes to white, black, gray and blue headers repeat the checks
@@ -114,6 +195,10 @@ white/alpha mask layers and original icon coverage. It verifies dimensions, nine
 insets, atlas coordinates, icon alpha and refusal to overwrite an existing pack.
 Use a Python environment with Pillow and CairoSVG; no Vita build or local paint
 catalogue is needed. See `assets/VitaGram_UI_Assets_v1/README_RU.md` for usage.
+
+`python tests/wave_backgrounds_test.py` checks that VHBB shares the dark theme's
+wave geometry with its own palette, and that both packaged variants match the
+renderer as opaque 960×544 RGBA images. Requires Pillow and CairoSVG.
 
 `bash tests/run-scroll-tests.sh` checks held-arrow acceleration, direction and menu
 changes, release and resume cancellation, frame stalls, and the limit of one page
@@ -217,6 +302,11 @@ request recovery after backpressure, staged startup with a deferred cache writer
 parallel voice/video upload tracking, speed/stall/error states and original chat/topic
 payloads. No network requests are made. The startup test requires configured API
 settings (only local validation is exercised).
+
+Cache cleanup checks cover all 30 retention/size combinations, unlimited limits,
+manual cleanup with an open chat, automatic deferral, duplicate suppression,
+offline rejection, completion, failure and retry. TDLib replies are simulated;
+actual file removal and cache-menu appearance need a physical Vita check.
 
 Status checks cover expiry and dismissal of completed events, chat-scoped upload
 results, preservation of active uploads and diagnostic history, TDLib open/close
@@ -336,6 +426,11 @@ the default font, cached face/atlas reuse, missing/corrupt assets and shutdown
 with an outstanding read. The previous active face and revision must remain
 unchanged until commit. Host libwebp.so.7 and WebP headers are required as well.
 Check rapid language switching and immediate All chats/Archive translation on Vita.
+
+The same command checks all nine controller hint icons with theme-atlas and
+fallback PNG sources: alpha 0/128/255, repeated fade resets, original icon colors
+and stable measured widths at all seven font sizes. Rapid menu tapping and actual compositing with
+Light/Dark/custom palettes still require a physical Vita check.
 
 
 Language regressions: `run-i18n-tests.sh` checks retained nested/combined text,
@@ -499,3 +594,363 @@ request deduplication and stale responses after leaving the set.
 Chat opening checks in `run-transfer-tests.sh` cover latest/server/device modes, exact read anchors, encrypted-cache position persistence and early-restore precedence, memory-cap acknowledgement, bounded history in both directions, deleted targets, retry and stale responses. `run-vault-tests.sh` covers preference persistence. Loading-screen appearance, physical input and RAM headroom require a Vita check.
 
 Chat opening priority checks cover newer device/server positions, equal or missing markers, and preservation of latest/device-only modes for chats, forum topics and comments.
+
+`bash tests/run-bot-buttons-tests.sh` checks bot markup parsing, complete emoji labels,
+shared rendering/touch geometry, non-clickable gaps and unused cells, page bounds,
+and 4.5:1 text / 3:1 focus contrast on light, dark and arbitrary custom surfaces.
+Classic/Combined panel checks cover the shared toolbar/sheet geometry, animated
+opening/closing bounds, empty and last pages, exact cell edges and sidebar misses.
+Invoice tests verify cancellation JSON, identifier/type/length validation and
+preservation of the incoming request; the official SDK check exercises the
+callback, duplicate responses and reopening the same invoice without a payment.
+`bash tests/run-transfer-tests.sh` also checks bot-menu availability, keyboard
+removal and one-time replies, callback bytes, links, callback alerts, edits and
+rejection of stale sources, chats and topics. Check actual font sizes, controller
+and touch navigation, every theme, long labels, the last page and callback alerts
+on a physical Vita. The Mini App protocol, HTTPS origin checks, palette conversion and bounded JavaScript bridge also have native/Node checks in these scripts. This does not launch the engine or authorize real Mini Apps. See [WebKit build and device scenarios](../docs/webkit-vita.md); the base VPK excludes the engine and offers its separately signed add-on on demand.
+
+`run-bot-buttons-tests.sh` also checks that WebApp stage diagnostics write nothing
+by default, reject invalid stage identifiers, append only fixed labels and numeric
+codes when Performance logging is enabled, and stop writing when it is disabled.
+Real touch delivery, confirmation visibility and engine startup still need a Vita.
+
+Proxy checks cover SOCKS5h and HTTP CONNECT URLs, escaping credentials, invalid
+hosts/ports, disabled proxy settings and direct connections with MTProxy. The engine fixture
+extracts the real DNS endpoint selection and verifies that custom proxy settings
+resolve the proxy rather than the website. Proxy authentication, remote DNS and
+page loading through a real proxy still need a physical Vita check.
+
+The same script checks smooth Mini App pointer movement, frame-time limits and
+page bounds. Its trace test verifies the fixed-label allowlist, concurrent
+deduplication, reset on a new open, diagnostic gating and rejection of arbitrary
+text/payload prefixes; unsupported bridge actions use allowlisted names only.
+Left-stick calibration, cursor clicks, keyboard isolation and page scrolling
+still need a physical Vita check.
+
+Bot menu regression: `run-bot-buttons-tests.sh` checks the animated bottom sheet, touch gaps, last pages and all seven font sizes. `run-transfer-tests.sh` checks that command and text reply activation enqueue real `sendMessage` requests and that Mini App menu entries preserve the bot commands.
+
+WebKit's Vita thread broker can be checked independently with
+`bash tests/run-webkit-threading-tests.sh`. It compiles the production broker
+against mocked Vita exports and checks complete CPU/VFP register snapshots,
+nested suspension, rollback and resume failures, registration lifetime, and
+VM thread flags without changing ordinary thread creation. It does not verify
+the native ForVM ABI or JavaScript garbage collection on a physical Vita.
+
+`bash tests/run-webkit-memory-tests.sh` requires the prepared WebKit sources and
+compiles production `SharedMemoryVita.cpp` and `UnixFileDescriptor.h` with small
+WebCore/WTF type shims. It checks RAM budget recovery, full-buffer zeroing,
+shared-buffer lifetime and bounds, large messages, invalid/duplicate tickets,
+pending attachment cleanup on disconnect, and ordinary descriptor ownership.
+It does not run the actual IPC socket loop or the engine on a Vita.
+
+`bash tests/run-webkit-process-tests.sh` checks the real ProcessIdentifier
+implementation with isolated UI/Web/Network run-loop ownership, worker access
+and concurrent ID generation. It compiles the actual shutdown branches for Vita,
+GTK, WPE and other platforms, and the complete Vita process provider with fake
+kernel APIs: retries after launch failure, singleton restart refusal, bounded
+waits and no deletion of a running thread. Prepared/staged WebKit is required.
+These checks do not execute WebKit or the kernel on a physical Vita.
+
+The same script compiles the production Mini App input/rotation methods and the
+native Vita mouse/wheel conversion. It checks press/release state, timestamps,
+pixel scroll deltas with no horizontal drift, inactive pages, every pixel's
+rotation/inverse mapping, portrait viewport dimensions, unchanged orientation
+and allocation failure without losing the old surface. Existing photo tests
+cover the shared gyro sampling and 350 ms stabilization. Actual page clicks,
+scrolling, gyro calibration and resizing still need a Vita check.
+
+Modal touch checks extract the production ownership and frame-end blocking
+expressions: repeated press/release sequences remain usable, earlier blocking
+is preserved, closing the modal blocks the underlying release, and a Web window
+owns touches even with the bot panel closed.
+
+Gesture tests cover tap jitter, swipe deltas, inertial decay, full-height touch
+targets, starts outside the page, multiple fingers, changed identifiers and
+keyboard/controller cancellation. Input tests repeat every pixel's inverse
+mapping in normal and fullscreen modes at 0/±90°, verify horizontal wheel
+deltas, viewport sizes, unchanged layouts and surface cleanup when returning
+from fullscreen. Physical touch feel, nested scrolling, palette visibility and
+fullscreen/keyboard/gyro transitions still require a Vita.
+
+The shutdown fixture also compiles the real Vita view-resize method: the drawing
+area receives 960×392 and later sizes, including when it becomes available after
+an earlier resize. Passive bridge-event tests accept only the native-free
+iframe-ready/swipe-configuration events and leave sensitive actions unsupported.
+It also compiles the actual transfer-completion prefix: a cancelled transfer
+does not emit an error, and a genuine failure reports its numeric CURLcode.
+Trace tests reject out-of-range CURL/HTTP/freeze codes and still exclude raw
+payload prefixes, free-form messages and arbitrary trace labels.
+
+After building the experimental WebKit package, run
+`python3 tests/check_webkit_pic.py build-modern/src/webview/module/vitagram-webkit build-modern/src/webview/module/vitagram-webkit.velf`.
+It compares ARM BASE_PREL/GOT_BREL relocations with the converted Sony ELF,
+checks exact target segments and offsets, and rejects missing or duplicate GOT
+relocations. This checks the local converter's output without executing the Vita loader.
+
+`bash tests/run-chat-scroll-tests.sh` also checks Classic/Combined chat geometry,
+message widths, viewport boundaries, row gaps and animated/dragged row offsets.
+`bash tests/run-vault-tests.sh` checks display-mode persistence and fallback to
+Classic for missing or malformed preferences. Physical Vita checks still need
+both modes, list/history focus, touch scrolling, folder changes, empty/loading
+chats, the last row, all font sizes, Light/Dark/custom palettes and full-screen
+photo/video viewers and message-pane posts.
+
+The chat-view geometry check also covers search below folders in the combined
+sidebar, history beside the search field, pane routing on both sides of the
+divider, inactive search/folder gaps and bottom boundaries with/without bot controls.
+On Vita, drag each pane while the other has controller focus, then cross the
+divider without lifting; verify that only the pane of the initial touch scrolls.
+
+Combined subviews: `run-chat-scroll-tests.sh` checks post/media bounds, voice
+waveform endpoints, menu height, topic pages and non-clickable topic/poll gaps
+in both layouts, with/without folders. On Vita verify chat loading, retry and far
+read-position warnings; empty/loading/last-page forum topics; text, reply, link,
+photo-album, voice, video-note and poll posts; their menus and touch controls.
+Check Classic/Combined, Light/Dark/custom palettes and every font size, including
+returning from fullscreen photos/video and switching chats while a post is open.
+
+Folder drawer host coverage (`bash tests/run-chat-scroll-tests.sh`): easing and reversal, default collapsed state, folder row boundaries/gaps/last page, vertical scrolling, gesture ownership and return to normal scrolling. Physical Vita checks still required: GPU viewport/stencil alignment during the slide, native controls, empty/loading folders, light/dark/custom palettes and font sizes.
+
+`bash tests/run-chat-scroll-tests.sh` also checks consecutive-message grouping and
+bubble meshes: incoming/outgoing, first/middle/last, classic/combined widths and
+short/tall cards, including consecutive messages more than five minutes apart.
+Sampled triangle coverage verifies that translucent fills and
+focus outlines never overlap themselves or each other. Physical Vita checks are
+still needed for light/dark/custom palettes, font sizes, focus, media/replies,
+date/service boundaries and scrolling across loaded history pages.
+
+Mini App URL regression: `run-transfer-tests.sh` exercises an ordinary URL button
+through TDLib link classification, bot validation and explicit consent to
+`getMainWebApp` / `getWebAppLinkUrl`, preserving launch modes and start parameters.
+It checks signed responses, denied write access, ordinary chat links, invalid
+bots/modes, errors, cancellation and replies after leaving the source chat.
+Real bot launches still require a physical Vita.
+
+### Performance diagnostics (0.38.46)
+
+`bash tests/run-performance-tests.sh` checks counter resets and OFF gating,
+thread-local frame attribution, slow-cause retention ahead of enclosing frame/draw
+totals, context serialization and constant-time parsed-queue age after priority
+selection and coalescing. `bash tests/run-bot-buttons-tests.sh` validates Web App
+trace timestamps, session/frame correlation and rejection of private trace strings.
+
+Each `perf` window now includes `session_us` (the startup origin on the monotonic
+clock), diagnostic-loss labeling, throughput and frame-threshold counters. Counter
+values cover the snapshot interval; divide by its duration for events/second.
+They are best-effort under contention, like the existing histograms.
+`frames_over_33ms` uses 33334 microseconds; 50/100 ms counters are nested subsets.
+`slow_event` includes the UI frame, screen, combined/keyboard/scrolling/fullscreen
+flags, rotation (quarter turns), and Web surface dimensions. Non-UI threads use
+frame 0 and unknown screen. Context is sampled at frame entry and before drawing;
+scrolling denotes controller/chat drag or Mini App drag/inertia. It does not
+identify DOM scrolling initiated by page scripts. No chat IDs or user text are
+recorded. Detailed slow causes take priority over enclosing `frame_ui`/`draw`
+records when the bounded 32-record buffer fills.
+
+`web_runloop_us`, `web_paint_us` and `web_bridge_submit_us` isolate native work.
+`web_bridge_reply_us` measures drain-result handling; `web_bridge_latency_us`
+measures the full asynchronous drain round trip, including scheduling and IPC.
+The number of `web_paint_us` samples is the number of paint calls, not a page FPS
+measurement. `frame_tail_us` covers image loading, text polling and emoji work
+after the UI/GPU submission; these metrics overlap their nested measurements.
+`ui_active` also identifies WebKit and frame-tail operations during a stall.
+Web App trace entries use the same `at_us`/`session_us` clock as performance logs;
+frame 0 means a non-UI thread or a pre-frame startup event.
+
+`raw_wait_us` remains receive-to-parser-start; `event_wait_us` remains
+receive-to-UI-selection (it includes parsing). `parsed_wait_us` starts when the
+parser is ready to enqueue the completed event, after its cache work.
+`raw_oldest_age_us`/`parsed_oldest_age_us` sample the oldest pending item per pump
+without traversing the backlog. `received_events` counts accepted network
+updates, `parsed_events` counts enqueues, `processed_events` counts UI selections;
+coalescing and shedding can make these counts differ. `pump_batch_events` counts
+selections per pump; `pump_budget_us` is the assigned event-processing budget.
+`pump_overrun_us` covers that event loop only, excluding subsequent cache and
+cleanup work. Stop counters distinguish empty queue, foreground filtering,
+exhausted time budget and event limit. They describe why selection stopped,
+not a guarantee that work remains queued.
+
+Device verification remains necessary for measurement overhead, actual Mini App
+paint costs, input latency, and behavior under sustained Telegram updates.
+
+`run-chat-scroll-tests.sh` also compiles the production modal visibility predicates
+and exercises every tool flag, nested tool pairs, Web App phases, link confirmation,
+Classic/Combined, with/without an open chat, fullscreen exceptions and every pixel
+of the tool return button. It checks stable background geometry and suppression of
+chat controls, while retaining recording/tool menus. On Vita still verify opening,
+closing, sending/cancelling, loading/empty/last pages, touch/controller input,
+light/dark/custom palettes and all font sizes for attachments, stickers, GIFs,
+reactions, search, recording, keyboards and dialogs. These host checks do not render
+the complete application or send Telegram messages.
+
+`bash tests/run-webkit-addon-tests.sh` checks the actual packager, signature domain,
+background metadata lookup, download consent, signed installation, corrupted archives,
+incompatible bundles, cancellation, missing/offline releases and offline re-verification
+using a temporary signing key and mocked HTTPS. Loader checks compile the production
+loader with Vita stubs: an absent or unverified engine is never loaded, an ABI mismatch
+is rejected, callbacks cross the C interface, and reopening retains one loaded module.
+`run-update-tests.sh` verifies that application and WebKit signatures cannot substitute
+for each other. No production key is used by these tests.
+The download worker runs with an explicitly checked 256 KiB pthread stack in every
+scenario, rather than the host's larger default. Tests also reject the old default-stack
+launch and cover thread-creation failure followed by retry. This guards the 0.38.54
+Vita crash: the worker's 32 KiB default stack could not hold the 64 KiB archive buffer,
+even before checking whether WebKit was installed.
+
+Physical Vita checks for 0.38.54: load the actual `.suprx` from ux0 with TDLib active;
+verify newlib/pthread/TLS coexistence, memory headroom, HTTPS, JavaScript, repeated
+Mini Apps, lock/unlock and proxy settings. Test first-use checking/downloading/error
+screens, cancellation and retry with controller/touch, light/dark/custom palettes and
+all font sizes. The release must publish the signed `webkit-abi1-r1` assets before
+real network installation can succeed. Host tests do not establish module-loader or
+UI behavior on the console.
+
+Bot reply focus: `run-transfer-tests.sh` checks one-shot focus requests for commands, text replies and callbacks, URL/stale-button exclusions, incoming replies, latest-history reload from an old window and generation scoping. `run-chat-scroll-tests.sh` compiles the production main-loop focus logic and verifies immediate/latest focus, incoming messages, the real pixel viewport, empty history, manual navigation and expanded post/photo exclusions. Controller/touch behavior in Classic/Combined on a physical Vita still needs checking.
+
+Video playback quality: `bash tests/run-transfer-tests.sh` checks per-message choices, the configured maximum, original/alternative files, missing qualities, codec/size/raster rejection, old download cancellation and new download IDs. `bash tests/run-video-tests.sh` runs production menu and resume code with mocked players, including chosen badges, empty/error states, buffering, position and pause restoration, navigation and manual overrides. The maximum persists via `bash tests/run-vault-tests.sh`. On Vita, check touch/buttons, the last menu page, all palettes/font sizes, loading and playback performance at each available quality.
+
+Keyboard contact regressions cover consecutive IDs without an empty frame, overlapping taps, reordered reports, reused IDs, simultaneous taps and typing replay after an uncompleted split gesture. `bash tests/run-keyboard-tests.sh` exercises these in the shared keyboard used by message input and vault entry. On Vita, check two-thumb typing and split/pinch gestures, system IME responsiveness and light/dark/custom themes.
+
+Video transfer regressions verify that the 720p maximum includes 1280×720, lower maxima exclude it, and diagnostics distinguish codec, raster and quality-limit rejection. With Video diagnostics enabled, `ux0:data/vitagram/video-quality.log` records metadata and rejection reasons (rotates at 1 MiB); it contains no captions or file paths. The affected video still needs a device log to establish why its 720p variant is absent.
+
+`bash tests/run-font-tests.sh` also checks user-font directory discovery, UTF-8 filenames,
+TTF/OTF extension filtering, empty/directory/symlink/oversized inputs, the 64-entry cap,
+real FreeType loading, custom-glyph priority, built-in language fallback, background loading,
+cancellation and corrupt-file failure. `bash tests/run-vault-tests.sh` checks saved font
+filenames and rejects paths outside the font directory. On physical Vita still verify
+font switching latency/memory, unusual ascenders/descenders, touch/controller selection,
+empty/loading/error/last-page states, focus versus saved selection, all font sizes and
+light/dark/custom palettes. Native tests do not establish device rendering quality.
+
+Large-video regressions: `run-transfer-tests.sh` checks the reported 170190135-byte 720p variant, download requests, completion updates and the inclusive 1 GiB boundary. `run-download-stream-tests.sh` reads a sparse 1 GiB file across 128 MiB and at EOF, waits for a growing prefix, and decodes H.264/AAC in a sparse 170 MiB MP4 with a valid trailing free atom. Sparse padding tests file sizes and offsets, not a long video’s bitrate or packet-index memory. `run-audio-playback-tests.sh` checks production video-audio startup above 128 MiB. The vault read-ahead suite writes and seeks an encrypted 170 MiB file with bounded chunks. Real Vita download, 720p decoding, seeking, audio synchronization, full-disk handling and encrypted playback still need device validation.
+
+Keyboard draft layout checks verify that unchanged frames reuse wrapping and cursor measurements, while text edits, cursor movement and font revisions recompute them. Font scale changes advance the shared font revision. Performance logs now distinguish `keyboard_draw`, `draw_tools`, `draw_dialogs` and system `ime_update`; device logs are needed to attribute the remaining 50–166 ms stalls and verify any latency improvement.
+
+Text raster tests wrap FreeType rasterization calls to verify that width-only queries perform zero rasterizations and repeated cached drawing adds none. Existing reference-image checks compare actual FreeType pixels, dimensions, baseline, kerning, synthetic styles, size order and bounded atlas reset. Keyboard traces now split `keyboard_draw` into `keyboard_text`, `keyboard_keys` and `keyboard_preview`. The 0.38.64 device trace confirmed two keyboard-draw stalls of 138954 and 101640 microseconds; rasterization savings are code-tested, but their effect on these stalls requires another device measurement.
+
+Touch history regressions replay two complete taps between UI frames and a long press across a simulated render stall. They verify timestamp ordering, deduplication, same-sample nonblocking guard, fallback after read errors, opening-input suppression and clearing retained packets. The SDK read is requested only after the latest Peek timestamp advances; actual firmware buffering and read latency still need a Vita check. Renderer stalls are not claimed fixed: performance logging names key stages as `keyboard_keys_f<faces_us>_s<theme_us>_l<labels_us>_h<hints_us>`, collecting per-stage totals across all keys only while the Performance log is enabled. No typed text is logged.
+
+FreeType size-state regressions verify 200 alternating key-label/hint measurements cause only two FT_Set_Pixel_Sizes calls, at most 64 owned sizes, fallback on allocation failure, full release on reset and restoration of the caller-owned default size. Existing pixel/reference, kerning, synthetic-style, seven UI font sizes and custom/fallback font checks still run. This targets the 0.38.66 device log: label phases took 79495–87674 us and hints up to 34407 us, while faces and theme rendering together took about 2 ms. Device latency after the change is not yet measured.
+
+Fullscreen custom keyboard rendering skips the covered app UI and uses the shared frame completion path; native IME keeps app rendering. Keyboard tests cover custom/native ownership, automatic native-language routing and opaque palette backing even with a translucent background color. Modal transition and video suites cover affected surrounding state. GPU scene completion/swap/IME ordering is preserved in the shared `finish_frame` lambda. On-device FPS, reopening dialogs, music during typing, Combined/Classic layouts and light/dark/custom translucent wallpapers still need device validation.
+
+The TDLib positioned-I/O regression uses a mocked Vita file API to check download-file descriptor ownership, independent offsets, interrupted calls, short writes, errors, renames and move/close. Stream tests also check that a blocked progressive read reports its position and available prefix. Real Vita storage contention and the effect on concurrent downloads still require device logs.
+
+Video stall tests check that audio output pauses on a missing-frame signal, resumes when cleared, and the next frame can advance while the audio clock is stopped. Decoder diagnostics report the active stage and packet/frame counts. Actual hardware decode stalls, GPU display and recovery need Vita testing.
+
+The hardware packet throttle regression reproduces a 251-packet historical gap from the 0.38.75 device log, verifies that new frames reset the counter, and keeps the bounded retry for a decoder with no output. Hardware decoding still requires Vita testing.
+
+Seek error regression keeps the existing start-of-file fallback for a seek that cannot produce a first picture, but does not silently restart from zero after playback has produced a picture. The Vita hardware decoder failure shown in device logs remains under investigation.
+
+Video packet pacing checks the one-second compressed-data lead, seek/pause startup, clock recovery after a stalled picture and extreme timestamps. Real 720p hardware playback and ES-buffer recovery still require Vita verification.
+
+A reader opened on a complete download retains that file extent despite later partial/empty progress snapshots; a genuinely truncated file still returns an I/O error. The POSIX and mocked Vita positional paths run the same check.
+
+Video A/V sync tests cover audio lead thresholds and hysteresis, pausing and resuming the video audio ring, playback lifecycle transitions and the late-frame catch-up path. Device FPS and real hardware decoder throughput remain to be measured.
+
+Video stream buffering tests cover the 2 MiB startup gate, existing player readiness, 1 MiB refill, bounded final segment, small completed files, cancellation and the 256 KiB video AVIO buffer. Tests run against both POSIX and mocked Vita file reads; playback and bandwidth still need a physical Vita check.
+
+Video buffer thresholds now cover 8 MiB at startup and 4 MiB after starvation; the final short segment, small completed files, cancellation and audio behavior remain covered. Large thresholds can require short clips to finish downloading before playback.
+
+Progressive MP4 open skips trailing optional atoms when the file starts with ftyp; audio and video restore normal index handling after opening. MP4 with metadata at the end still waits for that metadata.
+
+`python3 tests/video_decoder_drain_test.py . /tmp` checks the receive callback
+from the prepared Vita FFmpeg source: delayed batches of pictures are drained
+before another packet is requested; EOF drains remaining pictures; errors
+propagate and submitted packets are released. Prepare FFmpeg with
+`scripts/build-ffmpeg-vita.sh` first. Hardware GetPicture timing, 60 FPS playback
+and absence of ES-buffer overflow still require a physical Vita.
+
+Storage probe: `bash tests/run-storage-probe-tests.sh` checks space reserves,
+exclusive file creation, cancellation, read-back verification and cleanup on the host.
+The same suite also runs the Vita API branch with native flag values and checks
+that creation uses mode 0666, matching VitaSDK newlib.
+On Vita, create an empty `ux0:data/vitagram/storage-test.request`, launch VitaGram
+and leave it idle without playback or uploads. The background worker consumes the
+request and writes `ux0:data/vitagram/storage-test.log`. It checks `ux0:`, `ur0:`
+and `uma0:` without assuming their physical device mappings. Each available mount
+needs 512 MiB free plus an 8 MiB temporary file budget; a probe uses independent
+read/write descriptors and reports 64 KiB operation mean, p95 and maximum latency.
+`overlap_read_samples=0` means the reader did not overlap the writer's measured
+interval, so that run cannot establish concurrent performance. The 30-second
+per-mount deadline and playback cancellation are checked between operations;
+a blocked kernel I/O cannot be interrupted by this test. Interrupted runs report
+`incomplete`; missing mounts and low space are skipped. A pre-existing probe file
+is never overwritten or removed: after a crash, remove only the known
+`<mount>data/vitagram-storage-probe.tmp` before retrying. This is a short synthetic
+test, not a sustained throughput or physical-device independence guarantee.
+Real Vita measurements remain required; this feature does not move media caches.
+
+Streaming I/O diagnostics (0.38.91): slow TDLib reads, writes and syncs include
+`file_dir`, `file_fd`, `file_offset` and `file_bytes` in `performance.log`.
+`file_dir` contains the mount and the existing sanitized directory label;
+user filenames remain omitted. Descriptors imported without a known path report
+an unknown/no-directory label. Sequential reads/writes use offset -1; positional
+operations report the requested offset. The performance suite tests directory
+redaction, descriptor isolation, log output, and independent UI-step timers with
+collection enabled and disabled. The positioned-I/O suite checks the production
+FileFd trace arguments before and after moving/renaming a file. The TDLib patch
+contains the same changes as the working dependency tree.
+`post_pump` now reports slow `post_state`, `post_scheduler`, `post_selection`,
+`post_composition`, `post_reactions`, `post_scroll_layout`, `post_touch`,
+`post_picker_gestures` and `post_textures` steps. On Vita, enable the Performance
+log, reproduce interrupted video playback, and collect both `performance.log`
+and `performance.previous.log`. Correlating actual card stalls and UI freezes
+still requires device validation; these changes add attribution, not a storage fix.
+
+CPU report contention (0.38.92): `bash tests/run-cpu-scheduler-tests.sh` builds the
+production CPU scheduler with mocked Vita calls and blocks its report output.
+UI ticks, playback transitions, parser pinning and status queries must remain
+responsive while output is blocked. Samples collected meanwhile must appear in
+the next report, and reporting must reset each interval only once. On Vita,
+repeat streaming playback with Performance logging enabled and compare
+`post_scheduler` stalls and frame delays. This fixes scheduler-lock contention
+from diagnostic output; database and media writes can still stall on storage.
+
+Streaming recovery (0.38.93): `bash tests/run-video-tests.sh` now exercises the
+production packet-wait loop with pictures completing asynchronously. A ready
+picture must resume stalled playback without waiting seconds for the pacer's
+virtual clock. Paused seek preview, cancellation, decoder errors and the existing
+compressed-input bounds remain covered. The change polls output while waiting;
+it does not increase the permitted packet lead.
+`bash tests/run-td-positioned-io-tests.sh` also runs the production BinlogActor
+flush scheduling methods. Vita ordinary writes batch for up to 100 ms (other
+platforms keep 1 ms), without extending a pending batch when new records arrive.
+Forced flush remains immediate; forced sync keeps its existing no-later-than-3-ms
+alarm and closing still persists pending data. The existing 16 KiB eager-flush
+threshold, encryption, retry handling and persistence promises are unchanged.
+Real Vita must verify the effect on database write frequency, download throughput,
+startup, audio/video continuity and sleep/resume; mocks establish control flow,
+not card performance or hardware-decoder timing.
+
+Video-quality log isolation (0.38.94): `bash tests/run-transfer-tests.sh` checks
+that parsing video metadata performs no stat/open on `video-quality.log`, even
+when Video diagnostics are enabled. The test blocks the background log open
+and verifies another message can still be parsed/enqueued; queued reports are
+written as a separate batch. It also checks a 64-report queue limit, an 8 KiB
+variant-report limit with an omission marker, and disabling diagnostics.
+The cache worker flushes at its diagnostic interval only outside active video
+and progressive reading, plus shutdown. Rotation and file writes hold no queue
+mutex. On Vita, reproduce the reported 3–5-second `process type=message` stalls
+with Video/Performance logs enabled; after closing playback, collect both
+Performance files and `video-quality.log`. Real card timing remains unverified.
+
+Settings navigation (0.38.95): `bash tests/run-chat-scroll-tests.sh` also runs
+`python3 tests/settings_menu_test.py`. It compiles the production table and
+return/open handlers, checks all 34 settings/actions occur exactly once,
+parent selection/scroll restoration, confirmation cancellation, encryption
+dependencies, and every pixel of row/back hit bounds including gaps, unused
+space and the last partially visible row. `bash tests/run-i18n-tests.sh` checks
+all 19 catalogs and packaged font character coverage. Existing card rendering
+is reused without new rounded translucent fills; the mask/skin suite remains
+`bash tests/run-ui-mask-tests.sh`. These checks do not render the full app.
+On physical Vita verify controller/touch traversal, proxy QR cancellation,
+keyboard language return, theme/font picker empty/loading/chosen/last-page
+states, logout/encryption confirmations, and light/dark/custom palettes at
+all font sizes. No saved-setting migration is required.
+
+Custom language checks in `run-i18n-tests.sh` cover catalog discovery, overrides,
+English fallback and rejected mismatched file codes. `run-keyboard-tests.sh` loads
+a new profile from a temporary .lang, exercises touch input, registration and
+native-IME fallback, rejects malformed rows and checks invalid UTF-8. Vita file
+discovery, custom glyphs, touch geometry and actual native IME still need a device.

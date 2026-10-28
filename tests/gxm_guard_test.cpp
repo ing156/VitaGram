@@ -2,11 +2,13 @@
 #include <initializer_list>
 #include <cassert>
 #include <cstdio>
+#include <string>
 
 namespace {
-int begin_result = 0, reserve_result = 0, uniform_result = 0;
+int begin_result = 0, reserve_result = 0, uniform_result = 0, draw_result = 0, end_result = 0;
 bool write_buffer = true;
 int reservations = 0, writes = 0, draws = 0;
+int swaps = 0, vblanks = 0, ends = 0;
 float storage[16]{};
 
 void begin() {
@@ -16,6 +18,10 @@ void draw(bool accepted) {
     const int before = draws;
     assert((__wrap_sceGxmDraw(nullptr, SCE_GXM_PRIMITIVE_TRIANGLES, SCE_GXM_INDEX_FORMAT_U16, nullptr, 3) == 0) == accepted);
     assert(draws == before + (accepted ? 1 : 0));
+    const int before_swaps = swaps, before_vblanks = vblanks;
+    __wrap_vita2d_swap_buffers();
+    assert(swaps == before_swaps + (accepted ? 1 : 0));
+    assert(vblanks == before_vblanks + (accepted ? 0 : 1));
 }
 }
 
@@ -42,8 +48,11 @@ int __real_sceGxmSetUniformDataF(void* buffer, const SceGxmProgramParameter*, un
 }
 int __real_sceGxmDraw(SceGxmContext*, SceGxmPrimitiveType, SceGxmIndexFormat, const void*, unsigned int) {
     ++draws;
-    return 0;
+    return draw_result;
 }
+int __real_sceGxmEndScene(SceGxmContext*, const SceGxmNotification*, const SceGxmNotification*) { ++ends; return end_result; }
+void __real_vita2d_swap_buffers() { ++swaps; }
+int sceDisplayWaitVblankStart() { ++vblanks; return 0; }
 }
 
 int main() {
@@ -104,5 +113,49 @@ int main() {
     begin();
     assert(__wrap_sceGxmSetUniformDataF(storage, nullptr, 0, 16, storage) == 0);
     draw(true);
+    // A real draw failure also prevents presenting stale startup buffers.
+    draw_result = (int)SCE_GXM_ERROR_INVALID_VALUE;
+    assert(__wrap_sceGxmDraw(nullptr, SCE_GXM_PRIMITIVE_TRIANGLES, SCE_GXM_INDEX_FORMAT_U16, nullptr, 3) == draw_result);
+    draw(false);
+    assert(__wrap_sceGxmEndScene(nullptr, nullptr, nullptr) == 0 && ends == 1);
+    draw_result = 0;
+    begin();
+    draw(true);
+    end_result = (int)SCE_GXM_ERROR_INVALID_VALUE;
+    assert(__wrap_sceGxmEndScene(nullptr, nullptr, nullptr) == end_result && ends == 2);
+    draw(false);
+    end_result = 0;
+    begin();
+    draw(true);
+
+    // Startup diagnostics obey the existing performance-log switch and reset each launch.
+    const char* path = "ux0:data/vitagram/startup.log";
+    std::remove(path);
+    diag_log::set_mask(0);
+    startup_trace::write("disabled", true);
+    assert(!std::fopen(path, "rb"));
+    diag_log::set_mask(1u << static_cast<unsigned>(diag_log::Kind::Performance));
+    startup_trace::write("previous launch", true);
+    startup_trace::write("fonts", true);
+    startup_trace::write("theme");
+    FILE* file = std::fopen(path, "rb"); assert(file);
+    char trace[128]{};
+    assert(std::fread(trace, 1, sizeof(trace) - 1, file) == 12);
+    std::fclose(file);
+    assert(std::string(trace) == "fonts\ntheme\n");
+    std::remove(path);
+    startup_trace::write("errors", true);
+    logged_errors = 0;
+    for (int i = 0; i < 32; ++i) {
+        begin();
+        uniform_result = i % 2 ? (int)SCE_GXM_ERROR_INVALID_VALUE : (int)SCE_GXM_ERROR_INVALID_POINTER;
+        assert(__wrap_sceGxmSetUniformDataF(storage, nullptr, 0, 16, storage) < 0);
+    }
+    file = std::fopen(path, "rb"); assert(file);
+    int lines = 0;
+    while (std::fgets(trace, sizeof(trace), file)) ++lines;
+    std::fclose(file);
+    assert(lines == 17 && logged_errors == 16);
+    std::remove(path);
     std::puts("GXM guard: failed reservations, invalid outputs, scene failure and recovery PASS");
 }

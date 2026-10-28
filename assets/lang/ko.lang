@@ -2,6 +2,19 @@
 @code = ko
 @name = 한국어
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = KO
+@keyboard.rows = ""
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+
 account.cleanup_blocked = 이전 계정의 데이터를 삭제하지 못했습니다. 메모리 카드 접근을 해제하고 앱을 다시 시작하세요.
 account.delete_incomplete = 모든 데이터를 삭제하지 못했습니다. 다음 실행 때 정리를 다시 시도합니다.
 account.deleted = 계정 데이터를 삭제했습니다. 로그인하려면 VitaGram을 다시 시작하세요.
@@ -19,7 +32,7 @@ anim.gpu_video = 비디오에 필요한 그래픽 메모리가 부족합니다
 anim.limit_720p = 애니메이션이 720p 픽셀 한도를 초과합니다
 anim.limit_720p_media = 비디오/애니메이션이 720p 픽셀 한도를 초과합니다
 anim.limit_gif = GIF 한도: 20 MiB
-anim.limit_video = 비디오 한도: 128 MiB
+anim.limit_video = 비디오 한도: 1024 MiB
 anim.media_open = 미디어 파일을 열 수 없습니다
 anim.memory = 애니메이션에 필요한 메모리가 부족합니다
 anim.nv12_failed = NV12 텍스처를 만들지 못했습니다
@@ -725,7 +738,7 @@ link.confirm_title = 이 링크를 열까요?
 link.cancel = 취소
 link.proceed = 열기
 
-settings.gyroscope = 자이로 센서
+settings.gyroscope = 사진 보기 자이로스코프
 menu.rotate_left = {l}  왼쪽으로 회전
 menu.rotate_right = {r}  오른쪽으로 회전
 
@@ -960,3 +973,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = 메뉴
+bot.keyboard = 봇 키보드
+bot.buttons = 봇 버튼
+bot.select_hint = {select}: 봇 버튼
+bot.panel_hint = {cross} 선택   {circle} 뒤로   좌우: 페이지
+bot.empty = 사용 가능한 버튼 없음
+bot.wait = 봇 응답을 기다리는 중…
+bot.unsupported = 아직 지원하지 않는 버튼 유형입니다. 데이터는 전송되지 않았습니다.
+bot.webapp_unavailable = 미니 앱에는 Telegram JavaScript 브리지가 있는 내장 브라우저가 필요합니다.
+sticker.open_set = 스티커 / 이모지 세트 열기
+sticker.add_set = 세트 추가
+sticker.add_set_hint = {triangle} 세트 추가
+sticker.installed = 세트 추가됨
+sticker.no_set = 이 이모지에는 세트가 없습니다
+sticker.preview_set = 여기로 밀고 놓으면 세트가 열립니다
+bot.back = {circle} 뒤로
+bot.response = 봇 응답
+
+# Internal Mini Apps
+webapp.confirm = 미니 앱을 열까요? 봇에 Telegram 프로필 정보와 현재 테마가 전송됩니다.
+webapp.input = 텍스트 입력
+webapp.hint = 왼쪽 스틱 / 방향키: 포인터 · L/R: 스크롤 · 네모: 입력
+webapp.bridge_error = 미니 앱의 명령이 너무 많습니다.
+webapp.data_error = 미니 앱이 이 데이터를 보낼 수 없습니다.
+webapp.unsupported = 미니 앱이 지원되지 않는 작업을 요청했습니다.
+webapp.open = {cross} 열기
+webapp.close = {start}  닫기
+webapp.vault_unavailable = 데이터 암호화가 켜져 있으면 내부 보기를 아직 사용할 수 없습니다.
+
+# Classic and combined chat views
+settings.view_mode = 표시 모드
+settings.view_classic = 클래식
+settings.view_combined = 분할 보기
+chat.focus_list = 채팅 > 기록
+chat.focus_history = < 채팅 | 기록
+chat.select_chat = 채팅을 선택하세요
+webapp.payment_unavailable = VitaGram에서는 아직 Mini Apps 결제를 사용할 수 없습니다.
+
+# --- Background audio player ---
+player.hint = L+R: 플레이어
+player.loading = 오디오 로딩 중…
+player.previous = 이전 곡
+player.play = 재생 / 일시 정지
+player.next = 다음 곡
+player.seek = 탐색 · ↑/↓ 10초
+player.volume = 음량
+player.shuffle = 셔플
+player.repeat = 반복
+player.speed = 속도 · ↑/↓
+player.close = 플레이어 닫기
+player.off = 끄기
+player.on = 켜기
+player.all = 목록
+player.one = 곡
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = 키보드 간격
+settings.keyboard_split_small = 좁게
+settings.keyboard_split_medium = 보통
+settings.keyboard_split_wide = 넓게
+
+# User-installed fonts
+settings.font_family = 글꼴
+settings.font_default = 기본
+settings.font_loading = 글꼴 불러오는 중…
+settings.custom_font_failed = 글꼴을 불러올 수 없습니다. 이전 글꼴을 유지합니다.
+settings.font_hint = {dpad} 선택 · {cross} 적용 · {circle} 뒤로
+
+# Cache settings
+cache.title = 캐시
+cache.clear = 지금 캐시 정리
+cache.cleaning = 정리 중…
+cache.done = 완료
+cache.failed = 실패
+cache.unavailable = 캐시를 정리하려면 Telegram에 연결해야 합니다.
+
+# Settings sections
+settings.section.interface = 인터페이스
+settings.section.chats = 채팅
+settings.section.controls = 조작 및 입력
+settings.section.data = 데이터 및 저장 공간
+settings.section.connection = 연결
+settings.section.security = 데이터 보호
+settings.section.updates = 업데이트 및 설치
+settings.section.about = 앱 정보 및 진단
+common.back = 뒤로
+settings.cache_cleanup_hint = 보관 기간과 용량 제한을 적용하며 모든 미디어를 삭제하지 않습니다.
+
+# Video quality
+settings.video_quality = 최대 동영상 화질
+settings.video_minimum = 최저 (데이터 절약)
+settings.video_360 = 최대 360p
+settings.video_480 = 최대 480p
+settings.video_720 = 최대 720p
+video.quality = 동영상 화질
+video.quality_unavailable = 선택한 화질을 사용할 수 없습니다.

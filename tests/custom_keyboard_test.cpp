@@ -19,6 +19,21 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+#include <unistd.h>
+#include "touch_history.h"
+
+static std::vector<SceTouchData> touch_backlog;
+static unsigned touch_reads=0;
+int sceTouchRead(SceUInt32 port,SceTouchData* data,SceUInt32 count) {
+    assert(port==SCE_TOUCH_PORT_FRONT);
+    ++touch_reads;
+    const auto copied=std::min<size_t>(count,touch_backlog.size());
+    std::copy_n(touch_backlog.begin(),copied,data);
+    touch_backlog.erase(touch_backlog.begin(),touch_backlog.begin()+copied);
+    return copied;
+}
 
 static int ime_inits = 0, ime_terms = 0;
 static bool ime_finished = false;
@@ -80,7 +95,10 @@ void vita2d_draw_rectangle(float x, float y, float w, float h, unsigned color) {
 void vita2d_draw_fill_circle(float, float, float, unsigned) {}
 void vita2d_draw_line(float, float, float, float, unsigned) {}
 void vita2d_draw_texture_tint_part_scale(const vita2d_texture*, float, float, float, float, float, float, float, float, unsigned) {}
-int rich_text_width(vita2d_pgf*, float, const char* text) { return std::strlen(text) * 10; }
+static size_t width_calls=0;
+static unsigned font_revision=0;
+unsigned rich_text_revision() { return font_revision; }
+int rich_text_width(vita2d_pgf*, float, const char* text) { ++width_calls; return std::strlen(text) * 10; }
 void rich_text_draw(vita2d_pgf*, int x, int baseline, unsigned color, float scale, const char* text) {
     drawn.emplace_back(text);
     rendered_text.push_back({x, baseline, text, color});
@@ -101,6 +119,7 @@ bool button(int index, Sprite&) { shortcut_badges.push_back(index); return false
 
 int main(int argc, char** argv) {
     assert(argc == 2);
+    i18n::init(argv[1], "en");
     using Result = CustomKeyboard::Result;
     CustomKeyboard kb;
     kb.setLanguages(keyboard_languages::supported());
@@ -161,7 +180,7 @@ int main(int argc, char** argv) {
     // The wrapper routes custom input without creating or terminating a system dialog.
     Keyboard dialog;
     dialog.configure(true, true); dialog.open("compose", false, "initial", true);
-    assert(dialog.active() && !dialog.systemActive() && ime_inits == 0);
+    assert(dialog.active() && dialog.ownsScreen() && !dialog.systemActive() && ime_inits == 0);
     dialog.handle(SCE_CTRL_START, SCE_CTRL_START, false, 0, 0, now++); // opening gesture
     assert(dialog.active() && !dialog.submitted());
     dialog.handle(0, 0, false, 0, 0, now++); // release before accepting input
@@ -169,7 +188,7 @@ int main(int argc, char** argv) {
     assert(!dialog.active() && dialog.submitted() && dialog.text() == "initial");
     dialog.close(); assert(dialog.text().empty() && !dialog.submitted() && ime_terms == 0);
     dialog.configure(false, false); dialog.open("system", false, "draft", true);
-    assert(dialog.systemActive() && ime_inits == 1);
+    assert(dialog.systemActive() && !dialog.ownsScreen() && ime_inits == 1);
     assert(!(last_ime.option & SCE_IME_OPTION_MULTILINE));
     ime_buffer[0] = 0x044f; ime_buffer[1] = 0xd83d; ime_buffer[2] = 0xde00; ime_buffer[3] = 0;
     ime_finished = true;
@@ -614,7 +633,7 @@ int main(int argc, char** argv) {
         fallback.handle(0, 0, false, 0, 0, ++now); // Release opening gesture.
         fallback.handle(0, 0, true, 220, 505, ++now);
         fallback.handle(0, 0, false, 0, 0, ++now); // Short release switches directly to the enabled IME language.
-        assert(fallback.systemActive() && ime_inits == previous_inits + 1);
+    assert(fallback.systemActive() && !fallback.ownsScreen() && ime_inits == previous_inits + 1);
         assert(last_ime.supportedLanguages == masks[i] && last_ime.languagesForced == SCE_TRUE);
         assert(last_ime.initialText[0] == 'd' && last_ime.initialText[4] == 't');
         assert(last_ime.initialText[5] == 0xd83d && last_ime.initialText[6] == 0xde00);
@@ -696,7 +715,7 @@ int main(int argc, char** argv) {
     }
     palette.clear();
     // Real two-contact packets reach the shared keyboard; the whole chord owns its release tail.
-    CustomKeyboard split_keyboard; split_keyboard.setLanguages(keyboard_languages::supported());
+    CustomKeyboard split_keyboard; split_keyboard.setSplitLevel(0); split_keyboard.setLanguages(keyboard_languages::supported());
     split_keyboard.open("draft",false,true,1023,false,false);assert(split_keyboard.setLanguage("en"));
     struct Contact { unsigned char id; int x,y; };
     uint64_t gesture_now=100000;
@@ -722,6 +741,53 @@ int main(int argc, char** argv) {
         assert(!letter_keys.empty());
         for(const auto& key:letter_keys)if(key.baseline<478)assert(key.x>=16 && key.x<=944 && (key.x<410 || key.x>550));
     }
+    // Each spread uses the drawn geometry for typing; key faces stay disjoint and inside the screen.
+    for (int level = 0; level < 3; ++level) {
+        split_keyboard.setSplitLevel(level);
+        split_keyboard.open("",false,true,1023,false,false); // Reopening preserves the spread.
+        for (const auto& profile : keyboard_layout::all()) if (!profile.system()) {
+            split_keyboard.open("",false,true,1023,false,false);
+            assert(split_keyboard.setLanguage(profile.code));
+            for (bool dark : {false, true}) {
+                letter_keys.clear(); shapes.clear(); record_shapes=true;
+                split_keyboard.draw(nullptr,dark,"spread"); record_shapes=false;
+                std::vector<Shape> faces;
+                for (const auto& shape : shapes) if (shape.h == 64 && shape.y < 478) {
+                    assert(shape.x >= 16 && shape.x + shape.w <= 944);
+                    assert(shape.x + shape.w <= 400-80*level || shape.x >= 560+80*level);
+                    for (const auto& previous : faces)
+                        assert(shape.y != previous.y || shape.x >= previous.x+previous.w || previous.x >= shape.x+shape.w);
+                    faces.push_back(shape);
+                }
+                assert(!faces.empty());
+                if (profile.code == "en") {
+                    const int widths[] = {64, 54, 38};
+                    assert(faces.front().w == widths[level]);
+                }
+                const auto keys=letter_keys;
+                for (const auto& key : keys) if (key.baseline < 478) {
+                    const auto before=split_keyboard.text();
+                    fingers({{3,key.x,key.baseline-20}}); fingers({});
+                    assert(split_keyboard.text() == before+key.label);
+                }
+            }
+            const auto before=split_keyboard.text();
+            fingers({{3,480,350}}); fingers({}); assert(split_keyboard.text()==before);
+        }
+    }
+    // A fresh keyboard defaults to the same geometry as explicit medium.
+    CustomKeyboard medium; medium.setLanguages({"en"}); medium.open("",false,true,1023,false,false);
+    SceTouchData spread{}; spread.reportNum=2;
+    spread.report[0].id=1; spread.report[0].x=700; spread.report[0].y=700;
+    spread.report[1].id=2; spread.report[1].x=1220; spread.report[1].y=700;
+    medium.handle(0,0,true,350,350,++gesture_now,&spread);
+    spread.report[0].x=400; spread.report[1].x=1520;
+    medium.handle(0,0,true,200,350,++gesture_now,&spread); assert(medium.split());
+    letter_keys.clear(); medium.draw(nullptr,true,"default"); const auto default_keys=letter_keys;
+    medium.setSplitLevel(1); letter_keys.clear(); medium.draw(nullptr,true,"medium");
+    assert(letter_keys.size()==default_keys.size());
+    for (size_t i=0;i<letter_keys.size();++i) assert(letter_keys[i].x==default_keys[i].x);
+    split_keyboard.setSplitLevel(0);
     assert(split_keyboard.setLanguage("en"));
     split_keyboard.open("secret",true,false,128,false,false);assert(split_keyboard.split());
     drawn.clear();split_keyboard.draw(nullptr,true,"unlock",true);
@@ -737,7 +803,7 @@ int main(int argc, char** argv) {
     fingers({{1,350,350},{2,610,350}});fingers({{1,200,350},{2,760,350},{3,480,350}});fingers({});assert(!split_keyboard.split());
     fingers({{1,350,350},{2,610,350}});fingers({{1,200,350},{2,760,350}},1600000);fingers({});assert(!split_keyboard.split());
     fingers({{1,450,350}});fingers({{1,450,350},{2,510,350}},200000);fingers({{1,350,350},{2,610,350}});fingers({});assert(!split_keyboard.split());
-    assert(split_keyboard.text()=="draft");
+    split_keyboard.open("draft",false,true,1023,false,false);
     // Single-finger input still works, including release submission and repeat deletion.
     fingers({{1,450,350}});fingers({});assert(split_keyboard.text()=="draftg");
     fingers({{1,900,430}});fingers({});assert(split_keyboard.text()=="draft");
@@ -756,5 +822,119 @@ int main(int argc, char** argv) {
     letter_keys.clear();split_wrapper.draw(nullptr);
     for(const auto& key:letter_keys)if(key.baseline<478)assert(key.x<410 || key.x>550);
     split_wrapper.close();
-    std::puts("custom keyboard: touch/controller, EN/RU, 300 ms choices, touch slides/controller selection, UTF-8 limits/deletion, multiline, masking, split gestures/layouts, submit/cancel: PASS");
+    // Contact transitions must not require an empty frame or follow report-array order.
+    auto reset_typing = [&] {
+        split_keyboard.open("",false,true,1023,false,false);
+        assert(split_keyboard.setLanguage("en"));
+    };
+    reset_typing();
+    fingers({{1,48,285}}); fingers({{2,135,285}}); fingers({});
+    assert(split_keyboard.text()=="qw");
+    reset_typing();
+    fingers({{1,48,285}}); fingers({{1,48,285},{2,135,285}});
+    fingers({{2,135,285},{1,48,285}}); fingers({{1,48,285}}); fingers({});
+    assert(split_keyboard.text()=="qw");
+    reset_typing();
+    fingers({{1,48,285},{2,135,285}}); fingers({});
+    assert(split_keyboard.text()=="qw");
+    reset_typing();
+    fingers({{1,48,285}}); fingers({}); fingers({{1,135,285}}); fingers({});
+    assert(split_keyboard.text()=="qw");
+    reset_typing();
+    fingers({{1,450,350}}); fingers({{1,450,350},{2,550,350}});
+    fingers({{2,550,350}}); fingers({});
+    assert(!split_keyboard.split() && split_keyboard.text()=="gh"); // Failed gesture still types.
+    reset_typing();
+    fingers({{1,450,350},{2,550,350}}); fingers({});
+    assert(!split_keyboard.split() && split_keyboard.text()=="gh");
+    open(std::string(600,'a'),false,true,1023);
+    width_calls=0; kb.draw(nullptr,true,"draft");
+    const auto first_draw=width_calls;
+    kb.draw(nullptr,true,"draft");
+    const auto cached_draw=width_calls-first_draw;
+    assert(first_draw>cached_draw+600);
+    std::printf("Draft width measurements for 600 characters: first frame=%zu, unchanged frame=%zu\n",first_draw,cached_draw);
+    ++font_revision;
+    const auto before_font_change=width_calls; kb.draw(nullptr,true,"draft");
+    assert(width_calls-before_font_change>cached_draw+600);
+    button(SCE_CTRL_LTRIGGER);
+    const auto before_cursor_change=width_calls; kb.draw(nullptr,true,"draft");
+    assert(width_calls-before_cursor_change>cached_draw+600);
+    button(SCE_CTRL_SQUARE);
+    const auto before_edit=width_calls; kb.draw(nullptr,true,"draft");
+    assert(width_calls-before_edit>cached_draw+599);
+    open("",false,true,1023);
+    palette["background"]=RGBA8(12,23,34,40);
+    fills.clear(); kb.draw(nullptr,true,"opaque keyboard");
+    assert(!fills.empty() && fills.front()==RGBA8(12,23,34,255));
+    palette.clear();
+    // A complete tap between UI frames must survive a slow render, without duplicate insertion.
+    auto packet=[](uint64_t time,int id=-1,int x=0,int y=0) {
+        SceTouchData sample{}; sample.timeStamp=time;
+        if (id>=0) { sample.reportNum=1; sample.report[0].id=id; sample.report[0].x=x*2; sample.report[0].y=y*2; }
+        return sample;
+    };
+    open("",false,false,1023);
+    auto initial=packet(1000);
+    kb.handle(0,0,false,0,0,1000,&initial);
+    touch_backlog={packet(2000,1,48,285),packet(18000),packet(34000,2,135,285),packet(50000)};
+    auto latest=touch_backlog.back();
+    kb.handle(0,0,false,0,0,160000,&latest);
+    assert(kb.text()=="qw" && touch_backlog.empty());
+    const auto reads=touch_reads;
+    kb.handle(0,0,false,0,0,176000,&latest);
+    assert(kb.text()=="qw" && touch_reads==reads);
+    open("",false,false,1023);
+    kb.handle(0,0,false,0,0,1000,&initial);
+    touch_backlog={packet(2000,1,48,285),packet(302000,1,48,285),packet(320000)};
+    latest=touch_backlog.back();
+    kb.handle(0,0,false,0,0,500000,&latest);
+    assert(kb.text()=="1"); // Long-press duration comes from samples, not one UI-frame time.
+    TouchHistory history;
+    history.ignore(&initial);
+    auto newest=packet(10000);
+    assert(history.poll(&newest,[&](SceTouchData* out,unsigned) {
+        out[0]=packet(8000); out[1]=packet(2000); out[2]=packet(8000); return 3;
+    })==3);
+    assert(history.samples[0].timeStamp==2000 && history.samples[1].timeStamp==8000 && history.samples[2].timeStamp==10000);
+    Keyboard filtered; filtered.configure(true,true,{"en"}); filtered.open("test");
+    auto released=packet(2000);
+    filtered.handle(0,0,false,0,0,2000,&released);
+    touch_backlog={packet(1000,1,48,285),packet(2000),packet(3500,2,135,285),packet(5000)};
+    latest=touch_backlog.back();
+    filtered.handle(0,0,false,0,0,160000,&latest);
+    filtered.handle(SCE_CTRL_START,SCE_CTRL_START,false,0,0,176000,&latest);
+    assert(filtered.submitted() && filtered.text()=="w");
+    filtered.close();
+    auto future=packet(12000);
+    assert(history.poll(&future,[](SceTouchData*,unsigned) { return -1; })==1);
+    assert(history.samples[0].timeStamp==12000);
+    history.ignore(nullptr);
+    assert(history.samples[0].timeStamp==0 && history.samples[0].reportNum==0);
+    history.ignore(&initial);
+    auto full_latest=packet(200000);
+    assert(history.poll(&full_latest,[&](SceTouchData* data,unsigned count) {
+        assert(count==64);
+        for (unsigned i=0;i<count;++i) data[i]=packet(2000+i*1000);
+        return count;
+    })==65);
+    assert(history.samples[64].timeStamp==full_latest.timeStamp);
+    char pattern[] = "/tmp/vitagram-custom-keyboard-XXXXXX";
+    const std::string custom = mkdtemp(pattern);
+    std::ifstream source(std::string(argv[1]) + "/en.lang");
+    std::string catalog((std::istreambuf_iterator<char>(source)), {});
+    catalog.replace(catalog.find("@code = en"), 10, "@code = xx");
+    std::ofstream(custom + "/xx.lang") << catalog;
+    i18n::init(argv[1], "en", custom);
+    CustomKeyboard added;
+    added.setLanguages({"xx"}); added.open("", false, true, 1023, false, false);
+    assert(added.language() == "xx" && added.setLanguage("xx"));
+    added.handle(0,0,true,52,290,++now); added.handle(0,0,false,0,0,++now);
+    assert(added.text() == "q");
+    Keyboard native_added;
+    native_added.configure(false, true, {"xx"}); native_added.open("custom");
+    assert(native_added.systemActive() && last_ime.supportedLanguages == SCE_IME_LANGUAGE_ENGLISH);
+    native_added.close();
+    std::filesystem::remove_all(custom);
+    std::puts("custom keyboard: touch/controller, split gestures, draft cache and touch history across slow frames: PASS");
 }

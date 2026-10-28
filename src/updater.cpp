@@ -31,15 +31,12 @@ const char kUpdaterPackageDir[] = "ux0:data/vitagram-updater-pkg";
 constexpr uint64_t kSpaceMargin = 16ull << 20;
 constexpr uint64_t kUnknownSize = 64ull << 20; // release without a reported size
 
-#ifdef __vita__
-struct DevInfo { int64_t max_size, free_size, cluster_size; void* unknown; }; // layout of devctl 0x3001
-#endif
 // Free bytes on the device holding `path`; false when it cannot be determined (then nothing is refused).
 bool free_space(const std::string& path, uint64_t& bytes) {
 #ifdef __vita__
     size_t colon = path.find(':');
     if (colon == std::string::npos) return false;
-    DevInfo info{};
+    SceIoDevInfo info{};
     if (sceIoDevctl(path.substr(0, colon + 1).c_str(), 0x3001, nullptr, 0, &info, sizeof(info)) < 0 || info.free_size < 0) return false;
     bytes = (uint64_t)info.free_size;
     return true;

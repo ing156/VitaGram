@@ -240,20 +240,27 @@ void writeReport(FILE* file) {
     const int state = fourth.load();
     const char* cpu3 = state == Confirmed ? "confirmed" : state <= Checking && state >= WrongCore ? fourth_names[Checking - state] : "unknown";
     pthread_mutex_lock(&mutex);
+    const auto reported_threads = threads;
+    const auto reported_sum = busy_sum;
+    const auto reported_max = busy_max;
+    const auto samples = report_samples;
+    const int min_clock = clock_min, max_clock = clock_max;
+    const int audio = audio_active, video = video_active;
+    for (auto& thread : threads) { thread.seconds = {}; thread.moves = 0; }
+    busy_sum = {}; busy_max = {{-1,-1,-1,-1}}; report_samples = 0; clock_min = clock_max = 0;
+    pthread_mutex_unlock(&mutex);
+    // Card I/O must not hold the lock used by UI ticks and playback transitions.
     auto mean = [](uint32_t sum, uint32_t n) { return n ? (int)(sum / n) : -1; };
     std::fprintf(file, "cpu_cores samples=%u cpu3=%s arm_mhz_min=%d arm_mhz_max=%d audio=%d video=%d busy_mean=%d,%d,%d,%d busy_max=%d,%d,%d,%d\n",
-        report_samples, cpu3, clock_min, clock_max, audio_active, video_active,
-        mean(busy_sum[0], report_samples), mean(busy_sum[1], report_samples), mean(busy_sum[2], report_samples), mean(busy_sum[3], report_samples),
-        busy_max[0], busy_max[1], busy_max[2], busy_max[3]);
-    for (auto& thread : threads) {
+        samples, cpu3, min_clock, max_clock, audio, video,
+        mean(reported_sum[0], samples), mean(reported_sum[1], samples), mean(reported_sum[2], samples), mean(reported_sum[3], samples),
+        reported_max[0], reported_max[1], reported_max[2], reported_max[3]);
+    for (const auto& thread : reported_threads) {
         if (thread.id < 0) continue;
         std::fprintf(file, "cpu_thread role=%s name=%s core=%d seconds=%u,%u,%u,%u moves=%u\n",
             role_names[static_cast<int>(thread.role)], thread.name[0] ? thread.name : "-", thread.core,
             thread.seconds[0], thread.seconds[1], thread.seconds[2], thread.seconds[3], thread.moves);
-        thread.seconds = {}; thread.moves = 0;
     }
-    busy_sum = {}; busy_max = {{-1,-1,-1,-1}}; report_samples = 0; clock_min = clock_max = 0;
-    pthread_mutex_unlock(&mutex);
 }
 std::string threadStatus() {
     pthread_mutex_lock(&mutex);

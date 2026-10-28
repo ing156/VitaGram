@@ -140,6 +140,20 @@ static void signature(const std::string& dir) {
     std::string bad_sig = sig; bad_sig[10] ^= 1;
     assert(!verify("9.9.9", vpk, bad_sig, 4096));
     assert(!verify("9.9.9", vpk, "", 4096));
+    SignatureVerifier engine;
+    assert(engine.begin("9.9.9", pub.c_str(), SignatureVerifier::Kind::WebKit));
+    engine.update(vpk.data(), vpk.size());
+    assert(!engine.finish(reinterpret_cast<const unsigned char*>(sig.data()), sig.size()));
+    const auto addon_sig = slurp(dir + "/addon.sig");
+    SignatureVerifier addon;
+    assert(addon.begin("webkit-abi1-r1", pub.c_str(), SignatureVerifier::Kind::WebKit));
+    addon.update(vpk.data(), vpk.size());
+    assert(addon.finish(reinterpret_cast<const unsigned char*>(addon_sig.data()), addon_sig.size()));
+    SignatureVerifier wrong_addon;
+    assert(wrong_addon.begin("webkit-abi1-r2", pub.c_str(), SignatureVerifier::Kind::WebKit));
+    wrong_addon.update(vpk.data(), vpk.size());
+    assert(!wrong_addon.finish(reinterpret_cast<const unsigned char*>(addon_sig.data()), addon_sig.size()));
+    assert(!verify("webkit-abi1-r1", vpk, addon_sig, 4096));
     SignatureVerifier garbage_key;
     assert(!garbage_key.begin("1.0.0", "not a key"));
     SignatureVerifier builtin; // the shipped public key must at least parse

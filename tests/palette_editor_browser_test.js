@@ -90,7 +90,7 @@ const output=process.env.EDITOR_TEST_OUTPUT || '/tmp/vitagram-editor-test';
     assert.deepEqual(await page.locator('#preview').evaluate(canvas=>Array.from(canvas.getContext('2d').getImageData(929,172,1,1).data)),[240,32,176,255]);
     const poll=await geometry('poll');
     assert(poll.strokes.includes('#ffcc22')&&poll.strokes.includes('#11cc88'));
-    assert.deepEqual(poll.calls.find(call=>call[0]==='row_focused').slice(1,5),[26,170,908,50]);
+    assert.deepEqual(poll.calls.find(call=>call[0]==='row_focused').slice(1,5),[26,190,908,48]);
     const semanticHistory=await geometry('chat');assert(semanticHistory.strokes.every(color=>color==='#ffe260'));
     await page.selectOption('#font-size','130%');
     await page.locator('#opacity').fill('50');await page.locator('#opacity').dispatchEvent('input');

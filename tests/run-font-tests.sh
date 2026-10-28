@@ -11,6 +11,7 @@ if [[ ! -f "$headers/ft2build.h" ]]; then headers="${VITASDK:-/usr/local/vitasdk
 
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -I "$root/tests/font-stubs" -I "$root/src" -I "$headers" \
   "$root/tests/text_font_test.cpp" "$root/src/text_font.cpp" "$root/src/utf8_decode.cpp" \
+  -Wl,--wrap=FT_Render_Glyph -Wl,--wrap=FT_Set_Pixel_Sizes -Wl,--wrap=FT_New_Size -Wl,--wrap=FT_Done_Size \
   -l:libfreetype.so.6 -o "$build_dir/text-font"
 "$build_dir/text-font" "$root/assets"
 

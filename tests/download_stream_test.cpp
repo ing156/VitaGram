@@ -1,8 +1,10 @@
 #include "download_avio.h"
 #include "media_load_view.h"
 #include "media_seek.h"
+#include "media_limits.h"
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <future>
 #include <thread>
@@ -11,6 +13,20 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 using namespace std::chrono_literals;
+
+#ifdef VITAGRAM_TEST_SCEIO
+static std::atomic<int> native_reads{0};
+static std::atomic<bool> native_failure{false};
+static std::atomic<bool> native_interrupt{false};
+int sceIoOpen(const char* path, int, int) { return ::open(path, O_RDONLY); }
+int sceIoClose(int fd) { return ::close(fd); }
+int sceIoPread(int fd, void* buffer, unsigned size, int64_t offset) {
+    ++native_reads;
+    if (native_interrupt.exchange(false)) return static_cast<int>(0x80010004u);
+    if (native_failure) return -1;
+    return static_cast<int>(::pread(fd, buffer, size, offset));
+}
+#endif
 
 static int cancelled(void* opaque) { return static_cast<std::atomic<bool>*>(opaque)->load(); }
 
@@ -24,18 +40,45 @@ static void raw_reads() {
     state->update(path, bytes.size(), 0, 16, false);
     AVFormatContext* format = avformat_alloc_context();
     std::atomic<bool> stop{false};
+    std::atomic<bool> video_waiting{false};
     format->interrupt_callback = {cancelled, &stop};
     DownloadAvio io;
-    assert(io.attach(format, state) == 1);
+    assert(io.attach(format, state, &video_waiting) == 1);
     assert(download_stream::reading());
     uint8_t buffer[64]{};
     // Use callbacks directly so AVIO buffering cannot conceal a read of a gap.
     assert(format->pb->read_packet(format->pb->opaque, buffer, 64) == 16);
+#ifdef VITAGRAM_TEST_SCEIO
+    assert(native_reads > 0);
+    native_failure = true;
+    assert(format->pb->seek(format->pb->opaque, 0, SEEK_SET) == 0);
+    assert(format->pb->read_packet(format->pb->opaque, buffer, 64) == AVERROR(EIO));
+    native_failure = false;
+    native_interrupt = true;
+    assert(format->pb->read_packet(format->pb->opaque, buffer, 64) == 16);
+    assert(!native_interrupt);
+    assert(format->pb->seek(format->pb->opaque, 16, SEEK_SET) == 16);
+#endif
     auto blocked = std::async(std::launch::async, [&] { return format->pb->read_packet(format->pb->opaque, buffer, 64); });
     assert(blocked.wait_for(50ms) == std::future_status::timeout);
+    assert(!video_waiting);
+    assert(blocked.wait_for(600ms) == std::future_status::timeout && video_waiting);
+    if (performance::enabled) {
+        FILE* trace = std::tmpfile(); assert(trace);
+        stream_diagnostics::write(trace); std::rewind(trace);
+        char line[512]{}; assert(std::fgets(line, sizeof(line), trace)); std::fclose(trace);
+        assert(std::strstr(line, "role=video stage=wait_prefix"));
+        assert(std::strstr(line, "position=16 prefix=16"));
+    }
+    state->update(path, bytes.size(), 0, 80, false);
+    assert(blocked.wait_for(500ms) == std::future_status::ready && blocked.get() == 64);
+    assert(!video_waiting);
+    blocked = std::async(std::launch::async, [&] { return format->pb->read_packet(format->pb->opaque, buffer, 64); });
+    assert(blocked.wait_for(600ms) == std::future_status::timeout && video_waiting);
     stop = true;
     assert(blocked.wait_for(500ms) == std::future_status::ready);
     assert(blocked.get() == AVERROR_EXIT);
+    assert(!video_waiting);
     stop = false;
     assert(format->pb->seek(format->pb->opaque, 0, AVSEEK_SIZE) == int64_t(bytes.size()));
     assert(format->pb->seek(format->pb->opaque, -1, SEEK_SET) < 0);
@@ -47,6 +90,128 @@ static void raw_reads() {
     avformat_free_context(format);
     io.release();
     assert(!download_stream::reading());
+}
+
+static void video_buffer_window() {
+    const std::string path = "video-reserve.bin";
+    const int64_t size = 12 * 1024 * 1024;
+    { std::ofstream file(path, std::ios::binary); file.seekp(size - 1); file.put('x'); }
+    auto state = std::make_shared<download_stream::State>(43);
+    state->update(path, size, 0, 256 * 1024, false);
+    assert(state->ready()); // UI can create the player and retain the play request.
+    AVFormatContext* format = avformat_alloc_context(); assert(format);
+    std::atomic<bool> cancelled_flag{false}, waiting{false};
+    format->interrupt_callback = {cancelled, &cancelled_flag};
+    DownloadAvio io;
+    auto opening = std::async(std::launch::async, [&] {
+        return io.attach(format, state, &waiting, download_stream::video_resume_bytes, download_stream::video_start_bytes);
+    });
+    assert(opening.wait_for(100ms) == std::future_status::timeout && waiting);
+    if (performance::enabled) {
+        bool observed = false;
+        for (int attempt = 0; attempt < 50 && !observed; ++attempt) {
+            FILE* trace = std::tmpfile(); assert(trace);
+            stream_diagnostics::write(trace); std::rewind(trace);
+            char line[512]{}; const bool present = std::fgets(line, sizeof(line), trace) != nullptr; std::fclose(trace);
+            observed = present && std::strstr(line, "role=video stage=startup_buffer") &&
+                std::strstr(line, "position=0 prefix=262144");
+            if (!observed) std::this_thread::sleep_for(10ms);
+        }
+        assert(observed);
+    }
+    state->update(path, size, 0, 4 * 1024 * 1024, false);
+    assert(opening.wait_for(100ms) == std::future_status::timeout && waiting);
+    state->update(path, size, 0, download_stream::video_start_bytes, false);
+    assert(opening.wait_for(500ms) == std::future_status::ready && opening.get() == 1 && !waiting);
+    assert(format->pb->buffer_size == 256 * 1024);
+    state->update(path, size, 0, 16, false);
+    uint8_t buffer[64]{};
+    assert(format->pb->read_packet(format->pb->opaque, buffer, sizeof(buffer)) == 16);
+    auto read = std::async(std::launch::async, [&] { return format->pb->read_packet(format->pb->opaque, buffer, sizeof(buffer)); });
+    assert(read.wait_for(600ms) == std::future_status::timeout && waiting);
+    state->update(path, size, 0, 16 + 128 * 1024, false);
+    assert(read.wait_for(100ms) == std::future_status::timeout && waiting);
+    state->update(path, size, 0, 16 + download_stream::video_resume_bytes, false);
+    assert(read.wait_for(500ms) == std::future_status::ready && read.get() == 64 && !waiting);
+    const int64_t near_end = size - 1024;
+    assert(format->pb->seek(format->pb->opaque, near_end, SEEK_SET) == near_end);
+    state->update(path, size, 0, near_end, false);
+    read = std::async(std::launch::async, [&] { return format->pb->read_packet(format->pb->opaque, buffer, sizeof(buffer)); });
+    assert(read.wait_for(100ms) == std::future_status::timeout);
+    state->update(path, size, 0, near_end + 512, false);
+    assert(read.wait_for(100ms) == std::future_status::timeout);
+    state->update(path, size, 0, size, true);
+    assert(read.wait_for(500ms) == std::future_status::ready && read.get() == 64);
+    avformat_free_context(format); io.release();
+    auto short_file = std::make_shared<download_stream::State>(44);
+    short_file->update(path, 100, 0, 100, true);
+    format = avformat_alloc_context(); assert(format);
+    assert(io.attach(format, short_file, &waiting, download_stream::video_resume_bytes, download_stream::video_start_bytes) == 1);
+    avformat_free_context(format); io.release();
+    state->update(path, size, 0, 16, false);
+    format = avformat_alloc_context(); assert(format);
+    format->interrupt_callback = {cancelled, &cancelled_flag};
+    opening = std::async(std::launch::async, [&] {
+        return io.attach(format, state, &waiting, download_stream::video_resume_bytes, download_stream::video_start_bytes);
+    });
+    assert(opening.wait_for(100ms) == std::future_status::timeout && waiting);
+    cancelled_flag = true;
+    assert(opening.wait_for(500ms) == std::future_status::ready && opening.get() == AVERROR_EXIT && !waiting);
+    avformat_free_context(format);
+    std::puts("Video window: 8 MiB startup, 4 MiB resume and bounded end-of-file reserve passed");
+}
+
+static void completed_snapshot() {
+    const char* path = "completed.bin";
+    { std::ofstream file(path, std::ios::binary); file << "abcdefghijklmnop"; }
+    auto state = std::make_shared<download_stream::State>(42);
+    state->update(path, 16, 0, 16, true);
+    AVFormatContext* format = avformat_alloc_context(); assert(format);
+    DownloadAvio io; assert(io.attach(format, state, nullptr, 0, 0, true) == 1);
+    state->update("", 0, 0, 0, false); // A stale progress snapshot must not invalidate an open full file.
+    assert(format->pb->seek(format->pb->opaque, 8, SEEK_SET) == 8);
+    assert(format->pb->seek(format->pb->opaque, 0, AVSEEK_SIZE) == 16);
+    uint8_t data[8]{};
+    assert(format->pb->read_packet(format->pb->opaque, data, 8) == 8);
+    assert(std::memcmp(data, "ijklmnop", 8) == 0);
+    assert(format->pb->seek(format->pb->opaque, 0, SEEK_SET) == 0);
+    assert(::truncate(path, 0) == 0);
+    assert(format->pb->read_packet(format->pb->opaque, data, 8) == AVERROR(EIO));
+    avformat_free_context(format); io.release();
+    std::puts("Completed file: stale progress ignored; truncated file remains an error");
+}
+
+static void large_reads() {
+    const int64_t size=media_limits::video_bytes;
+    FILE* file=std::fopen("large.bin","wb"); assert(file);
+    assert(std::fseek(file,size-1,SEEK_SET)==0 && std::fputc(0,file)!=EOF);
+    const int64_t offsets[]={128LL*1024*1024-8, 256LL*1024*1024, size-32};
+    const uint8_t marker[32]={0x12,0x34,0x56,0x78};
+    for (const auto at:offsets) {
+        assert(std::fseek(file,at,SEEK_SET)==0);
+        assert(std::fwrite(marker,1,sizeof(marker),file)==sizeof(marker));
+    }
+    assert(std::fclose(file)==0);
+    auto state=std::make_shared<download_stream::State>(99);
+    state->update("large.bin",size,0,129LL*1024*1024,false);
+    auto* format=avformat_alloc_context(); assert(format);
+    DownloadAvio io; assert(io.attach(format,state)==1);
+    uint8_t buffer[32]{};
+    auto* pb=format->pb;
+    assert(pb->seek(pb->opaque,0,AVSEEK_SIZE)==size);
+    assert(pb->seek(pb->opaque,offsets[0],SEEK_SET)==offsets[0]);
+    assert(pb->read_packet(pb->opaque,buffer,sizeof(buffer))==32 && !std::memcmp(buffer,marker,32));
+    assert(pb->seek(pb->opaque,offsets[1],SEEK_SET)==offsets[1]);
+    auto waiting=std::async(std::launch::async,[&] { return pb->read_packet(pb->opaque,buffer,sizeof(buffer)); });
+    assert(waiting.wait_for(50ms)==std::future_status::timeout);
+    state->update("large.bin",size,0,size,true);
+    assert(waiting.wait_for(500ms)==std::future_status::ready && waiting.get()==32);
+    assert(!std::memcmp(buffer,marker,32));
+    assert(pb->seek(pb->opaque,-32,SEEK_END)==size-32);
+    assert(pb->read_packet(pb->opaque,buffer,sizeof(buffer))==32 && !std::memcmp(buffer,marker,32));
+    assert(pb->read_packet(pb->opaque,buffer,sizeof(buffer))==AVERROR_EOF);
+    avformat_free_context(format); io.release();
+    std::puts("1 GiB sparse stream: 128 MiB boundary, growing prefix, tail seek and EOF passed");
 }
 
 // Use FFmpeg's MP4 muxer to make a front-moov variant of the real H.264/AAC fixture.
@@ -75,20 +240,27 @@ static void faststart(const char* source) {
     assert(rc == AVERROR_EOF && av_write_trailer(out) >= 0);
     av_packet_free(&packet);
     avio_closep(&out->pb); avformat_free_context(out); avformat_close_input(&in);
+    FILE* file = std::fopen("fast.mp4", "ab"); assert(file);
+    const uint8_t trailing[] = {0, 0, 0, 16, 'f', 'r', 'e', 'e', 0, 0, 0, 0, 0, 0, 0, 0};
+    assert(std::fwrite(trailing, 1, sizeof(trailing), file) == sizeof(trailing));
+    assert(std::fclose(file) == 0);
 }
 
-static int decode(download_stream::Shared state, AVMediaType type, std::atomic<bool>& first, std::atomic<bool>* opened = nullptr) {
+static int decode(download_stream::Shared state, AVMediaType type, std::atomic<bool>& first, std::atomic<bool>* opened = nullptr, bool discard_others = true) {
     auto* format = avformat_alloc_context();
     DownloadAvio io;
-    assert(io.attach(format, state) == 1);
+    assert(io.attach(format, state, nullptr, 0, 0, true) == 1);
     format->probesize = 256 * 1024;
     AVDictionary* options = nullptr;
     av_dict_set(&options, "protocol_whitelist", "file", 0);
     av_dict_set(&options, "format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2", 0);
     assert(avformat_open_input(&format, state->source.c_str(), nullptr, &options) >= 0);
+    io.finishOpen(format);
     av_dict_free(&options);
     int index = av_find_best_stream(format, type, -1, -1, nullptr, 0);
     assert(index >= 0);
+    if (discard_others) for (unsigned i = 0; i < format->nb_streams; ++i)
+        if (static_cast<int>(i) != index) format->streams[i]->discard = AVDISCARD_ALL;
     const auto* params = format->streams[index]->codecpar;
     auto* codec = avcodec_alloc_context3(avcodec_find_decoder(params->codec_id));
     assert(codec && avcodec_parameters_to_context(codec, params) >= 0);
@@ -119,6 +291,26 @@ static int decode(download_stream::Shared state, AVMediaType type, std::atomic<b
     avformat_close_input(&format);
     io.release();
     return frames;
+}
+
+static void large_mp4() {
+    std::ifstream in("fast.mp4",std::ios::binary);
+    std::ofstream out("large.mp4",std::ios::binary);
+    out << in.rdbuf(); out.close();
+    FILE* file=std::fopen("large.mp4","r+b"); assert(file);
+    assert(std::fseek(file,0,SEEK_END)==0);
+    const int64_t size=170LL*1024*1024;
+    const uint32_t free_size=uint32_t(size-std::ftell(file));
+    const uint8_t atom[]={uint8_t(free_size>>24),uint8_t(free_size>>16),uint8_t(free_size>>8),uint8_t(free_size),'f','r','e','e'};
+    assert(free_size>8 && std::fwrite(atom,1,sizeof(atom),file)==sizeof(atom));
+    assert(std::fseek(file,size-1,SEEK_SET)==0 && std::fputc(0,file)!=EOF && std::fclose(file)==0);
+    auto state=std::make_shared<download_stream::State>(100);
+    state->update("large.mp4",size,0,size,true);
+    std::atomic<bool> video{false},audio{false};
+    assert(decode(state,AVMEDIA_TYPE_VIDEO,video)>0);
+    assert(decode(state,AVMEDIA_TYPE_AUDIO,audio)>0);
+    assert(video && audio);
+    std::puts("170 MiB sparse MP4: real H.264/AAC decoding through bounded input passed");
 }
 
 static void growing_mp4() {
@@ -156,8 +348,8 @@ static void growing_mp4() {
     int video_frames = video_job.get(), audio_frames = audio_job.get();
     auto complete = std::make_shared<download_stream::State>(3);
     complete->update("fast.mp4", bytes.size(), 0, bytes.size(), true);
-    assert(video_frames > 0 && video_frames == decode(complete, AVMEDIA_TYPE_VIDEO, video));
-    assert(audio_frames > 0 && audio_frames == decode(complete, AVMEDIA_TYPE_AUDIO, audio));
+    assert(video_frames > 0 && video_frames == decode(complete, AVMEDIA_TYPE_VIDEO, video, nullptr, false));
+    assert(audio_frames > 0 && audio_frames == decode(complete, AVMEDIA_TYPE_AUDIO, audio, nullptr, false));
     assert(!download_stream::reading());
     std::printf("Progressive MP4: %d video frames, %d audio frames; early start, starvation, rename and complete-file parity passed\n", video_frames, audio_frames);
 }
@@ -237,10 +429,46 @@ static void seek_target(const char* path) {
     std::puts("Precise media seek: field carry, start/end bounds and real H.264 keyframe pre-roll passed");
 }
 
+static void read_ahead_stall() {
+    struct Disk {
+        std::atomic<int> calls{0};
+        std::atomic<bool> hold{true};
+        static int read(void* opaque, uint8_t* data, int count, int64_t offset) {
+            auto& disk = *static_cast<Disk*>(opaque);
+            ++disk.calls;
+            if (offset == 3 * 256 * 1024)
+                while (disk.hold) std::this_thread::sleep_for(1ms);
+            std::memset(data, offset / (256 * 1024), count);
+            return count;
+        }
+    } disk;
+    auto state = std::make_shared<download_stream::State>(99);
+    state->update("unused", 8 * 1024 * 1024, 0, 8 * 1024 * 1024, true);
+    DownloadReadAhead ahead;
+    assert(ahead.open(state, Disk::read, &disk));
+    std::vector<uint8_t> bytes(256 * 1024);
+    assert(ahead.read(bytes.data(), bytes.size(), 0, {}) == int(bytes.size()));
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (disk.calls < 4 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(1ms);
+    assert(disk.calls == 4); // Worker is stuck on disk, with two ready blocks in RAM.
+    auto cached = std::async(std::launch::async, [&] { return ahead.read(bytes.data(), bytes.size(), 256 * 1024, AVIOInterruptCB{}); });
+    assert(cached.wait_for(200ms) == std::future_status::ready);
+    assert(cached.get() == int(bytes.size()) && bytes.front() == 1 && bytes.back() == 1);
+    std::atomic<bool> stop{true};
+    assert(ahead.read(bytes.data(), bytes.size(), 6 * 256 * 1024, {cancelled, &stop}) == AVERROR_EXIT);
+    disk.hold = false;
+    stop = false;
+    assert(ahead.read(bytes.data(), bytes.size(), 6 * 256 * 1024, {cancelled, &stop}) == int(bytes.size()));
+    assert(bytes.front() == 6 && bytes.back() == 6); // In-flight pre-seek data was discarded.
+    assert(ahead.read(bytes.data(), 32, 0, {}) == 32 && bytes[0] == 0); // Backward seek.
+    ahead.close();
+    std::puts("Read-ahead: cached playback during disk stall, cancellation and seek passed");
+}
+
 int main(int argc, char** argv) {
     assert(argc == 2);
     av_log_set_level(AV_LOG_ERROR);
-    raw_reads(); faststart(argv[1]); growing_mp4(); tail_metadata(argv[1]); seek_target(argv[1]);
+    read_ahead_stall(); raw_reads(); video_buffer_window(); completed_snapshot(); large_reads(); faststart(argv[1]); large_mp4(); growing_mp4(); tail_metadata(argv[1]); seek_target(argv[1]);
     assert(MediaLoadView::make(0, 262144, false, false).percent == -1);
     assert(MediaLoadView::make(1024, 2048, false, false).percent == 99);
     assert(MediaLoadView::make(1024, 1024, true, false).waiting); // Download complete; decoder still opening.

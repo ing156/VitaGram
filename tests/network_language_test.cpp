@@ -26,7 +26,9 @@ int main(int argc, char** argv) {
     struct Case { int flight, wifi, state; const char* key; };
     for (const Case& value : {Case{0,1,3,"net.online"}, Case{0,1,1,"net.connecting"},
             Case{0,1,0,"net.disconnected"}, Case{0,1,-1,"net.unknown"},
-            Case{1,1,3,"net.airplane"}, Case{0,0,3,"net.wifi_off"}}) {
+            Case{1,1,3,"net.airplane"}, Case{0,0,3,"net.online"},
+            Case{0,0,1,"net.connecting"}, Case{0,0,2,"net.connecting"},
+            Case{0,0,0,"net.disconnected"}, Case{0,0,-1,"net.unknown"}}) {
         flight = value.flight; wifi = value.wifi; state = value.state;
         net.poll();
         const int sampled = polls;

@@ -2,6 +2,23 @@
 @code = sv
 @name = Svenska
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = SV
+@keyboard.rows = qwertyuiopå|asdfghjklöä|zxcvbnm
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = äå
+@keyboard.popup.o = ö
+@keyboard.popup.' = ›‹
+@keyboard.popup." = »«
+
 account.cleanup_blocked = Det gick inte att radera data från det tidigare kontot. Frigör åtkomsten till minneskortet och starta om appen.
 account.delete_incomplete = Det gick inte att radera all data. Rensningen upprepas vid nästa start.
 account.deleted = Kontodata raderad. Starta om VitaGram för att logga in.
@@ -19,7 +36,7 @@ anim.gpu_video = Otillräckligt grafikminne för video
 anim.limit_720p = Animationen överskrider pixelgränsen för 720p
 anim.limit_720p_media = Videon/animationen överskrider pixelgränsen för 720p
 anim.limit_gif = GIF-gräns: 20 MiB
-anim.limit_video = Videogräns: 128 MiB
+anim.limit_video = Videogräns: 1024 MiB
 anim.media_open = Det går inte att öppna mediafilen
 anim.memory = Otillräckligt minne för animation
 anim.nv12_failed = Det gick inte att skapa NV12-texturen
@@ -725,7 +742,7 @@ link.confirm_title = Öppna länken?
 link.cancel = Avbryt
 link.proceed = Öppna
 
-settings.gyroscope = Gyroskop
+settings.gyroscope = Gyroskop vid bildvisning
 menu.rotate_left = {l}  Rotera åt vänster
 menu.rotate_right = {r}  Rotera åt höger
 
@@ -960,3 +977,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Meny
+bot.keyboard = Bottangentbord
+bot.buttons = Botknappar
+bot.select_hint = {select}: botknappar
+bot.panel_hint = {cross} Välj   {circle} Tillbaka   Vänster/Höger: sida
+bot.empty = Inga knappar tillgängliga
+bot.wait = Väntar på boten…
+bot.unsupported = Den här knapptypen stöds inte ännu. Inga data skickades.
+bot.webapp_unavailable = Miniappar kräver en inbyggd webbläsare med Telegrams JavaScript-brygga.
+sticker.open_set = Öppna dekal-/emojiuppsättning
+sticker.add_set = Lägg till uppsättning
+sticker.add_set_hint = {triangle} Lägg till uppsättning
+sticker.installed = Uppsättning tillagd
+sticker.no_set = Denna emoji saknar uppsättning
+sticker.preview_set = Dra hit och släpp för att öppna uppsättningen
+bot.back = {circle} Tillbaka
+bot.response = Botsvar
+
+# Internal Mini Apps
+webapp.confirm = Öppna miniappen? Boten får Telegram-profildata och det aktuella temat.
+webapp.input = Skriv text
+webapp.hint = Vänster spak / Riktningar: pekare · L/R: rulla · Fyrkant: skriv
+webapp.bridge_error = För många kommandon från miniappen.
+webapp.data_error = Miniappen kan inte skicka dessa data.
+webapp.unsupported = Miniappen begärde en åtgärd som inte stöds.
+webapp.open = {cross} Öppna
+webapp.close = {start}  Stäng
+webapp.vault_unavailable = Intern visning är ännu inte tillgänglig med datakryptering aktiverad.
+
+# Classic and combined chat views
+settings.view_mode = Visningsläge
+settings.view_classic = Klassiskt
+settings.view_combined = Kombinerat
+chat.focus_list = Chattar > historik
+chat.focus_history = < chattar | Historik
+chat.select_chat = Välj en chatt
+webapp.payment_unavailable = Betalningar i Mini Apps är ännu inte tillgängliga i VitaGram.
+
+# --- Background audio player ---
+player.hint = L+R: spelare
+player.loading = Laddar ljud…
+player.previous = Föregående spår
+player.play = Spela / pausa
+player.next = Nästa spår
+player.seek = Spola · ↑/↓ 10 s
+player.volume = Volym
+player.shuffle = Blanda
+player.repeat = Upprepa
+player.speed = Hastighet · ↑/↓
+player.close = Stäng spelare
+player.off = Av
+player.on = På
+player.all = Lista
+player.one = Spår
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = Tangentbordsdelning
+settings.keyboard_split_small = Liten
+settings.keyboard_split_medium = Mellan
+settings.keyboard_split_wide = Bred
+
+# User-installed fonts
+settings.font_family = Typsnitt
+settings.font_default = Standard
+settings.font_loading = Läser in typsnitt…
+settings.custom_font_failed = Kunde inte läsa in typsnittet. Föregående behålls.
+settings.font_hint = {dpad} Välj · {cross} Använd · {circle} Tillbaka
+
+# Cache settings
+cache.title = Cache
+cache.clear = Rensa cache nu
+cache.cleaning = Rensar…
+cache.done = Klart
+cache.failed = Misslyckades
+cache.unavailable = Rensning av cache kräver anslutning till Telegram.
+
+# Settings sections
+settings.section.interface = Gränssnitt
+settings.section.chats = Chattar
+settings.section.controls = Kontroller och inmatning
+settings.section.data = Data och lagring
+settings.section.connection = Anslutning
+settings.section.security = Dataskydd
+settings.section.updates = Uppdateringar och installation
+settings.section.about = Om och diagnostik
+common.back = Tillbaka
+settings.cache_cleanup_hint = Tillämpar gränser för lagringstid och storlek; tar inte bort alla medier.
+
+# Video quality
+settings.video_quality = Högsta videokvalitet
+settings.video_minimum = Lägsta (sparar data)
+settings.video_360 = Upp till 360p
+settings.video_480 = Upp till 480p
+settings.video_720 = Upp till 720p
+video.quality = Videokvalitet
+video.quality_unavailable = Den valda kvaliteten är inte tillgänglig.

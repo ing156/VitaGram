@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <thread>
 #include <chrono>
+#include <future>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -19,10 +20,12 @@
 #include "td_event_queue.h"
 #include "td_sticker_sets.h"
 #include "performance.h"
+#include "diag_log.h"
 #include "account_cleanup.h"
 #include "sticker_preview.h"
 #include "transient_status.h"
 #include "file_download.h"
+#include "video_quality.h"
 #include <unistd.h>
 #include "cpu_scheduler.h"
 #include <psp2/io/stat.h>
@@ -50,8 +53,22 @@ static std::atomic<int> receive_count{0}, produced{0}, sent{0};
 static constexpr const char* slow_media_path = "ux0:data/vitagram/files/slow-startup.bin";
 static std::atomic<bool> storage_blocked{false}, storage_entered{false}, storage_released{false};
 static std::atomic<bool> full_cache_blocked{false};
+static std::atomic<int> quality_opens{0}, quality_stats{0};
+static std::atomic<bool> quality_blocked{false}, quality_entered{false}, quality_released{false};
+extern "C" FILE* __real_fopen(const char*, const char*);
+extern "C" FILE* __wrap_fopen(const char* path, const char* mode) {
+    if (!std::strcmp(path, "ux0:data/vitagram/video-quality.log")) {
+        ++quality_opens;
+        if (quality_blocked) {
+            quality_entered = true;
+            while (!quality_released) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    return __real_fopen(path, mode);
+}
 extern "C" int __real_stat(const char*, struct stat*);
 extern "C" int __wrap_stat(const char* name, struct stat* out) {
+    if (!std::strcmp(name, "ux0:data/vitagram/video-quality.log")) ++quality_stats;
     if ((storage_blocked && !std::strcmp(name, slow_media_path)) ||
         (full_cache_blocked && !std::strcmp(name, VITAGRAM_DB_DIR "/ui-cache.json"))) {
         storage_entered = true;
@@ -100,6 +117,327 @@ static json_t* parse(const char* text) { json_error_t e{}; auto* r=json_loads(te
 static void event(MediaUploads& u, const char* text, int64_t now) { auto* r=parse(text); u.process(r,now); json_decref(r); }
 int main() {
     use_test_language();
+
+    {
+        TelegramClient client;
+        client.optimizeCache(30, 512, true);
+        assert(client.outgoing_.empty() && !client.cacheMaintenance());
+        client.ready_ = true; client.current_chat_id_ = 42; client.worker_started_ = true;
+        client.optimizeCache(30, 512);
+        assert(client.outgoing_.empty()); // Automatic cleanup still waits until chats close.
+        for (int days : {1, 7, 30, 90, 0}) for (int mb : {128, 256, 512, 1024, 2048, 0}) {
+            client.optimizeCache(days, mb, true);
+            assert(client.cacheMaintenance() && client.cacheCleanupError().empty());
+            assert(client.outgoing_.size() == 1);
+            auto* request = parse(client.outgoing_.back().text.c_str());
+            assert(!std::strcmp(json_string_value(json_object_get(request, "@type")), "optimizeStorage"));
+            assert(json_integer_value(json_object_get(request, "ttl")) == (days ? days * 86400 : INT32_MAX));
+            assert(json_integer_value(json_object_get(request, "size")) == (mb ? (json_int_t)mb * 1024 * 1024 : ((json_int_t)1 << 52)));
+            assert(json_array_size(json_object_get(request, "file_types")) == 10);
+            json_decref(request);
+            client.optimizeCache(1, 128, true);
+            assert(client.outgoing_.size() == 1); // No duplicate operation while one is pending.
+            client.outgoing_.clear();
+            client.process(parse(R"({"@type":"storageStatistics","@extra":"cache_cleanup"})"));
+            assert(!client.cacheMaintenance() && client.cacheCleanupError().empty());
+        }
+        client.optimizeCache(7, 256, true);
+        client.outgoing_.clear();
+        client.process(parse(R"({"@type":"error","message":"Offline","@extra":"cache_cleanup"})"));
+        assert(!client.cacheMaintenance() && client.cacheCleanupError() == "Offline");
+        client.optimizeCache(90, 1024, true);
+        assert(client.cacheMaintenance() && client.cacheCleanupError().empty());
+        client.process(parse(R"({"@type":"storageStatistics","@extra":"cache_cleanup"})"));
+        client.worker_started_ = false;
+        std::puts("Cache cleanup: current limits, unlimited settings, open chat, offline, duplicate, failure and retry passed");
+    }
+
+    {
+        TelegramClient client;
+        client.current_chat_id_ = 42;
+        for (int i=0;i<8;++i) {
+            MessageItem track; track.id=i+1; track.voice=true; track.audio=true;
+            track.voice_file_id=100+i; track.voice_duration=60; track.voice_path="local.mp3";
+            client.messages_.push_back(track);
+        }
+        client.startAudioQueue(3);
+        assert(client.audio_queue_.size()==8 && client.audioTrack()->file==103);
+        assert(client.advanceAudioQueue(-1,false) && client.audioTrack()->file==102);
+        assert(client.advanceAudioQueue() && client.audioTrack()->file==103);
+        assert(client.audioTrackIndex(4)==3);
+        client.current_chat_id_=77;
+        assert(client.audioTrackIndex(4)==-1 && client.audioTrack()->file==103);
+        client.current_chat_id_=42;
+        client.shuffleAudioQueue();
+        assert(client.audioShuffle() && client.audioTrack()->file==103);
+        std::unordered_set<int> visited{103};
+        while (client.advanceAudioQueue()) assert(visited.insert(client.audioTrack()->file).second);
+        assert(visited.size()==8);
+        const auto last=client.audioTrack()->file;
+        assert(!client.advanceAudioQueue() && client.audioTrack()->file==last);
+        assert(client.advanceAudioQueue(-1,false));
+        assert(client.advanceAudioQueue(1,false) && client.audioTrack()->file==last);
+        client.cycleAudioRepeat();
+        assert(client.audioRepeat()==1 && client.advanceAudioQueue() && client.audioTrack()->file==103);
+        assert(client.advanceAudioQueue(-1,false) && client.audioTrack()->file==last);
+        client.cycleAudioRepeat();
+        assert(client.audioRepeat()==2 && client.advanceAudioQueue() && client.audioTrack()->file==last);
+        client.shuffleAudioQueue();
+        assert(!client.audioShuffle() && client.audioTrack()->file==last);
+        for (size_t i=1;i<client.audio_queue_.size();++i) assert(client.audio_queue_[i-1].message<client.audio_queue_[i].message);
+        client.cycleAudioRepeat(); assert(client.audioRepeat()==0);
+        client.startAudioQueue(0);
+        assert(!client.advanceAudioQueue(-1,false));
+        for (auto& track:client.audio_queue_) { track.path.clear(); client.pending_files_.insert(track.file); }
+        client.serviceAudioQueue();
+        assert(client.pending_files_.size()==2 && client.pending_files_.count(100) && client.pending_files_.count(101));
+        client.clearAudioQueue();
+        assert(!client.audioTrack() && !client.advanceAudioQueue() && client.pending_files_.empty());
+        client.messages_[3].voice_error="unavailable";
+        client.startAudioQueue(3); assert(!client.audioTrack());
+        client.messages_[3].voice_error.clear();
+        client.messages_[1].voice_file_id=client.messages_[0].voice_file_id;
+        client.startAudioQueue(1);
+        client.shuffleAudioQueue(); client.shuffleAudioQueue();
+        assert(client.audioTrack()->message==2);
+        for (int i=8;i<100;++i) {
+            auto track=client.messages_[0]; track.id=i+1; track.voice_file_id=100+i;
+            client.messages_.push_back(track);
+        }
+        client.startAudioQueue(80);
+        assert(client.audioTrack()->file==180 && client.audio_queue_.size()<=64);
+        assert(client.advanceAudioQueue(-1,false) && client.audioTrack()->file==179);
+        client.startAudioQueue(0); assert(client.audio_queue_.size()==64);
+    }
+
+    {
+        TelegramClient client;
+        client.ready_ = true;
+        ChatItem chat; chat.id = 42; chat.user_id = 77;
+        client.known_chats_.push_back(chat);
+        client.current_chat_id_ = 42;
+        assert(client.botMenu().empty());
+        assert(!client.followingBotReplies() && !client.takeBotReplyFocus());
+        auto update = [&](const char* wire) { client.process(parse(wire)); };
+        update(R"({"@type":"updateUserFullInfo","user_id":77,"user_full_info":{"bot_info":{"commands":[{"command":"help","description":"Помощь"}]}}})");
+        assert(client.botMenu().rows.size() == 1);
+        assert(client.botMenu().rows[0][0].value == "/help");
+        client.worker_started_ = true;
+        assert(client.activateBotButton(0, 0, 0, false));
+        assert(client.followingBotReplies() && client.takeBotReplyFocus() && !client.takeBotReplyFocus());
+        client.worker_started_ = false;
+        assert(client.outgoing_.size() == 1);
+        auto* command_request = parse(client.outgoing_.back().text.c_str());
+        assert(!std::strcmp(json_string_value(json_object_get(command_request, "@type")), "sendMessage"));
+        assert(json_integer_value(json_object_get(command_request, "chat_id")) == 42);
+        assert(!std::strcmp(json_string_value(json_object_get(json_object_get(json_object_get(command_request, "input_message_content"), "text"), "text")), "/help"));
+        json_decref(command_request); client.outgoing_.clear();
+        assert(client.inputKind() == InputKind::None);
+        assert(!client.activateBotButton(0, -1, 0, false));
+        assert(!client.activateBotButton(0, 1, 0, false));
+        assert(!client.takeBotReplyFocus());
+        update(R"({"@type":"updateChatReplyMarkup","chat_id":42,"reply_markup_message":{"id":123,"reply_markup":{"@type":"replyMarkupShowKeyboard","one_time":true,"rows":[[{"text":"Новости","type":{"@type":"keyboardButtonTypeText"}}]]}}})");
+        assert(client.botKeyboard().id == 123 && !client.botKeyboard().buttons.empty());
+        assert(!client.activateBotButton(122, 0, 0, true));
+        client.worker_started_ = true;
+        assert(client.activateBotButton(123, 0, 0, true));
+        assert(client.followingBotReplies() && client.takeBotReplyFocus());
+        client.worker_started_ = false;
+        assert(client.outgoing_.size() == 1);
+        auto* keyboard_request = parse(client.outgoing_.back().text.c_str());
+        assert(!std::strcmp(json_string_value(json_object_get(keyboard_request, "@type")), "sendMessage"));
+        assert(!std::strcmp(json_string_value(json_object_get(json_object_get(json_object_get(keyboard_request, "input_message_content"), "text"), "text")), "Новости"));
+        json_decref(keyboard_request); client.outgoing_.clear();
+        assert(!client.botKeyboard().buttons.empty()); // One-time hides the panel; the keyboard remains reopenable.
+        update(R"({"@type":"updateChatReplyMarkup","chat_id":42,"reply_markup_message":null})");
+        assert(client.botKeyboard().buttons.empty());
+        update(R"({"@type":"message","chat_id":42,"id":321,"content":{"@type":"messageText","text":{"text":"Choose"}},"reply_markup":{"@type":"replyMarkupInlineKeyboard","rows":[[{"text":"Callback","type":{"@type":"inlineKeyboardButtonTypeCallback","data":"AP8="}},{"text":"Link","type":{"@type":"inlineKeyboardButtonTypeUrl","url":"https://example.org"}}]]}})");
+        assert(client.messages().size() == 1);
+        assert(client.messages()[0].buttons.rows[0][0].value == "AP8=");
+        assert(client.activateBotButton(321, 0, 0, false));
+        assert(client.takeBotReplyFocus());
+        assert(client.activateBotButton(321, 0, 1, false));
+        assert(!client.takeBotReplyFocus());
+        assert(client.takeBotLink() == "https://example.org");
+        assert(client.takeBotLink().empty());
+        update(R"({"@type":"callbackQueryAnswer","text":"Long answer","show_alert":true,"@extra":{"kind":"bot_action","chat":42,"generation":0}})");
+        assert(client.takeBotAlert() == "Long answer");
+        assert(client.takeBotAlert().empty());
+        update(R"({"@type":"callbackQueryAnswer","text":"Stale","show_alert":true,"url":"https://example.org/stale","@extra":{"kind":"bot_action","chat":43,"generation":0}})");
+        assert(client.takeBotAlert().empty() && client.takeBotLink().empty());
+        update(R"({"@type":"callbackQueryAnswer","text":"Other topic","show_alert":true,"@extra":{"kind":"bot_action","chat":42,"generation":0,"topic":123}})");
+        assert(client.takeBotAlert().empty());
+        update(R"({"@type":"updateMessageEdited","chat_id":42,"message_id":321,"edit_date":1,"reply_markup":null})");
+        update(R"({"@type":"updateNewMessage","message":{"chat_id":42,"id":400,"content":{"@type":"messageText","text":{"text":"Bot result"}}}})");
+        assert(client.messages().back().id == 400 && client.followingBotReplies());
+        assert(client.messages()[0].buttons.empty());
+        assert(!client.activateBotButton(321, 0, 0, false));
+        assert(!client.takeBotReplyFocus());
+        update(R"({"@type":"updateUserFullInfo","user_id":77,"user_full_info":{"bot_info":{"commands":[]}}})");
+        assert(client.botMenu().empty());
+        update(R"({"@type":"updateUserFullInfo","user_id":77,"user_full_info":{"bot_info":{"menu_button":{"text":"App","url":"https://example.org/app"},"commands":[{"command":"help","description":"Help"}]}}})");
+        assert(client.botMenu().rows[0][0].type == "inlineKeyboardButtonTypeWebApp");
+        assert(client.botMenu().rows.size() == 2 && client.botMenu().rows[1][0].value == "/help");
+        assert(client.activateBotButton(0, 0, 0, false));
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Confirm);
+        assert(client.botWebApp().bot == 77 && !client.botWebApp().keyboard);
+        auto* theme = parse(R"({"@type":"themeParameters","background_color":0})");
+        client.openBotWebApp(theme); json_decref(theme);
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Loading);
+        const auto generation = client.bot_webapp_generation_;
+        auto* response = parse(R"({"@type":"webAppInfo","launch_id":"10001","url":{"@type":"webAppUrl","url":"https://example.org/app#signed","require_same_origin":true}})");
+        json_object_set_new(response, "@extra", json_pack("{s:s,s:I}", "kind", "bot_webapp", "generation", (json_int_t)generation));
+        client.process(response);
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Ready && client.botWebApp().launch == 10001);
+        assert(client.botWebApp().same_origin && !client.sendBotWebAppData("data"));
+        client.closeBotWebApp();
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Closed);
+        update(R"({"@type":"webAppUrl","url":"https://example.org/stale","@extra":{"kind":"bot_webapp","generation":0}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Closed);
+        update(R"({"@type":"updateChatReplyMarkup","chat_id":42,"reply_markup_message":{"id":456,"sender_id":{"@type":"messageSenderUser","user_id":77},"reply_markup":{"@type":"replyMarkupShowKeyboard","rows":[[{"text":"App","type":{"@type":"keyboardButtonTypeWebApp","url":"https://example.org"}}]]}}})");
+        assert(client.activateBotButton(456, 0, 0, true));
+        assert(client.botWebApp().keyboard);
+        client.bot_webapp_.phase = TelegramClient::BotWebApp::Ready;
+        assert(!client.sendBotWebAppData(std::string(4097, 'x')));
+        assert(!client.sendBotWebAppData(""));
+        assert(!client.sendBotWebAppData(std::string("prefix\0suffix", 13)));
+        assert(client.sendBotWebAppData("emoji 👩‍🚀 and \\\"quotes\\\""));
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Closed);
+        update(R"({"@type":"error","code":400,"message":"DATA_INVALID","@extra":{"kind":"bot_webapp_data","chat":42,"generation":0}})");
+        assert(client.takeBotAlert() == "DATA_INVALID");
+        update(R"({"@type":"user","id":77,"restriction_info":{"@type":"restrictionInfo"},"type":{"@type":"userTypeBot"}})");
+        assert(!client.activateBotButton(0, 0, 0, false));
+        assert(client.takeBotLink().empty());
+        client.focusBotReplies();
+        client.leaveChat();
+        assert(!client.followingBotReplies() && !client.takeBotReplyFocus());
+        assert(client.botMenu().empty() && client.botKeyboard().buttons.empty());
+        std::puts("Bots: availability, removal, one-time keyboard, callback data, URL, edits, stale source and chat exit passed");
+    }
+    {
+        TelegramClient client;
+        client.ready_ = client.worker_started_ = true;
+        client.current_chat_id_ = 42;
+        client.history_window_ = true;
+        MessageItem button; button.id = 10;
+        button.buttons.rows = {{{"Run", "inlineKeyboardButtonTypeCallback", "data"}}};
+        client.messages_.push_back(button);
+        assert(client.activateBotButton(10, 0, 0, false));
+        assert(!client.historyWindow() && client.followingBotReplies() && client.takeBotReplyFocus());
+        bool requested_latest = false;
+        for (const auto& outgoing : client.outgoing_) {
+            auto* request = parse(outgoing.text.c_str());
+            if (!std::strcmp(json_string_value(json_object_get(request, "@type")), "getChatHistory")) {
+                assert(json_integer_value(json_object_get(request, "from_message_id")) == 0);
+                requested_latest = true;
+            }
+            json_decref(request);
+        }
+        assert(requested_latest);
+        client.process(parse(R"({"@type":"updateNewMessage","message":{"chat_id":42,"id":500,"content":{"@type":"messageText","text":{"text":"Fresh bot result"}}}})"));
+        assert(client.messages().back().id == 500 && client.followingBotReplies());
+        client.focusBotReplies();
+        ++client.history_generation_;
+        assert(!client.followingBotReplies() && !client.takeBotReplyFocus());
+        client.worker_started_ = false;
+        std::puts("Bot focus: commands, replies, callbacks, latest history and stale generations passed");
+    }
+    {
+        TelegramClient client;
+        client.ready_ = client.worker_started_ = true;
+        client.current_chat_id_ = 42;
+        auto request = [&]() { assert(!client.outgoing_.empty()); return parse(client.outgoing_.back().text.c_str()); };
+        auto reply = [&](const char* body) {
+            auto* req = request();
+            auto* response = parse(body);
+            json_object_set(response, "@extra", json_object_get(req, "@extra"));
+            json_decref(req); client.outgoing_.clear(); client.process(response);
+        };
+        auto main_link = [&] {
+            MessageItem message; message.id = 100;
+            message.buttons.rows = {{{"Open", "inlineKeyboardButtonTypeUrl", "https://t.me/example_bot?startapp=preserve_me&mode=compact"}}};
+            client.messages_ = {message};
+            assert(client.activateBotButton(100, 0, 0, false));
+            assert(client.openTelegramLink(client.takeBotLink()));
+            auto* req = request(); assert(MediaUploads::string(req, "@type") == "getInternalLinkType"); json_decref(req);
+            reply(R"({"@type":"internalLinkTypeMainWebApp","bot_username":"example_bot","start_parameter":"preserve_me","mode":{"@type":"webAppOpenModeCompact"}})");
+            req = request(); assert(MediaUploads::string(req, "@type") == "searchPublicChat"); json_decref(req);
+            reply(R"({"@type":"chat","id":77,"type":{"@type":"chatTypePrivate","user_id":77}})");
+        };
+        main_link();
+        reply(R"({"@type":"user","id":77,"first_name":"Bot","type":{"@type":"userTypeBot","has_main_web_app":true}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Confirm && client.currentChatId() == 42);
+        assert(client.outgoing_.empty()); // No signed URL or write permission before consent.
+        auto* theme = parse(R"({"@type":"themeParameters","background_color":0})");
+        client.openBotWebApp(theme);
+        auto* req = request();
+        assert(MediaUploads::string(req, "@type") == "getMainWebApp");
+        assert(MediaUploads::string(req, "start_parameter") == "preserve_me");
+        assert(MediaUploads::number(req, "bot_user_id") == 77 && MediaUploads::number(req, "chat_id") == 42);
+        assert(MediaUploads::string(json_object_get(json_object_get(req,"parameters"),"mode"),"@type") == "webAppOpenModeCompact");
+        assert(!json_object_get(req,"url")); json_decref(req);
+        reply(R"({"@type":"mainWebApp","url":{"@type":"webAppUrl","url":"https://example.org/#signed","require_same_origin":true},"mode":{"@type":"webAppOpenModeCompact"}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Ready && client.botWebApp().same_origin);
+        assert(client.botWebApp().signed_url == "https://example.org/#signed");
+
+        assert(client.openTelegramLink("https://t.me/example_bot/shop?startapp=order"));
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Closed); // New navigation cancels the old session.
+        reply(R"({"@type":"internalLinkTypeWebApp","bot_username":"example_bot","web_app_short_name":"shop","start_parameter":"order","mode":{"@type":"webAppOpenModeFullSize"}})");
+        reply(R"({"@type":"chat","id":77,"type":{"@type":"chatTypePrivate","user_id":77}})");
+        reply(R"({"@type":"user","id":77,"type":{"@type":"userTypeBot"}})");
+        req = request(); assert(MediaUploads::string(req,"@type") == "searchWebApp"); json_decref(req);
+        reply(R"({"@type":"foundWebApp","web_app":{"@type":"webApp","short_name":"shop","title":"Shop"},"request_write_access":true,"skip_confirmation":false})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Confirm && client.botWebApp().label == "Shop");
+        client.openBotWebApp(theme);
+        req = request();
+        assert(MediaUploads::string(req,"@type") == "getWebAppLinkUrl");
+        assert(MediaUploads::string(req,"web_app_short_name") == "shop" && MediaUploads::string(req,"start_parameter") == "order");
+        assert(json_is_false(json_object_get(req,"allow_write_access"))); json_decref(req);
+        reply(R"({"@type":"webAppUrl","url":"https://example.org/shop#signed","require_same_origin":false})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Ready && !client.botWebApp().same_origin);
+
+        main_link();
+        client.closeBotWebApp();
+        reply(R"({"@type":"user","id":77,"type":{"@type":"userTypeBot","has_main_web_app":true}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Closed && client.outgoing_.empty());
+        main_link();
+        reply(R"({"@type":"user","id":77,"type":{"@type":"userTypeRegular"}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Failed && client.outgoing_.empty());
+        main_link();
+        reply(R"({"@type":"user","id":77,"restriction_info":{"@type":"restrictionInfo"},"type":{"@type":"userTypeBot","has_main_web_app":true}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Failed && client.outgoing_.empty());
+        main_link();
+        reply(R"({"@type":"user","id":77,"type":{"@type":"userTypeBot","has_main_web_app":false}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Failed && client.outgoing_.empty());
+        main_link();
+        reply(R"({"@type":"error","code":400,"message":"USER_NOT_FOUND"})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Failed && client.outgoing_.empty());
+
+        assert(client.openTelegramLink("https://t.me/example_bot?startapp=old"));
+        req = request(); auto* old = parse(R"({"@type":"internalLinkTypeMainWebApp","bot_username":"example_bot","mode":{"@type":"webAppOpenModeFullSize"}})");
+        json_object_set(old,"@extra",json_object_get(req,"@extra")); json_decref(req);
+        client.openChat(43,"Other"); client.outgoing_.clear(); client.process(old);
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Closed && client.outgoing_.empty());
+        assert(client.openTelegramLink("https://t.me/example_bot?start=ordinary"));
+        reply(R"({"@type":"internalLinkTypeBotStart","bot_username":"example_bot","start_parameter":"ordinary"})");
+        req = request(); assert(MediaUploads::string(req,"@type") == "searchPublicChat"); json_decref(req);
+        client.outgoing_.clear();
+        assert(!client.openTelegramLink("https://evil.test/t.me/example_bot?startapp=x"));
+        assert(!client.openTelegramLink("https://t.me/example_bot?startapp=x\n"));
+        assert(!client.openTelegramLink(std::string("https://t.me/example_bot?startapp=x") + '\0' + "suffix"));
+        assert(client.openTelegramLink("https://t.me/example_bot?startapp=x"));
+        reply(R"({"@type":"internalLinkTypeMainWebApp","bot_username":"example_bot","mode":{"@type":"invalid"}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Failed && client.outgoing_.empty());
+        assert(client.openTelegramLink("tg://resolve?domain=example_bot&startapp=deep"));
+        req = request(); assert(MediaUploads::string(req,"@type") == "getInternalLinkType"); json_decref(req);
+        reply(R"({"@type":"internalLinkTypeMainWebApp","bot_username":"example_bot","start_parameter":"deep","mode":{"@type":"webAppOpenModeFullScreen"}})");
+        reply(R"({"@type":"chat","id":77,"type":{"@type":"chatTypePrivate","user_id":77}})");
+        reply(R"({"@type":"user","id":77,"type":{"@type":"userTypeBot","has_main_web_app":true}})");
+        assert(client.botWebApp().phase == TelegramClient::BotWebApp::Confirm && client.botWebApp().start_parameter == "deep");
+        assert(client.botWebApp().mode == "webAppOpenModeFullScreen");
+        json_decref(theme); client.worker_started_ = false;
+        std::puts("Mini App links: main/named apps, bot validation, consent, parameters, signed URLs, cancellation, stale replies and ordinary links passed");
+    }
     {
         TelegramClient client;
         auto colors = parse(R"({"@type":"updateAccentColors","colors":[{"id":8,"light_theme_colors":[1122867,4478310,7833753],"dark_theme_colors":[11189196,14544639]}]})");
@@ -1242,6 +1580,190 @@ int main() {
     }
 
     auto* video_message=parse(R"({"@type":"message","id":66,"chat_id":42,"content":{"@type":"messageVideo","video":{"width":1920,"height":1080,"duration":20,"video":{"id":100,"size":200000000,"local":{"is_downloading_completed":true,"path":"original.mp4"}}},"alternative_videos":[{"width":640,"height":360,"codec":"h264","video":{"id":101,"size":2000000}},{"width":320,"height":180,"codec":"h264","video":{"id":102,"size":1000000}},{"width":160,"height":90,"codec":"av1","video":{"id":103,"size":500000}},{"width":320,"height":180,"codec":"h264","video":{"id":104,"size":800000},"hls_file":{"id":999}}]}})");
+    // Preference caps select the largest eligible raster; ties keep the smaller file.
+    for (int quality = 1; quality <= 3; ++quality) {
+        tg.setVideoQuality(quality);
+        assert(tg.parseMessage(video_message).animation_file_id == 101);
+    }
+    {
+        auto* original_only = parse(R"({"content":{"@type":"messageVideo","video":{"width":854,"height":480,"video":{"id":200,"size":1000000}},"alternative_videos":[{"width":1280,"height":720,"codec":"h264","video":{"id":201,"size":2000000}}]}})");
+        tg.setVideoQuality(1); // No variant below the maximum: do not download a larger one.
+        const auto blocked = tg.parseMessage(original_only);
+        assert(!blocked.animation_error.empty() && blocked.video_variants.empty());
+        tg.setVideoQuality(2);
+        assert(tg.parseMessage(original_only).animation_file_id == 200);
+        tg.setVideoQuality(3);
+        assert(tg.parseMessage(original_only).animation_file_id == 201);
+        json_decref(original_only);
+    }
+    auto* quality_content = json_object_get(video_message, "content");
+    auto* quality_variants = json_object_get(quality_content, "alternative_videos");
+    json_array_append_new(quality_variants, parse(R"({"width":854,"height":480,"codec":"h264","video":{"id":105,"size":3000000}})"));
+    json_array_append_new(quality_variants, parse(R"({"width":1280,"height":720,"codec":"h264","video":{"id":106,"size":4000000}})"));
+    json_array_append_new(quality_variants, parse(R"({"width":720,"height":1280,"codec":"h264","video":{"id":107,"size":1000000}})"));
+    {
+        const auto qualities = VideoQuality::available(quality_content, 3);
+        assert(qualities.size() == 4 && qualities.back().width == 1280 && qualities.back().height == 720);
+        const auto full_hd = VideoQuality{json_object_get(json_object_get(quality_content,"video"),"video"),1920,1080,false};
+        assert(!std::strcmp(VideoQuality::exclusion(full_hd,3),"hardware_raster"));
+        auto* highest = json_array_get(quality_variants,5);
+        const VideoQuality q{json_object_get(highest,"video"),1280,720,true};
+        assert(!VideoQuality::exclusion(q,3));
+        assert(!std::strcmp(VideoQuality::exclusion(q,2),"quality_limit"));
+        FILE* log=std::tmpfile(); assert(log);
+        VideoQuality::diagnose(log,quality_content,3);
+        std::rewind(log);
+        char buffer[4096]{};
+        const auto bytes=std::fread(buffer,1,sizeof(buffer)-1,log);
+        assert(bytes && std::strstr(buffer,"width=1280 height=720 bytes=4000000 h264=1 result=allowed"));
+        assert(std::strstr(buffer,"result=unsupported_codec") && std::strstr(buffer,"result=hardware_raster"));
+        std::fclose(log);
+    }
+    {
+        TelegramClient client;
+        client.video_quality_ = 3;
+        const auto mask = diag_log::mask().load();
+        diag_log::set_mask(mask | (1u << static_cast<unsigned>(diag_log::Kind::Video)));
+        const int opened = quality_opens, stated = quality_stats;
+        assert(client.parseMessage(video_message).animation_file_id == 106);
+        assert(quality_opens == opened && quality_stats == stated && client.video_quality_logs_.size() == 1);
+        assert(client.video_quality_logs_.front().find("width=1280 height=720") != std::string::npos);
+        quality_blocked = true; quality_entered = quality_released = false;
+        std::thread disk([&] { client.flushVideoQualityLogs(); });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!quality_entered && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        auto parsed = std::async(std::launch::async, [&] { return client.parseMessage(video_message).animation_file_id; });
+        const bool responsive = parsed.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready;
+        quality_released = true; disk.join(); quality_blocked = false;
+        assert(quality_entered && responsive && parsed.get() == 106);
+        assert(client.video_quality_logs_.size() == 1); // Enqueue during blocked output belongs to the next batch.
+        client.flushVideoQualityLogs();
+        assert(client.video_quality_logs_.empty());
+        FILE* log = __real_fopen("ux0:data/vitagram/video-quality.log", "rb"); assert(log);
+        std::string output; char line[512]; while (std::fgets(line, sizeof(line), log)) output += line;
+        std::fclose(log);
+        assert(output.find("message=66 maximum=3") != std::string::npos);
+        assert(output.find("width=1280 height=720") != std::string::npos);
+        for (int i = 0; i < 70; ++i) client.parseMessage(video_message);
+        assert(client.video_quality_logs_.size() == 64);
+        auto* huge = json_deep_copy(quality_content);
+        auto* variants = json_object_get(huge, "alternative_videos");
+        for (int i = 0; i < 200; ++i) json_array_append(variants, json_array_get(variants, 0));
+        const auto bounded = VideoQuality::diagnostic(huge, 3);
+        assert(bounded.size() <= 8192 && bounded.find("omitted_variants=1") != std::string::npos);
+        json_decref(huge);
+        diag_log::set_mask(mask & ~(1u << static_cast<unsigned>(diag_log::Kind::Video)));
+        const int before_disable = quality_opens;
+        client.flushVideoQualityLogs();
+        client.parseMessage(video_message);
+        assert(client.video_quality_logs_.empty() && quality_opens == before_disable);
+        diag_log::set_mask(mask);
+        std::puts("Video quality log: no UI disk access, stalled writer isolation, bounded snapshots and disabled logging passed");
+    }
+    for (int quality = 0; quality <= 3; ++quality) {
+        tg.setVideoQuality(quality);
+        const int files[] = {104, 101, 105, 106};
+        assert(tg.parseMessage(video_message).animation_file_id == files[quality]);
+    }
+    {
+        TelegramClient player;
+        player.ready_ = true; player.worker_started_ = true; player.current_chat_id_ = 42;
+        player.setVideoQuality(3);
+        const auto full = player.parseMessage(video_message);
+        assert(full.animation_file_id == 106 && full.video_variants.size() == 4);
+        player.messages_ = player.history_items_ = {full};
+        player.setAnimationTarget(0);
+        player.outgoing_.clear();
+        assert(player.selectVideoQuality(0, 1));
+        assert(player.messages_[0].animation_file_id == 101 && player.history_items_[0].animation_file_id == 101);
+        player.setAnimationTarget(0);
+        assert(player.outgoing_.size() == 2);
+        auto* cancelled = parse(player.outgoing_[0].text.c_str());
+        auto* requested = parse(player.outgoing_[1].text.c_str());
+        assert(MediaUploads::string(cancelled, "@type") == "cancelDownloadFile" && MediaUploads::number(cancelled, "file_id") == 106);
+        assert(MediaUploads::string(requested, "@type") == "downloadFile" && MediaUploads::number(requested, "file_id") == 101);
+        json_decref(cancelled); json_decref(requested);
+        assert(player.parseMessage(video_message).animation_file_id == 101);
+        assert(!player.selectVideoQuality(-1, 0) && !player.selectVideoQuality(0, 4) && !player.selectVideoQuality(0, 1));
+        auto* extra_quality = json_deep_copy(video_message);
+        auto* extra_alts = json_object_get(json_object_get(extra_quality, "content"), "alternative_videos");
+        json_array_append_new(extra_alts, parse(R"({"width":426,"height":240,"codec":"h264","video":{"id":108,"size":1500000}})"));
+        const auto all = player.parseMessage(extra_quality);
+        assert(all.video_variants.size() == 5 && all.animation_file_id == 101);
+        assert(all.video_variants[1].height == 240); // Offer intermediate qualities too, not only fixed presets.
+        json_decref(extra_quality);
+        player.setVideoQuality(1);
+        assert(!player.selectVideoQuality(0, 3));
+        const auto capped = player.parseMessage(video_message);
+        assert(capped.animation_file_id == 101 && capped.video_variants.size() == 2);
+        player.messages_[0].animation_error = "download grew beyond the size limit";
+        assert(player.selectVideoQuality(0, 0));
+        assert(player.messages_[0].animation_file_id == 104 && player.messages_[0].animation_error.empty());
+        json_object_set_new(quality_content, "is_secret", json_true());
+        const auto secret = player.parseMessage(video_message);
+        assert(!secret.animation_error.empty() && secret.video_variants.empty());
+        json_object_del(quality_content, "is_secret");
+        json_object_set_new(video_message, "chat_id", json_integer(99));
+        assert(player.parseMessage(video_message).animation_file_id == 101); // Other chats keep their own choice.
+        json_object_set_new(video_message, "chat_id", json_integer(42));
+        player.ready_ = false; player.worker_started_ = false;
+        std::puts("Player quality: per-message selection, maximum, deduplication, history, cancellation and download IDs passed");
+    }
+    // Metadata from the reported 720p stream must reach download and stay valid on file updates.
+    {
+        auto* large = json_deep_copy(video_message);
+        auto* content = json_object_get(large,"content");
+        auto* alternatives = json_object_get(content,"alternative_videos");
+        auto* file = json_object_get(json_array_get(alternatives,5),"video");
+        json_object_set_new(file,"size",json_integer(170190135));
+        TelegramClient player;
+        player.ready_=true; player.worker_started_=true; player.current_chat_id_=42;
+        player.setVideoQuality(3);
+        const auto message=player.parseMessage(large);
+        assert(message.animation_file_id==106 && message.animation_error.empty());
+        player.messages_=player.history_items_={message};
+        player.setAnimationTarget(0);
+        const auto old_diag_mask = diag_log::mask().load();
+        diag_log::set_mask(old_diag_mask | (1u << static_cast<unsigned>(diag_log::Kind::Performance)));
+        player.messages_[0].animation_stream = std::make_shared<download_stream::State>(106);
+        player.messages_[0].animation_stream->update("large.mp4", 170190135, 0, 0, false);
+        player.setAnimationTarget(0);
+        player.animation_rate_at_ -= 1000000;
+        player.messages_[0].animation_downloaded = 1024;
+        player.messages_[0].animation_stream->update("large.mp4", 170190135, 0, 512, false);
+        performance::collector().take(performance::now());
+        player.setAnimationTarget(0);
+        auto rates = performance::collector().take(performance::now());
+        assert(rates.get(performance::Metric::VideoDownloadRate).maximum > 900);
+        assert(rates.get(performance::Metric::VideoPrefixRate).maximum > 450);
+        player.animation_rate_at_ -= 1000000;
+        player.setAnimationTarget(0);
+        rates = performance::collector().take(performance::now());
+        assert(rates.get(performance::Metric::VideoDownloadRate).count == 1 &&
+               rates.get(performance::Metric::VideoDownloadRate).maximum == 0);
+        diag_log::set_mask(old_diag_mask);
+        auto* request=parse(player.outgoing_.back().text.c_str());
+        assert(MediaUploads::number(request,"file_id")==106);
+        json_decref(request);
+        auto* update=parse(R"({"@type":"updateFile","file":{"@type":"file","id":106,"size":170190135,"local":{"path":"large.mp4","downloaded_size":170190135,"is_downloading_completed":true}}})");
+        player.process(update); json_decref(update);
+        assert(player.messages_[0].animation_error.empty() && player.messages_[0].animation_downloaded==170190135);
+        json_object_set_new(file,"size",json_integer(media_limits::video_bytes));
+        assert(player.parseMessage(large).animation_error.empty());
+        json_object_set_new(file,"size",json_integer(media_limits::video_bytes+1));
+        assert(player.parseMessage(large).animation_file_id!=106);
+        player.ready_=false; player.worker_started_=false;
+        json_decref(large);
+    }
+    // Over-limit files and unsupported codecs cannot win at the highest preference.
+    auto* highest = json_object_get(json_array_get(quality_variants, 5), "video");
+    json_object_set_new(highest, "size", json_integer(media_limits::video_bytes + 1));
+    assert(tg.parseMessage(video_message).animation_file_id == 105);
+    json_object_set_new(json_array_get(quality_variants, 4), "codec", json_string("av1"));
+    assert(tg.parseMessage(video_message).animation_file_id == 101);
+    for (int i = 0; i < 3; ++i) json_array_remove(quality_variants, 4);
+    tg.setVideoQuality(0);
     auto small=tg.parseMessage(video_message);
     assert(small.animation_file_id==104 && small.video_width==320 && small.video_height==180);
     assert(small.animation_size==800000 && small.animation_error.empty() && small.animation_path.empty() && small.video_alternative);
@@ -1249,6 +1771,25 @@ int main() {
     auto* download=parse(tg.outgoing_.back().text.c_str());
     assert(MediaUploads::string(download,"@type")=="downloadFile" && MediaUploads::number(download,"file_id")==104);
     json_decref(download);
+    {
+        TelegramClient background;
+        background.ready_ = true; background.worker_started_ = true;
+        background.messages_ = {small};
+        background.setAnimationTarget(0);
+        background.setBackgroundMedia(0, small.animation_file_id);
+        background.outgoing_.clear();
+        background.setAnimationTarget(-1);
+        assert(background.outgoing_.empty());
+        assert(background.pending_files_.count(small.animation_file_id));
+        background.setBackgroundMedia(0, 0);
+        assert(background.outgoing_.size() == 1);
+        auto* cancel = parse(background.outgoing_.back().text.c_str());
+        assert(MediaUploads::string(cancel, "@type") == "cancelDownloadFile");
+        assert(MediaUploads::number(cancel, "file_id") == small.animation_file_id);
+        json_decref(cancel);
+        background.ready_ = false; background.worker_started_ = false;
+        std::puts("Background video: navigation keeps downloading; closing the player cancels the retired download");
+    }
     auto* video_content=json_object_get(video_message,"content");
     // Spoiler consent gates full media, including the minimum-quality alternative.
     {
@@ -1291,7 +1832,11 @@ int main() {
     assert(original.animation_file_id==100 && !original.video_alternative && !original.animation_error.empty());
     // Unknown size still permits the lowest resolution; unavailable files do not.
     json_object_set_new(video_content,"alternative_videos",parse(R"([{"width":256,"height":144,"codec":"h264","video":{"id":110}},{"width":160,"height":90,"codec":"h264","video":{"id":0}},{"width":0,"height":0,"codec":"h264","video":{"id":111}}])"));
-    assert(tg.parseMessage(video_message).animation_file_id==110);
+    for (int quality = 0; quality <= 3; ++quality) {
+        tg.setVideoQuality(quality);
+        assert(tg.parseMessage(video_message).animation_file_id == 110);
+    }
+    tg.setVideoQuality(0);
     json_decref(video_message);
     auto* circle=parse(R"({"content":{"@type":"messageVideoNote","video_note":{"length":240,"video":{"id":120,"size":1000}}}})");
     auto note=tg.parseMessage(circle); json_decref(circle);

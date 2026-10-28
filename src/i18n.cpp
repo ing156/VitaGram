@@ -1,4 +1,5 @@
 #include "i18n.h"
+#include "keyboard_languages.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -24,6 +25,8 @@ struct State {
     std::mutex mutex;
     std::string directory;
     std::vector<Language> languages;
+    std::map<std::string, std::string> paths;
+    std::map<std::string, std::map<std::string, std::string>> metadata;
     std::string current = "en";
     std::shared_ptr<const Table> active = std::make_shared<Table>();
     std::shared_ptr<const Table> english = active;
@@ -89,8 +92,13 @@ bool read_file(const std::string& path, std::string& data) {
     char buffer[4096];
     size_t count;
     data.clear();
-    while ((count = std::fread(buffer, 1, sizeof(buffer), file)) > 0) data.append(buffer, count);
+    while ((count = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        if (data.size() + count > 512 * 1024) { std::fclose(file); data.clear(); return false; }
+        data.append(buffer, count);
+    }
+    const bool failed = std::ferror(file);
     std::fclose(file);
+    if (failed) { data.clear(); return false; }
     if (data.compare(0, 3, "\xEF\xBB\xBF") == 0) data.erase(0, 3);
     return true;
 }
@@ -106,7 +114,7 @@ void parse(const std::string& data, Fn&& fn) {
         pos = end + 1;
         if (line.empty() || line[0] == '#') continue;
         size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == std::string::npos || trim(line.substr(0, eq)).empty()) continue;
         std::string value = trim(line.substr(eq + 1));
         // "…" keeps leading/trailing spaces: key = " text "
         if (value.size() >= 2 && value.front() == '"' && value.back() == '"') value = value.substr(1, value.size() - 2);
@@ -114,23 +122,31 @@ void parse(const std::string& data, Fn&& fn) {
     }
 }
 
-std::string file_path(const std::string& code) { return state().directory + "/" + code + ".lang"; }
+std::string file_path(const std::string& code) {
+    const auto at = state().paths.find(code);
+    return at == state().paths.end() ? state().directory + "/" + code + ".lang" : at->second;
+}
 
 std::shared_ptr<const Table> load_table(const std::string& file_code) {
     std::string data;
     auto table = std::make_shared<Table>();
-    if (!read_file(file_path(file_code), data)) return table;
-    parse(data, [&](const std::string& key, const std::string& value) {
-        if (key[0] != '@') (*table)[key] = expand_icons(unescape(value));
-        return true;
-    });
+    const std::string base = state().directory + "/" + file_code + ".lang";
+    const std::string selected = file_path(file_code);
+    for (const auto& path : {base, selected}) {
+        if (!read_file(path, data)) continue;
+        parse(data, [&](const std::string& key, const std::string& value) {
+            if (key[0] != '@') (*table)[key] = expand_icons(unescape(value));
+            return true;
+        });
+        if (base == selected) break;
+    }
     return table;
 }
 
 std::vector<std::string> list_lang_files(const std::string& directory) {
     std::vector<std::string> codes;
     auto add = [&](const std::string& name) {
-        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".lang") == 0)
+        if (codes.size() < 256 && name.size() > 5 && name.compare(name.size() - 5, 5, ".lang") == 0)
             codes.push_back(name.substr(0, name.size() - 5));
     };
 #ifdef __vita__
@@ -159,12 +175,6 @@ const Language* find_language(const std::vector<Language>& languages, const std:
     for (const auto& l : languages) if (lower(l.code) == base_of(wanted)) return &l;
     for (const auto& l : languages) if (base_of(lower(l.code)) == base_of(wanted)) return &l;
     return nullptr;
-}
-
-// file name of the language (the code from the header may differ in case only).
-std::string file_code_for(const std::string& directory, const std::string& code) {
-    for (const auto& file : list_lang_files(directory)) if (lower(file) == lower(code)) return file;
-    return code;
 }
 
 }  // namespace
@@ -201,33 +211,58 @@ std::string systemLanguage() {
 #endif
 }
 
-void init(const std::string& directory, const std::string& preference) {
+void init(const std::string& directory, const std::string& preference, const std::string& custom_directory) {
     State& s = state();
     std::vector<Language> found;
-    for (const auto& file : list_lang_files(directory)) {
-        Language language{file, file};
-        std::string data;
-        if (read_file(directory + "/" + file + ".lang", data)) {
+    std::map<std::string, std::string> paths;
+    std::map<std::string, std::map<std::string, std::string>> metadata;
+    for (const auto& folder : {directory, custom_directory}) {
+        if (folder.empty()) continue;
+        for (const auto& file : list_lang_files(folder)) {
+            if (file.size() > 64 || !std::all_of(file.begin(), file.end(), [](unsigned char c) {
+                return std::isalnum(c) || c == '-' || c == '_';
+            })) continue;
+            if (found.size() >= 64 && paths.find(file) == paths.end()) continue;
+            Language language{file, file};
+            std::string data;
+            if (!read_file(folder + "/" + file + ".lang", data)) continue;
+            std::map<std::string, std::string> headers;
             parse(data, [&](const std::string& key, const std::string& value) {
-                if (key == "@code" && !value.empty()) language.code = value;
-                else if (key == "@name" && !value.empty()) language.name = value;
-                return key[0] == '@';  // directives come first
+                if (key[0] == '@' && key.size() <= 80 && value.size() <= 4096 && headers.size() < 128) headers[key] = unescape(value);
+                return true;
             });
+            // File identity is authoritative: headers cannot redirect reads to another path.
+            if (headers.count("@code") && lower(headers["@code"]) != lower(file)) continue;
+            if (!headers["@name"].empty()) language.name = headers["@name"];
+            auto at = std::find_if(found.begin(), found.end(), [&](const Language& item) { return lower(item.code) == lower(file); });
+            if (at == found.end()) found.push_back(language);
+            else { language.code = at->code; *at = language; }
+            paths[language.code] = folder + "/" + file + ".lang";
+            for (auto& header : headers) metadata[language.code][header.first] = std::move(header.second);
         }
-        found.push_back(language);
     }
-    std::string english_file = file_code_for(directory, "en");
+    auto& keyboard_codes = keyboard_languages::registry();
+    keyboard_codes = keyboard_languages::native();
+    for (const auto& language : found)
+        if (!keyboard_languages::contains(keyboard_codes, language.code) &&
+            !metadata[language.code]["@keyboard.rows"].empty()) keyboard_codes.push_back(language.code);
     {
         std::lock_guard<std::mutex> lock(s.mutex);
-        s.directory = directory;
-        s.languages = found;
+        s.directory = directory; s.languages = std::move(found);
+        s.paths = std::move(paths); s.metadata = std::move(metadata);
     }
-    auto english = load_table(english_file);
+    auto english = load_table("en");
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         s.english = english;
     }
     select(preference);
+}
+
+std::map<std::string, std::string> directives(const std::string& code) {
+    std::lock_guard<std::mutex> lock(state().mutex);
+    const auto at = state().metadata.find(code);
+    return at == state().metadata.end() ? std::map<std::string, std::string>{} : at->second;
 }
 
 std::string resolve(const std::string& preference) {
@@ -251,15 +286,13 @@ std::string resolve(const std::string& preference) {
 bool select(const std::string& preference) {
     State& s = state();
     std::vector<Language> languages;
-    std::string directory;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         languages = s.languages;
-        directory = s.directory;
     }
     const bool known = preference.empty() || find_language(languages, preference);
     const std::string code = resolve(preference);
-    auto table = load_table(file_code_for(directory, code));
+    auto table = load_table(code);
     std::lock_guard<std::mutex> lock(s.mutex);
     s.current = code;
     s.active = table;

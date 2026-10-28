@@ -95,7 +95,7 @@ int main() {
     assert(picker.hit(ThemePicker::left + 5, ThemePicker::top + ThemePicker::header + (std::min(picker.count,ThemePicker::visible) - 1) * ThemePicker::row_height) == picker.count - 1);
     picker.scroll(-picker.count);
     assert(picker.first == 0 && picker.focused < ThemePicker::visible);
-    for(int count:{5,7,16}) {
+    for(int count:{1,5,7,16,65}) {
         picker.count=count;picker.open(count-1);
         assert(picker.first==std::max(0,count-ThemePicker::visible));
         if(count<ThemePicker::visible)assert(picker.hit(ThemePicker::left,ThemePicker::top+ThemePicker::header+count*ThemePicker::row_height)==-1);

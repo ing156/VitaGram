@@ -2,6 +2,25 @@
 @code = pt-PT
 @name = Português (Portugal)
 
+# Keyboard data (UTF-8 characters; rows separated by |).
+@keyboard.symbols.0 = 1234567890!@#$
+@keyboard.symbols.1 = %^&*()-_=+[]{}
+@keyboard.symbols.2 = \\|;:'",.<>/?`~
+@keyboard.popup., = ;:
+@keyboard.popup.. = ?!…
+@keyboard.badge = PT
+@keyboard.rows = qwertyuiop|asdfghjkl|zxcvbnm
+@keyboard.upper.lower = abcdefghijklmnopqrstuvwxyzßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿāąćēęğīıĳłńōœśşšūźżžəɜабвгдежзийклмнопрстуфхцчшщъыьэюяё
+@keyboard.upper.upper = ABCDEFGHIJKLMNOPQRSTUVWXYZẞÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝŸĀĄĆĒĘĞĪIĲŁŃŌŒŚŞŠŪŹŻŽƏꞫАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ
+@keyboard.digits = 1234567890
+@keyboard.digit_start = 0
+@keyboard.popup.a = áãàâª
+@keyboard.popup.e = éê
+@keyboard.popup.i = í
+@keyboard.popup.o = óõôº
+@keyboard.popup.u = úü
+@keyboard.popup.c = ç
+
 account.cleanup_blocked = Não foi possível apagar os dados da conta anterior. Liberte o acesso ao cartão de memória e reinicie a aplicação.
 account.delete_incomplete = Não foi possível apagar todos os dados. A limpeza será repetida na próxima abertura.
 account.deleted = Dados da conta apagados. Reinicie o VitaGram para iniciar sessão.
@@ -19,7 +38,7 @@ anim.gpu_video = Memória gráfica insuficiente para o vídeo
 anim.limit_720p = A animação excede o limite de pixels de 720p
 anim.limit_720p_media = O vídeo/animação excede o limite de pixels de 720p
 anim.limit_gif = Limite de GIF: 20 MiB
-anim.limit_video = Limite de vídeo: 128 MiB
+anim.limit_video = Limite de vídeo: 1024 MiB
 anim.media_open = Não foi possível abrir o ficheiro multimédia
 anim.memory = Memória insuficiente para a animação
 anim.nv12_failed = Falha ao criar a textura NV12
@@ -725,7 +744,7 @@ link.confirm_title = Abrir esta ligação?
 link.cancel = Cancelar
 link.proceed = Abrir
 
-settings.gyroscope = Giroscópio
+settings.gyroscope = Giroscópio na visualização de fotos
 menu.rotate_left = {l}  Rodar à esquerda
 menu.rotate_right = {r}  Rodar à direita
 
@@ -960,3 +979,106 @@ history.open_retry = {cross} Retry   {circle} Back
 history.open_timeout = Telegram did not respond in time. Check your connection and retry.
 history.target_missing = The message is unavailable or has been deleted.
 history.target_offline = The message is not in the device cache. Connect to Telegram and retry.
+
+# Bot controls
+bot.menu = Menu
+bot.keyboard = Teclado do bot
+bot.buttons = Botões do bot
+bot.select_hint = {select}: botões do bot
+bot.panel_hint = {cross} Escolher   {circle} Voltar   Esquerda/Direita: página
+bot.empty = Sem botões disponíveis
+bot.wait = A aguardar o bot…
+bot.unsupported = Este tipo de botão ainda não é suportado. Não foram enviados dados.
+bot.webapp_unavailable = As Mini Apps precisam de um navegador integrado com a ponte JavaScript do Telegram.
+sticker.open_set = Abrir conjunto de stickers / emojis
+sticker.add_set = Adicionar conjunto
+sticker.add_set_hint = {triangle} Adicionar conjunto
+sticker.installed = Conjunto adicionado
+sticker.no_set = Este emoji não tem conjunto
+sticker.preview_set = Deslize para aqui e solte para abrir o conjunto
+bot.back = {circle} Voltar
+bot.response = Resposta do bot
+
+# Internal Mini Apps
+webapp.confirm = Abrir esta miniaplicação? O bot receberá dados do perfil do Telegram e o tema atual.
+webapp.input = Introduzir texto
+webapp.hint = Analógico esquerdo / Direções: cursor · L/R: deslocar · Quadrado: escrever
+webapp.bridge_error = Demasiados comandos da miniaplicação.
+webapp.data_error = A miniaplicação não pode enviar estes dados.
+webapp.unsupported = A miniaplicação pediu uma ação não suportada.
+webapp.open = {cross} Abrir
+webapp.close = {start}  Fechar
+webapp.vault_unavailable = A visualização interna ainda não está disponível com a encriptação de dados ativa.
+
+# Classic and combined chat views
+settings.view_mode = Modo de visualização
+settings.view_classic = Clássico
+settings.view_combined = Combinado
+chat.focus_list = Conversas > mensagens
+chat.focus_history = < conversas | Mensagens
+chat.select_chat = Selecionar conversa
+webapp.payment_unavailable = Os pagamentos nas Mini Apps ainda não estão disponíveis no VitaGram.
+
+# --- Background audio player ---
+player.hint = L+R: leitor
+player.loading = A carregar áudio…
+player.previous = Faixa anterior
+player.play = Reproduzir / pausa
+player.next = Faixa seguinte
+player.seek = Procurar · ↑/↓ 10 s
+player.volume = Volume
+player.shuffle = Aleatório
+player.repeat = Repetir
+player.speed = Velocidade · ↑/↓
+player.close = Fechar leitor
+player.off = Não
+player.on = Sim
+player.all = Lista
+player.one = Faixa
+
+webapp.engine_needed = Mini Apps need the optional WebKit engine. Download it once; ordinary bot buttons work without it.
+webapp.engine_checking = Checking the WebKit add-on…
+webapp.engine_downloading = Downloading / preparing WebKit…
+webapp.engine_download = {cross} Download
+webapp.engine_retry = {cross} Retry
+
+settings.keyboard_split = Separação do teclado
+settings.keyboard_split_small = Pequena
+settings.keyboard_split_medium = Média
+settings.keyboard_split_wide = Ampla
+
+# User-installed fonts
+settings.font_family = Tipo de letra
+settings.font_default = Predefinido
+settings.font_loading = A carregar tipo de letra…
+settings.custom_font_failed = Não foi possível carregar. Mantém-se o tipo de letra anterior.
+settings.font_hint = {dpad} Escolher · {cross} Aplicar · {circle} Voltar
+
+# Cache settings
+cache.title = Cache
+cache.clear = Limpar cache agora
+cache.cleaning = A limpar…
+cache.done = Concluído
+cache.failed = Falha
+cache.unavailable = A limpeza da cache requer ligação ao Telegram.
+
+# Settings sections
+settings.section.interface = Interface
+settings.section.chats = Conversas
+settings.section.controls = Controlos e introdução
+settings.section.data = Dados e armazenamento
+settings.section.connection = Ligação
+settings.section.security = Proteção de dados
+settings.section.updates = Atualizações e instalação
+settings.section.about = Acerca e diagnóstico
+common.back = Voltar
+settings.cache_cleanup_hint = Aplica os limites de retenção e tamanho; não apaga todos os conteúdos multimédia.
+
+# Video quality
+settings.video_quality = Qualidade máxima de vídeo
+settings.video_minimum = Mínima (poupança de dados)
+settings.video_360 = Até 360p
+settings.video_480 = Até 480p
+settings.video_720 = Até 720p
+video.quality = Qualidade de vídeo
+video.quality_unavailable = A qualidade selecionada não está disponível.

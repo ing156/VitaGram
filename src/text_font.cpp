@@ -2,6 +2,7 @@
 #include "utf8_decode.h"
 #include <vita2d.h>
 #include FT_SYNTHESIS_H
+#include FT_SIZES_H
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -19,7 +20,26 @@ void TextFont::reset() {
     for (auto& page : pages_) vita2d_free_texture(page.texture);
     pages_.clear();
     glyphs_.clear();
+    FT_Activate_Size(default_size_);
+    for (const auto& entry : sizes_) FT_Done_Size(entry.second);
+    sizes_.clear();
     reset_pending_ = false;
+}
+
+bool TextFont::select_size(unsigned size) {
+    const auto found=sizes_.find(size);
+    if (found!=sizes_.end()) return !FT_Activate_Size(found->second);
+    // shortcut: retain at most 64 pixel sizes per face; add eviction if the UI needs more.
+    FT_Size prepared=nullptr;
+    if (sizes_.size()>=64 || FT_New_Size(face_,&prepared))
+        return !FT_Activate_Size(default_size_) && !FT_Set_Pixel_Sizes(face_,0,size);
+    if (FT_Activate_Size(prepared) || FT_Set_Pixel_Sizes(face_,0,size)) {
+        const auto restored=FT_Activate_Size(default_size_);
+        FT_Done_Size(prepared);
+        return !restored && !FT_Set_Pixel_Sizes(face_,0,size);
+    }
+    sizes_.emplace(size,prepared);
+    return true;
 }
 
 TextFont::Glyph* TextFont::glyph(uint32_t code, unsigned size) {
@@ -28,18 +48,9 @@ TextFont::Glyph* TextFont::glyph(uint32_t code, unsigned size) {
     if (found != glyphs_.end()) return &found->second;
     const FT_UInt index = FT_Get_Char_Index(face_, code);
     if (FT_Load_Glyph(face_, index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL)) return nullptr;
-    const auto advance = face_->glyph->advance.x;
-    if (style & 2) FT_GlyphSlot_Oblique(face_->glyph);
-    if (style & 1) FT_GlyphSlot_Embolden(face_->glyph);
-    if (FT_Render_Glyph(face_->glyph, FT_RENDER_MODE_NORMAL)) return nullptr;
-    const auto slot = face_->glyph;
     Glyph value;
     value.index = index;
-    value.advance = advance;
-    value.left = slot->bitmap_left;
-    value.top = slot->bitmap_top;
-    value.width = static_cast<int>(slot->bitmap.width);
-    value.height = static_cast<int>(slot->bitmap.rows);
+    value.advance = face_->glyph->advance.x;
     if (glyphs_.size() >= max_glyphs) {
         reset_pending_ = true;
         uncached_ = value; // Keep measurements correct until the next between-frame reset.
@@ -49,15 +60,20 @@ TextFont::Glyph* TextFont::glyph(uint32_t code, unsigned size) {
 }
 
 void TextFont::upload(Glyph& glyph) {
-    if (!glyph.width || !glyph.height || glyph.page >= 0) return;
-    const int width = glyph.width + 2 * padding, height = glyph.height + 2 * padding;
-    if (width > atlas_size || height > atlas_size) return;
+    if (glyph.page != -1) return;
     if (FT_Load_Glyph(face_, glyph.index, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL)) return;
     if (style & 2) FT_GlyphSlot_Oblique(face_->glyph);
     if (style & 1) FT_GlyphSlot_Embolden(face_->glyph);
     if (FT_Render_Glyph(face_->glyph, FT_RENDER_MODE_NORMAL)) return;
     const FT_Bitmap& bitmap = face_->glyph->bitmap;
+    glyph.left = face_->glyph->bitmap_left;
+    glyph.top = face_->glyph->bitmap_top;
+    glyph.width = static_cast<int>(bitmap.width);
+    glyph.height = static_cast<int>(bitmap.rows);
+    if (!glyph.width || !glyph.height) { glyph.page = -2; return; }
     if (bitmap.pixel_mode != FT_PIXEL_MODE_GRAY && bitmap.pixel_mode != FT_PIXEL_MODE_MONO) return;
+    const int width = glyph.width + 2 * padding, height = glyph.height + 2 * padding;
+    if (width > atlas_size || height > atlas_size) return;
     for (size_t i = 0; i <= pages_.size(); ++i) {
         if (i == pages_.size()) {
             if (pages_.size() >= max_pages) { reset_pending_ = true; return; }
@@ -88,7 +104,7 @@ void TextFont::upload(Glyph& glyph) {
 }
 
 int TextFont::render(int x, int baseline, unsigned color, unsigned size, const char* text, bool draw) {
-    if (!text || FT_Set_Pixel_Sizes(face_, 0, size)) return 0;
+    if (!text || !select_size(size)) return 0;
     FT_Pos pen = 0, maximum = 0;
     FT_UInt previous = 0;
     while (*text) {

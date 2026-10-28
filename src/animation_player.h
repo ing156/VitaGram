@@ -17,10 +17,11 @@ public:
     ~AnimationPlayer();
     void setSource(const std::string& path, bool video = false, bool round = false,
                    bool prepare = false, bool cache_only = false,
-                   download_stream::Shared stream = nullptr); // UI, outside drawing
+                   download_stream::Shared stream = nullptr, int32_t file_id = 0); // UI, outside drawing
     bool preparationChecked() const { return preparation_checked_.load(); }
     bool preparationRequired() const { return preparation_required_.load(); }
     void toggle(); // Video play/pause/replay; GIFs keep looping automatically.
+    void setVolume(int percent) { audio_.setVolume(percent); }
     int seconds() const { return position_us_.load() / 1000000; }
     int64_t positionUs() const { return position_us_.load(); }
     bool playing() const { return video_ && !paused_ && !finished_; }
@@ -63,6 +64,7 @@ private:
     std::atomic<unsigned> generation_{0};
     pthread_mutex_t mutex_ = PTHREAD_MUTEX_INITIALIZER;
     std::string source_;
+    int32_t source_file_id_ = 0;
     i18n::Text status_;
     download_stream::Shared stream_;
     std::vector<unsigned char> pixels_;

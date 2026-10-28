@@ -61,11 +61,12 @@ private:
 // Binding the version stops a stale (but genuinely signed) VPK from passing as a newer release.
 class SignatureVerifier {
 public:
+    enum class Kind { Application, WebKit };
     SignatureVerifier();
     ~SignatureVerifier();
     SignatureVerifier(const SignatureVerifier&) = delete;
     SignatureVerifier& operator=(const SignatureVerifier&) = delete;
-    bool begin(const std::string& version, const char* public_key_pem = nullptr); // null = built-in key
+    bool begin(const std::string& version, const char* public_key_pem = nullptr, Kind kind = Kind::Application); // null = built-in key
     void update(const void* data, size_t size);
     bool finish(const unsigned char* signature, size_t size);
 private:

@@ -9,7 +9,7 @@ flags=(-std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -I "
 "${CXX:-c++}" "${flags[@]}" "$root/tests/keyboard_hold_test.cpp" -o "$build_dir/keyboard_hold"
 "$build_dir/keyboard_hold"
 
-"${CXX:-c++}" "${flags[@]}" "$root/src/keyboard_layout.cpp" "$root/tests/keyboard_layout_test.cpp" -o "$build_dir/keyboard_layout"
+"${CXX:-c++}" "${flags[@]}" "$root/src/keyboard_layout.cpp" "$root/src/i18n.cpp" "$root/tests/keyboard_layout_test.cpp" -o "$build_dir/keyboard_layout"
 "$build_dir/keyboard_layout" "$root/assets/lang"
 
 "${CXX:-c++}" "${flags[@]}" "$root/src/keyboard_case.cpp" "$root/tests/keyboard_case_test.cpp" -o "$build_dir/keyboard_case"

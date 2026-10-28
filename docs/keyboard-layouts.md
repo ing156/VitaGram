@@ -122,3 +122,44 @@ Validation: `ASAN_OPTIONS=detect_leaks=0 bash tests/run-keyboard-tests.sh` and
 `bash tests/run-i18n-tests.sh`. The font coverage check also verifies new Latin
 and Cyrillic layout glyphs against the packaged font faces. Real Vita IME
 availability, touch precision and GPU rendering still need device verification.
+
+## Custom .lang files / Пользовательские .lang
+
+Copy a catalog from `assets/lang/` to `ux0:data/vitagram/lang/<code>.lang`
+(`/data/vitagram/lang` on the memory card), then restart VitaGram. Set `@code`
+to the filename without `.lang` and `@name` to the name shown in Settings →
+Language. A new code adds an interface language; a matching code overrides the
+bundled catalog. Missing translations retain the bundled language's text, then
+fall back to English. Catalogs use UTF-8; keep controller tokens and placeholders.
+
+Скопируйте готовый `.lang` в `ux0:data/vitagram/lang/<код>.lang` и перезапустите
+приложение. `@code` должен совпадать с именем файла без расширения, `@name` —
+название в списке языков. Новый код добавляет язык, существующий заменяет его
+переводы и указанные данные клавиатуры. Пропущенные строки берутся из встроенного
+каталога, затем из английского. Для нового языка удобнее копировать `en.lang`.
+
+Keyboard data uses `@keyboard.*` directives, independent of the selected interface:
+
+- `badge`: short language label; `rows`: three letter rows separated by `|`.
+- `symbols.0`, `symbols.1`, `symbols.2`: the three symbol rows. Escape a literal
+  backslash as `\\`, using the ordinary `.lang` escaping rules.
+- `upper.lower`, `upper.upper`: matching sequences of lowercase/uppercase Unicode
+  characters, one pair per position. Include the letters used in held alternatives.
+- `popup.<character>`: alternatives for that character, one Unicode character per
+  option, including punctuation (`popup.,`, `popup..`).
+- `shift.<character>`: replacement for an explicitly shifted key (French apostrophe).
+- `digits`: held digits for the top letter row; `digit_start`: first column, 0 or 1.
+
+Keep all keyboard directives when copying a catalog. Letter rows accept 1–12
+characters each, symbol rows 1–14, and popups at most 11 options plus a held digit.
+Invalid layouts are skipped; an English recovery keyboard remains available.
+New profiles use the in-app keyboard; Vita's native IME supports only its built-in
+languages. Fonts must contain the added characters; a `.lang` does not install fonts.
+Files are read at startup (at most 64 catalogs, 512 KiB per file).
+
+Раскладка появится в «Настройки → Клавиатура → Языки ввода», если сохранены
+директивы `@keyboard.*`. Буквенные ряды задаются через `|`, дополнительные символы —
+в `popup.<символ>`, пары регистра — одинаковыми по длине строками `upper.lower`
+и `upper.upper`. Пользовательская раскладка работает во встроенной клавиатуре;
+системная клавиатура ограничена языками прошивки Vita. Для новых символов нужен
+подходящий шрифт. Проверка отображения и ввода на настоящей Vita обязательна.

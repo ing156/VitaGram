@@ -5,8 +5,35 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include FT_SIZES_H
 
 static int live_pages = 0;
+static unsigned rasterizations = 0;
+static unsigned size_requests=0, live_sizes=0;
+static bool size_allocation_error=false;
+extern "C" FT_Error __real_FT_Set_Pixel_Sizes(FT_Face,FT_UInt,FT_UInt);
+extern "C" FT_Error __wrap_FT_Set_Pixel_Sizes(FT_Face face,FT_UInt width,FT_UInt height) {
+    ++size_requests;
+    return __real_FT_Set_Pixel_Sizes(face,width,height);
+}
+extern "C" FT_Error __real_FT_New_Size(FT_Face,FT_Size*);
+extern "C" FT_Error __wrap_FT_New_Size(FT_Face face,FT_Size* size) {
+    if (size_allocation_error) return FT_Err_Out_Of_Memory;
+    const auto result=__real_FT_New_Size(face,size);
+    if (!result) ++live_sizes;
+    return result;
+}
+extern "C" FT_Error __real_FT_Done_Size(FT_Size);
+extern "C" FT_Error __wrap_FT_Done_Size(FT_Size size) {
+    const auto result=__real_FT_Done_Size(size);
+    if (!result) { assert(live_sizes); --live_sizes; }
+    return result;
+}
+extern "C" FT_Error __real_FT_Render_Glyph(FT_GlyphSlot,FT_Render_Mode);
+extern "C" FT_Error __wrap_FT_Render_Glyph(FT_GlyphSlot slot,FT_Render_Mode mode) {
+    ++rasterizations;
+    return __real_FT_Render_Glyph(slot,mode);
+}
 struct Drawing { int x, y, width, height; std::vector<unsigned char> pixels; };
 static std::vector<Drawing> drawings;
 vita2d_texture* vita2d_create_empty_texture_format(unsigned w, unsigned h, unsigned format) {
@@ -75,10 +102,30 @@ int main(int argc, char** argv) {
     const auto path = std::string(argv[1]) + "/NotoSans-Regular.ttf";
     assert(!FT_New_Face(library, path.c_str(), 0, &face));
     assert(!FT_New_Face(library, path.c_str(), 0, &reference_face));
+    const auto original_size=face->size;
+    {
+        TextFont font(face);
+        const auto before=size_requests;
+        for (unsigned i=0;i<100;++i) {
+            assert(font.render(0,0,0,26,"AV",false)>0);
+            assert(font.render(0,0,0,12,"AV",false)>0);
+        }
+        assert(size_requests-before==2 && live_sizes==2);
+        std::puts("Text size switching: 200 alternating measurements need only 2 size configurations");
+        size_allocation_error=true;
+        assert(font.render(0,0,0,27,"AV",false)>0 && live_sizes==2);
+        size_allocation_error=false;
+        assert(font.render(0,0,0,26,"AV",false)>0);
+        for (unsigned size=1;size<=90;++size) font.render(0,0,0,size,"A",false);
+        assert(live_sizes==64);
+        font.reset(); assert(live_sizes==0 && face->size==original_size);
+    }
+    rasterizations=0;
     {
         TextFont font(face);
         const char* text = u8"Книга жалоб ПРАВИЛА [закрыта] PSVITA AV To ёй";
         assert(font.render(0, 0, 0, 15, text, false) > 0);
+        assert(rasterizations == 0); // Width-only queries must not rasterize.
         assert(live_pages == 0); // Measurement must not populate the GPU atlas.
         std::vector<Drawing> baseline;
         int baseline_width = 0;
@@ -100,6 +147,13 @@ int main(int argc, char** argv) {
         drawings.clear();
         font.render(34, 102, 0xffffffff, 25, text, true);
         equal(baseline, drawings);
+        const auto drawn_rasters=rasterizations;
+        font.render(34,102,0xffffffff,25,text,true);
+        assert(rasterizations==drawn_rasters);
+        font.render(0,0,0,17,text,false);
+        assert(rasterizations==drawn_rasters);
+        font.render(34,102,0xffffffff,17,text,true);
+        assert(rasterizations>drawn_rasters);
         font.reset(); assert(live_pages == 0);
         font.render(0, 0, 0, 34, text, false);
         drawings.clear();
@@ -118,6 +172,7 @@ int main(int argc, char** argv) {
         font.reset(); assert(live_pages == 0 && !font.needs_reset());
     }
     assert(live_pages == 0);
+    assert(live_sizes == 0 && face->size==original_size);
     FT_Done_Face(reference_face); FT_Done_Face(face); FT_Done_FreeType(library);
-    std::puts("Text raster cache: native-size FreeType pixels, size/order independence, padding, stride, kerning and bounded reset passed");
+    std::puts("Text raster cache: width-only queries skip rasterization; cached drawing, exact pixels, styles, kerning and bounded reset passed");
 }

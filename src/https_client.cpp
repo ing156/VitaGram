@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <cstring>
+#include <mutex>
 
 #ifndef VITAGRAM_VERSION
 #define VITAGRAM_VERSION "dev"
@@ -35,13 +36,12 @@ std::string ssl_error_text(const char* what) {
 }
 
 bool connect_tls(Connection& c, const Url& url, const std::string& ca_file, std::string& error) {
-    static bool initialised = false;
-    if (!initialised) {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
+    static std::once_flag initialised;
+    std::call_once(initialised, [] {
         SSL_library_init(); SSL_load_error_strings(); OpenSSL_add_all_algorithms();
+    });
 #endif
-        initialised = true;
-    }
     addrinfo hints{}, *list = nullptr;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;

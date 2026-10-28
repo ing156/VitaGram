@@ -54,6 +54,30 @@ int main(int argc, char** argv) {
         diag_log::set_mask(0);
     }
     {
+        int job = 0;
+        video_diagnostics::update(&job, "pace_packet", 17, 8, 12345, 6789);
+        video_diagnostics::Playback playback{5000000, 5100000, 7000, 8000, false, true, true, false, true, true};
+        const auto entered = video_diagnostics::entries[0].at;
+        video_diagnostics::update(&job, "pace_packet", 17, 8, 23456, 7890, playback);
+        if (enabled) assert(video_diagnostics::entries[0].at == entered);
+        {
+            std::lock_guard<std::mutex> lock(video_diagnostics::mutex);
+            std::thread writer([&] { video_diagnostics::update(&job, "blocked", 0, 0, 0, 0); });
+            writer.join();
+        }
+        FILE* file = std::tmpfile(); assert(file);
+        video_diagnostics::write(file); std::rewind(file);
+        char line[1024]{}; const bool found = std::fgets(line, sizeof(line), file) != nullptr; std::fclose(file);
+        assert(found == enabled);
+        if (enabled) assert(std::string(line).find("stage=pace_packet") != std::string::npos &&
+                            std::string(line).find("packets=17 frames=8 audio_clock_at_stage_us=23456 video_position_at_stage_us=7890") != std::string::npos);
+        if (enabled) {
+            assert(std::string(line).find("packet_dts_us=5000000 packet_pts_us=5100000 frame_pts_us=7000 due_us=8000") != std::string::npos);
+            assert(std::string(line).find("paused=0 audio_playing=1 clock_ready=1 audio_buffering=0 frame_stalled=1 frame_lagging=1") != std::string::npos);
+        }
+        video_diagnostics::remove(&job);
+    }
+    {
         Collector slow_collector;
         SlowEvent event;event.phase=SlowPhase::Process;
         std::strcpy(event.type.data(),"updateNewMessage");event.wire_bytes=1234;
@@ -73,6 +97,52 @@ int main(int argc, char** argv) {
         assert((written.find("slow_event phase=process type=updateNewMessage")!=std::string::npos)==enabled);
         assert((written.find("slow_events threshold_us=50000 kept=32 omitted=43")!=std::string::npos)==enabled);
     }
+    {
+        Collector retention;
+        SlowEvent aggregate; aggregate.phase = SlowPhase::Ui;
+        std::strcpy(aggregate.type.data(), "frame_ui"); aggregate.elapsed = 1000000;
+        for (size_t i = 0; i < slow_limit; ++i) retention.slow(aggregate);
+        SlowEvent cause; cause.phase = SlowPhase::Ui;
+        std::strcpy(cause.type.data(), "web_paint"); cause.elapsed = 60000;
+        cause.context = {42, Screen::WebApp, true, true, true, true, 1, 544, 960};
+        retention.slow(cause);
+        auto snapshot = retention.take(1);
+        if (enabled) {
+            bool found = false;
+            for (size_t i = 0; i < snapshot.slow_count; ++i) {
+                if (!std::strcmp(snapshot.slow[i].type.data(), "web_paint")) found = true;
+            }
+            assert(found);
+            FILE* file = std::tmpfile(); assert(file);
+            writeSnapshot(file, snapshot, "test"); std::rewind(file);
+            std::string written; char line[1024];
+            while (std::fgets(line, sizeof(line), file)) written += line;
+            std::fclose(file);
+            assert(written.find("frame=42 screen=webapp combined=1 keyboard=1 scrolling=1 fullscreen=1 rotation=1 web_width=544 web_height=960") != std::string::npos);
+            assert(written.find("dropped_samples_kind=diagnostic_measurements") != std::string::npos);
+        }
+        retention.count(Counter::Received, 17);
+        retention.count(Counter::Processed, 8);
+        for (int duration : {16000, 33334, 40000, 50000, 100000, 110000})
+            retention.observe(Metric::Frame, duration);
+        snapshot = retention.take(2);
+        assert(snapshot.counters[static_cast<size_t>(Counter::Received)] == (enabled ? 17u : 0u));
+        assert(snapshot.counters[static_cast<size_t>(Counter::Processed)] == (enabled ? 8u : 0u));
+        assert(snapshot.counters[static_cast<size_t>(Counter::FrameOver33)] == (enabled ? 4u : 0u));
+        assert(snapshot.counters[static_cast<size_t>(Counter::FrameOver50)] == (enabled ? 2u : 0u));
+        assert(snapshot.counters[static_cast<size_t>(Counter::FrameOver100)] == (enabled ? 1u : 0u));
+        snapshot = retention.take(3);
+        for (auto count : snapshot.counters) assert(!count);
+        {
+            ui_diagnostics::Stage stage(ui_diagnostics::Phase::WebPaint);
+            assert(!enabled || ui_diagnostics::active().load() >> 56 == static_cast<unsigned>(ui_diagnostics::Phase::WebPaint));
+            assert(std::string(ui_diagnostics::name(static_cast<unsigned>(ui_diagnostics::Phase::WebPaint))) == "web_paint");
+        }
+        // Other threads cannot inherit UI frame/screen attribution.
+        frame_context = {42, Screen::WebApp};
+        std::thread background([] { assert(!frame_context.frame && frame_context.screen == Screen::Unknown); });
+        background.join();
+    }
     collector().take(now());
     {
         std::string temporary="updateUser\ninjected";
@@ -86,6 +156,55 @@ int main(int argc, char** argv) {
         assert(std::string(scoped.slow[0].type.data())=="updateUser_injected");
         assert(scoped.slow[0].wire_bytes==99);
         assert(scoped.slow[0].phase==SlowPhase::Ui);
+        assert(scoped.slow[0].context.frame==42 && scoped.slow[0].context.screen==Screen::WebApp);
+    }
+    {
+        SlowScope steps(SlowPhase::Ui, "post_scheduler");
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        steps.next("post_textures");
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        steps.finish();
+    }
+    auto steps = collector().take(now());
+    assert(steps.slow_count == (enabled ? 2u : 0u));
+    if (enabled) {
+        assert(std::string(steps.slow[0].type.data()) == "post_scheduler");
+        assert(std::string(steps.slow[1].type.data()) == "post_textures");
+        assert(steps.slow[1].elapsed < 110000); // The second step starts its own timer.
+    }
+    {
+        td::VitaTrace actor(td::VitaPhase::Actor);
+        {
+            td::VitaTrace write(td::VitaPhase::FilePwrite);
+            td::vita_trace_file("ux0:data/vitagram/files/temp/private-name.mp4", 17, 1048576, 65536);
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        }
+        {
+            td::VitaTrace write(td::VitaPhase::FileWrite);
+            td::vita_trace_file("ur0:data/vitagram/db/secret.binlog", 23, -1, 4096);
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        }
+        {
+            td::VitaTrace metadata(td::VitaPhase::FileMeta);
+            td::vita_trace_path("ux0:data/vitagram/files/photos/private.jpg");
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        }
+    }
+    auto files = collector().take(now());
+    assert(files.slow_count == (enabled ? 3u : 0u));
+    if (enabled) {
+        assert(std::string(files.slow[0].file_dir.data()) == "ux0:files_temp");
+        assert(files.slow[0].file_fd == 17 && files.slow[0].file_offset == 1048576 && files.slow[0].file_bytes == 65536);
+        assert(std::string(files.slow[1].file_dir.data()) == "ur0:vitagram_db");
+        assert(files.slow[1].file_fd == 23 && files.slow[1].file_offset == -1 && files.slow[1].file_bytes == 4096);
+        assert(files.slow[2].file_fd == -1); // Metadata must not inherit the previous descriptor.
+        FILE* report = std::tmpfile(); assert(report);
+        writeSnapshot(report, files, "test"); std::rewind(report);
+        std::string output; char line[1024];
+        while (std::fgets(line, sizeof(line), report)) output += line;
+        std::fclose(report);
+        assert(output.find("file_dir=ux0:files_temp file_fd=17 file_offset=1048576 file_bytes=65536") != std::string::npos);
+        assert(output.find("private-name") == std::string::npos && output.find("secret.binlog") == std::string::npos);
     }
     Collector c;
     c.start(100);
@@ -102,7 +221,7 @@ int main(int argc, char** argv) {
             assert(std::string(line).find(enabled ? "phase=socket_read" : "phase=idle") != std::string::npos);
         }
         assert(td_diagnostics::active().load() == outer);
-        for (auto phase : {td::VitaPhase::FileIo, td::VitaPhase::LogWrite, td::VitaPhase::SocketConnect, td::VitaPhase::FileSync, td::VitaPhase::FileMeta}) {
+        for (auto phase : {td::VitaPhase::FileRead, td::VitaPhase::FileWrite, td::VitaPhase::FilePread, td::VitaPhase::FilePwrite, td::VitaPhase::FileIo, td::VitaPhase::LogWrite, td::VitaPhase::SocketConnect, td::VitaPhase::FileSync, td::VitaPhase::FileMeta}) {
             td::VitaTrace operation(phase);
             assert(!enabled || td_diagnostics::active().load() >> 56 == static_cast<unsigned>(phase));
         }
@@ -118,7 +237,7 @@ int main(int argc, char** argv) {
     assert(traced.get(Metric::TdActor).count == (enabled ? 1u : 0u));
     assert(traced.get(Metric::TdSocketRead).count == (enabled ? 1u : 0u));
     for (auto metric : {Metric::TdFileIo, Metric::TdLogWrite, Metric::TdSocketConnect, Metric::TdFileSync, Metric::TdFileMeta})
-        assert(traced.get(metric).count == (enabled ? 1u : 0u));
+        assert(traced.get(metric).count == (enabled ? (metric == Metric::TdFileIo ? 5u : 1u) : 0u));
     if (!enabled) {
         c.observe(Metric::Frame, 1000); c.queues(1, 2, 3, 4, 5);
         auto s = c.take(200);
@@ -155,6 +274,30 @@ int main(int argc, char** argv) {
     assert(s.get(Metric::Process).count + s.dropped == 80000);
     assert(s.get(Metric::Process).sum == s.get(Metric::Process).count * 1500);
 
+    {
+        TdEventQueue ages;
+        assert(!ages.oldestParsedAt());
+        auto* normal = json_pack("{s:s}", "@type", "updateChatTitle");
+        auto* urgent = json_pack("{s:s}", "@type", "updateMessageSendSucceeded");
+        TdEventMetadata n; n.parsed = 100;
+        TdEventMetadata u; u.parsed = 150; u.urgent = true;
+        ages.enqueue(normal, n); ages.enqueue(urgent, u);
+        assert(ages.oldestParsedAt() == 100);
+        auto* selected = static_cast<json_t*>(ages.take(false, true));
+        assert(selected == normal); json_decref(selected);
+        assert(ages.oldestParsedAt() == 150);
+        selected = static_cast<json_t*>(ages.take(false, false));
+        assert(selected == urgent); json_decref(selected);
+        assert(!ages.oldestParsedAt());
+        // Replacing a coalesced file must remove its old timestamp as well.
+        for (int timestamp : {200, 300}) {
+            auto* file = json_pack("{s:s}", "@type", "updateFile");
+            TdEventMetadata m; m.file = 10; m.parsed = timestamp;
+            ages.enqueue(file, m);
+        }
+        assert(ages.size() == 1 && ages.oldestParsedAt() == 300);
+        selected = static_cast<json_t*>(ages.take(false, false)); json_decref(selected);
+    }
     // Coalescing removes precisely the old wire payload, preserving controls.
     TdEventQueue queue;
     auto event = [](int bytes) {

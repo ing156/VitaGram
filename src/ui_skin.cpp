@@ -1,18 +1,21 @@
 #include "ui_skin.h"
 #include "ui_mask.h"
 #include "ui_themes.h"
-#include <sys/stat.h>
+#include "performance.h"
 #include <jansson.h>
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <string>
 #include <vector>
 #include <psp2/io/fcntl.h>
+#include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
+#include <pthread.h>
 
 namespace ui_skin {
 namespace {
@@ -72,6 +75,15 @@ State g;
 std::array<ui_mask::Palette, ui_themes::max_themes> palette_cache{};
 bool palettes_ready = false;
 
+struct PaletteReader {
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
+    pthread_t thread{};
+    bool started = false, stop = false, requested = false, ready = false, exists = false;
+    uint64_t epoch = 0, request_epoch = 0;
+    std::string text;
+} palette_reader;
+
 // Reads a whole file with the raw sceIo API. The newlib descriptor table is shared with worker threads and
 // an app0: read through it was seen returning stray bytes or nothing at startup; a short read is retried.
 bool read_file(const std::string& path, std::vector<unsigned char>& out) {
@@ -97,6 +109,45 @@ bool read_file(const std::string& path, std::vector<unsigned char>& out) {
         if (complete) return true;
     }
     return false;
+}
+
+void* read_palette_worker(void*) {
+    auto& p = palette_reader;
+    pthread_mutex_lock(&p.mutex);
+    for (;;) {
+        while (!p.stop && !p.requested) pthread_cond_wait(&p.changed, &p.mutex);
+        if (p.stop) { pthread_mutex_unlock(&p.mutex); return nullptr; }
+        p.requested = false;
+        const uint64_t epoch = p.request_epoch;
+        pthread_mutex_unlock(&p.mutex);
+        performance::SlowScope poll(performance::SlowPhase::Storage, "palette_poll");
+        constexpr const char* path = "ux0:data/vitagram/palette.json";
+        SceIoStat info{};
+        const int result = sceIoGetstat(path, &info);
+        const bool exists = result >= 0;
+        const bool missing = result == -ENOENT || static_cast<uint32_t>(result) == 0x80010002u;
+        std::vector<unsigned char> bytes;
+        const bool valid = missing || (exists && info.st_size > 0 && info.st_size <= 8192 && read_file(path, bytes));
+        poll.finish();
+        pthread_mutex_lock(&p.mutex);
+        if (valid && epoch == p.epoch) {
+            p.exists = exists;
+            p.text.assign(bytes.begin(), bytes.end());
+            p.ready = true;
+        }
+    }
+}
+
+void stop_palette_worker() {
+    auto& p = palette_reader;
+    if (!p.started) return;
+    pthread_mutex_lock(&p.mutex);
+    p.stop = true;
+    pthread_cond_signal(&p.changed);
+    pthread_mutex_unlock(&p.mutex);
+    pthread_join(p.thread, nullptr);
+    p.started = p.stop = p.requested = p.ready = false;
+    p.text.clear();
 }
 
 void cache_palettes(json_t* assets, json_t* masks) {
@@ -458,6 +509,7 @@ bool load(int theme_id) {
 }
 
 void unload() {
+    stop_palette_worker();
     vita2d_wait_rendering_done();
     free_all();
     if (g.corner_buttons) vita2d_free_texture(g.corner_buttons);
@@ -475,32 +527,51 @@ bool set_palette(const char* json) {
     auto next = g.palette;
     const bool valid = ui_mask::palette(object, next);
     if (object) json_decref(object);
-    if (valid) apply_palette(next);
+    if (valid) {
+        pthread_mutex_lock(&palette_reader.mutex);
+        ++palette_reader.epoch;
+        palette_reader.ready = false;
+        palette_reader.requested = false;
+        pthread_mutex_unlock(&palette_reader.mutex);
+        apply_palette(next);
+    }
     return valid;
 }
 
 void reload_palette() {
     if (!g.ready || !g.mask_manifest) return;
     if (ui_themes::get(g.attempted).palette || ui_themes::custom(g.attempted)) return;
+    auto& p = palette_reader;
     const auto now = sceKernelGetProcessTimeWide();
-    if (now < g.palette_check_at) return;
-    g.palette_check_at = now + 1000000;
-    constexpr const char* path = "ux0:data/vitagram/palette.json";
-    struct stat info{};
-    const bool exists = stat(path, &info) == 0;
-    const long long size = exists ? info.st_size : -1;
-    if (!exists && g.palette_size == -1) return;
-    g.palette_size = size;
+    if (!p.started) {
+        if (now < g.palette_check_at) return;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 128 * 1024);
+        p.started = pthread_create(&p.thread, &attr, read_palette_worker, nullptr) == 0;
+        pthread_attr_destroy(&attr);
+        if (!p.started) { g.palette_check_at = now + 1000000; return; }
+    }
+    bool ready, exists;
+    std::string text;
+    if (pthread_mutex_trylock(&p.mutex) != 0) return;
+    ready = p.ready; exists = p.exists;
+    if (ready) { text.swap(p.text); p.ready = false; }
+    if (now >= g.palette_check_at) {
+        g.palette_check_at = now + 1000000;
+        p.requested = true;
+        p.request_epoch = p.epoch;
+        pthread_cond_signal(&p.changed);
+    }
+    pthread_mutex_unlock(&p.mutex);
+    if (!ready || (!exists && g.palette_size == -1)) return;
+    g.palette_size = exists ? (long long)text.size() : -1;
     auto next = g.defaults;
     if (exists) {
-        if (size <= 0 || size > 8192) return;
-        std::vector<unsigned char> bytes;
-        if (!read_file(path, bytes)) return;
-        const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         if (text == g.palette_text) return;
         g.palette_text = text;
         json_error_t error{};
-        json_t* object = json_loadb(reinterpret_cast<const char*>(bytes.data()), bytes.size(), JSON_REJECT_DUPLICATES, &error);
+        json_t* object = json_loadb(text.data(), text.size(), JSON_REJECT_DUPLICATES, &error);
         const bool valid = ui_mask::palette(object, next);
         if (object) json_decref(object);
         if (!valid) return;
@@ -593,9 +664,9 @@ bool corners(float x, float y, float w, float h, float radius) {
     return true;
 }
 
-bool corner_button(bool right, float glow, float opacity) {
+bool corner_button(bool right, float glow, float opacity, float bottom) {
     if (!g.ready || !g.corner_buttons) return false;
-    const float x = right ? 960.f - 72 : 0.f, y = 544.f - 72, tx = right ? 72.f : 0.f;
+    const float x = right ? 960.f - 72 : 0.f, y = bottom - 72, tx = right ? 72.f : 0.f;
     opacity = std::max(0.f, std::min(1.f, opacity));
     if (opacity < 1.f) vita2d_draw_texture_tint_part_scale(g.corner_buttons, x, y, tx, 0, 72, 72, 1.f, 1.f, RGBA8(255, 255, 255, (int)(255.f * opacity)));
     else vita2d_draw_texture_part(g.corner_buttons, x, y, tx, 0, 72, 72);

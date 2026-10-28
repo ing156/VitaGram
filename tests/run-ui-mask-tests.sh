@@ -11,7 +11,7 @@ trap 'rm -rf -- "$build_dir"' EXIT
   -I "$root/src" -I "$root/build-modern/external/jansson/include" \
   "$root/tests/ui_themes_test.cpp" -l:libjansson.so.4 -o "$build_dir/ui-themes"
 "$build_dir/ui-themes"
-"${CXX:-c++}" -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+"${CXX:-c++}" -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -pthread \
   -I "$root/tests/ui-skin-stubs" -I "$root/src" -I "$root/build-modern/external/jansson/include" \
   "$root/src/ui_skin.cpp" "$root/tests/ui_skin_test.cpp" -l:libjansson.so.4 -lpng -o "$build_dir/ui-skin"
 "$build_dir/ui-skin" "$root/assets/VitaGram_UI_Assets_v1" "$build_dir"

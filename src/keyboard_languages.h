@@ -5,11 +5,16 @@
 
 // Shared preference rules for settings, the in-app picker and the native IME.
 namespace keyboard_languages {
-inline const std::vector<std::string>& supported() {
+inline const std::vector<std::string>& native() {
     static const std::vector<std::string> codes = {"en", "ru", "de", "fr", "es", "it", "nl", "pt-PT", "pt-BR",
         "sv", "da", "no", "fi", "pl", "tr", "ja", "ko", "zh-Hans", "zh-Hant"};
     return codes;
 }
+inline std::vector<std::string>& registry() {
+    static std::vector<std::string> codes = native();
+    return codes;
+}
+inline const std::vector<std::string>& supported() { return registry(); }
 inline std::string canonical(const std::string& code) { return code == "en-GB" ? "en" : code; }
 inline bool contains(const std::vector<std::string>& codes, const std::string& code) {
     return std::find(codes.begin(), codes.end(), code) != codes.end();

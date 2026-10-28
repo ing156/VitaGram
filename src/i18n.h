@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <cstdint>
+#include <map>
 
 // Localization. Texts live in plain files (assets/lang/<code>.lang, packaged as
 // app0:lang/<code>.lang); adding a language means adding one file, no code changes.
@@ -31,13 +32,15 @@ struct Language {
 
 // Scans `directory` for *.lang files and selects the language: `preference` (a code
 // stored in settings) or, when it is empty ("auto"), the console system language.
-void init(const std::string& directory, const std::string& preference);
+// Optional custom directory adds catalogs and overrides matching bundled codes.
+void init(const std::string& directory, const std::string& preference, const std::string& custom_directory = "");
 // Empty preference means automatic. Returns false when the code is unknown.
 bool select(const std::string& preference);
 // Resolve a preference without changing the active catalog.
 std::string resolve(const std::string& preference);
 
 const std::vector<Language>& languages();
+std::map<std::string, std::string> directives(const std::string& code);
 // Code of the language currently in use (e.g. "en").
 std::string current();
 // Code the system language maps to ("" when unknown).

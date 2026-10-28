@@ -64,7 +64,6 @@ void VitaNet::shutdown() {
 
 void VitaNet::poll() {
     if (sceRegMgrGetKeyInt("/CONFIG/SYSTEM/", "flight_mode", &flight_) < 0) flight_ = -1;
-    if (sceRegMgrGetKeyInt("/CONFIG/NET/", "wifi_flag", &wifi_) < 0) wifi_ = -1;
     if (!ctl_ready_ || sceNetCtlInetGetState(&state_) < 0) state_ = -1;
     refreshLanguage();
 }
@@ -73,6 +72,6 @@ void VitaNet::refreshLanguage() {
     std::string connection = state_ == SCE_NETCTL_STATE_CONNECTED ? tr("net.online") :
         state_ == SCE_NETCTL_STATE_CONNECTING || state_ == SCE_NETCTL_STATE_FINALIZING ? tr("net.connecting") :
         state_ == SCE_NETCTL_STATE_DISCONNECTED ? tr("net.disconnected") : tr("net.unknown");
-    std::string indicator = flight_ > 0 ? tr("net.airplane") : wifi_ == 0 ? tr("net.wifi_off") : connection;
+    std::string indicator = flight_ > 0 ? tr("net.airplane") : connection;
     std::snprintf(status_, sizeof(status_), "%s", indicator.c_str());
 }

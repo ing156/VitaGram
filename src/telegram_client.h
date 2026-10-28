@@ -5,6 +5,7 @@
 #include "media_uploads.h"
 #include "td_event_queue.h"
 #include "poll.h"
+#include "bot_buttons.h"
 #include "peer_colors.h"
 #include "gif_catalog.h"
 #include <map>
@@ -72,7 +73,18 @@ struct LinkSpan { int begin = 0, end = 0; std::string url; };
 enum TextStyle { TextBold=1, TextItalic=2, TextUnderline=4, TextStrike=8, TextSpoiler=16, TextCode=32, TextQuote=64 };
 struct StyleSpan { int begin, end; unsigned style; };
 
+struct VideoVariant {
+    int width = 0, height = 0;
+    int32_t file = 0;
+    int64_t size = 0, downloaded = 0;
+    bool alternative = false;
+    std::string path;
+    download_stream::Shared stream;
+};
+
 struct MessageItem {
+    int64_t via_bot_user_id = 0;
+    bot_buttons::Markup buttons;
     PollData poll;
     struct Reaction { std::string emoji; int count = 0; bool chosen = false; int64_t custom_emoji_id = 0; };
     std::vector<Reaction> reactions;
@@ -108,6 +120,7 @@ struct MessageItem {
     int video_duration = 0;
     int video_width = 0, video_height = 0;
     bool video_alternative = false;
+    std::vector<VideoVariant> video_variants;
     bool voice = false;
     bool audio = false; // Ordinary audio uses the same download/playback fields as voice.
     i18n::Text audio_title; std::string audio_performer;
@@ -194,13 +207,16 @@ public:
     void prioritizeInteraction(int64_t now) { interaction_until_.store(now + 150000); }
     void close();
     void logout();
-    void optimizeCache(int days, int megabytes);
+    void optimizeCache(int days, int megabytes, bool manual = false);
+    const std::string& cacheCleanupError() const { return cache_cleanup_error_; }
     bool cacheMaintenance() const { return cache_maintenance_; }
     std::string currentChatAvatar() const;
     void stopWorker();
     void loadOlder(bool open_post = false);
     void loadNewer(bool open_post = false);
     bool historyWindow() const { return history_window_; }
+    bool selectVideoQuality(int index, int variant_index);
+    void setVideoQuality(int value) { video_quality_ = std::clamp(value, 0, 3); }
     void setChatOpenPosition(int value) { chat_open_position_ = std::clamp(value, 0, 2); }
     bool historyAnchorFar() const { return history_anchor_far_; }
     void acceptHistoryAnchorFar();
@@ -218,6 +234,7 @@ public:
     std::string uploadStatus() const;
     void dismissStatusNotices() {
         uploads_.dismissCompleted();
+        bot_status_.clear();
         notice_.clear(); notice_until_ = 0;
     }
     const i18n::Text& lastError() const { return error_; }
@@ -226,6 +243,28 @@ public:
     std::string inputPrompt() const;
     bool inputSecret() const { return input_kind_ == InputKind::Password; }
     void submitInput(const std::string& value);
+    const bot_buttons::Markup& botMenu() const;
+    const MessageItem& botKeyboard() const { return bot_keyboard_; }
+    bool activateBotButton(int64_t message, int row, int column, bool keyboard);
+    bool followingBotReplies() const { return bot_reply_focus_generation_ == history_generation_; }
+    bool takeBotReplyFocus() { bool focus = bot_reply_focus_pending_ && followingBotReplies(); bot_reply_focus_pending_ = false; return focus; }
+    std::string takeBotLink() { auto result = std::move(bot_link_); bot_link_.clear(); return result; }
+    const i18n::Text& botStatus() const { return bot_status_; }
+    std::string takeBotAlert() { auto result = std::move(bot_alert_); bot_alert_.clear(); return result; }
+
+    struct BotWebApp {
+        enum Phase { Closed, Confirm, Loading, Ready, Failed } phase = Closed;
+        enum Source { Button, MainLink, NamedLink } source = Button;
+        int64_t bot = 0, chat = 0, topic = 0, thread = 0, launch = 0;
+        bool keyboard = false, same_origin = true;
+        std::string label, url, signed_url, error;
+        std::string short_name, start_parameter, mode = "webAppOpenModeFullSize";
+    };
+    const BotWebApp& botWebApp() const { return bot_webapp_; }
+    void openBotWebApp(void* theme);
+    void closeBotWebApp();
+    bool sendBotWebAppData(const std::string& data);
+
     // Sign-in helpers: where the code was sent, step back to the phone number, ask for a new code.
     const i18n::Text& authDetail() const { return auth_detail_; }
     bool canResendCode() const;
@@ -391,6 +430,23 @@ public:
     void ensureMessageMedia(size_t index);
     void setAnimationTarget(int index, bool spoiler_revealed = false); // -1 cancels the opened animation download
     void setVoiceTarget(int index);
+    // Files still playing after their chat was left: their downloads are not cancelled by a changed target.
+    void setBackgroundMedia(int32_t voice_file, int32_t animation_file);
+    // Up to 64 loaded music tracks around `index`, kept when leaving their chat.
+    struct AudioTrack {
+        int32_t file = 0; int64_t message = 0; int duration = 0, size = 0;
+        i18n::Text title; std::string path; download_stream::Shared stream;
+    };
+    void startAudioQueue(int index);
+    void clearAudioQueue();
+    void serviceAudioQueue();                 // requests the current and the next track
+    bool advanceAudioQueue(int direction = 1, bool automatic = true);
+    void shuffleAudioQueue();
+    bool audioShuffle() const { return audio_shuffle_; }
+    int audioRepeat() const { return audio_repeat_; } // 0: off, 1: playlist, 2: track
+    void cycleAudioRepeat() { audio_repeat_ = (audio_repeat_ + 1) % 3; }
+    const AudioTrack* audioTrack() const { return audio_pos_ < audio_queue_.size() ? &audio_queue_[audio_pos_] : nullptr; }
+    int audioTrackIndex(int64_t message) const;   // position in messages(), -1 if absent
     void ensurePhotoThumbnail(size_t message_index, size_t photo_index);
     void ensureFullPhoto(size_t message_index, size_t photo_index);
 
@@ -442,6 +498,20 @@ private:
     GifCatalog gifs_;
     i18n::Text gif_status_;
     std::string gif_request_kind_;
+    std::unordered_map<int64_t, bot_buttons::Markup> bot_menus_;
+    std::unordered_set<int64_t> bot_info_requested_;
+    std::unordered_map<int64_t, int64_t> bot_keyboard_ids_;
+    MessageItem bot_keyboard_;
+    i18n::Text bot_status_;
+    std::string bot_link_, bot_alert_;
+    int64_t bot_action_generation_ = 0, bot_keyboard_generation_ = 0;
+    int64_t bot_reply_focus_generation_ = -1;
+    bool bot_reply_focus_pending_ = false;
+    void focusBotReplies();
+    BotWebApp bot_webapp_;
+    int64_t bot_webapp_generation_ = 0;
+    std::unordered_set<int64_t> restricted_bots_;
+    void requestBotKeyboard();
     int64_t gif_bot_ = 0;
     void requestGifResults(const std::string& offset);
     std::vector<ChatFolderItem> sticker_packs_;
@@ -467,6 +537,7 @@ private:
     int64_t reaction_message_ = 0, reaction_requested_at_ = 0;
     bool reaction_pending_ = false, reaction_loading_ = false, reaction_loaded_ = false;
     bool cache_maintenance_ = false;
+    std::string cache_cleanup_error_;
     std::unordered_map<int64_t, std::string> user_names_;
     std::unordered_map<int64_t, peer_colors::Peer> user_colors_;
     peer_colors::Colors accent_colors_;
@@ -508,10 +579,17 @@ private:
     void parseFolders(void* update);
     void syncArchiveFolder();
     int32_t active_animation_file_ = 0;
-    int32_t active_voice_file_ = 0;
+    std::vector<AudioTrack> audio_queue_;
+    size_t audio_pos_ = 0;
+    bool audio_shuffle_ = false;
+    int audio_repeat_ = 0;
+    int64_t audio_chat_ = 0;
+    bool inAudioQueue(int32_t file) const;
+    int32_t active_voice_file_ = 0, background_voice_file_ = 0, background_animation_file_ = 0;
     unsigned voice_download_generation_ = 0;
     unsigned animation_download_generation_ = 0;
     int64_t animation_started_at_ = 0, animation_progress_ = 0, animation_progress_at_ = 0;
+    int64_t animation_rate_at_ = 0, animation_rate_downloaded_ = 0, animation_rate_prefix_ = 0;
     std::unordered_map<int64_t, int64_t> read_outbox_;
     std::unordered_set<int64_t> replaced_message_ids_;
     void storeMessage(void* message, int64_t old_id = 0);
@@ -636,6 +714,8 @@ private:
     int history_target_ = 60;
     int64_t history_cursor_ = 0;
     int64_t pending_read_anchor_ = 0;
+    int video_quality_ = 0; // Maximum allowed quality.
+    std::map<std::pair<int64_t, int64_t>, std::pair<int, int>> video_choices_; // Up to 64 explicit choices for this session.
     int chat_open_position_ = 0;
     bool history_anchor_far_ = false, history_window_ = false, history_window_latest_ = false;
     int64_t history_deadline_ = 0;
@@ -708,6 +788,8 @@ private:
     std::deque<std::string> upload_logs_;
     void logUploads(bool force = false);
     void flushUploadLogs();
+    std::deque<std::string> video_quality_logs_; // Bounded diagnostic snapshots; only the cache worker writes them.
+    void flushVideoQualityLogs();
 
     void sendJson(void* json_root);
     void sendRaw(const char* json, int priority = 3, bool first_history=false, bool backlog_exempt=false, int32_t file_id=0, bool forum_check=false);

@@ -1,14 +1,22 @@
 #include "keyboard_layout.h"
+#include "i18n.h"
 #include "keyboard_languages.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <filesystem>
 #include <set>
+#include <fstream>
+#include <unistd.h>
 
 int main(int argc, char** argv) {
     using namespace keyboard_layout;
     assert(argc == 2);
+    i18n::init(argv[1], "en");
+    assert(characters("\xC0\xAF").empty());
+    assert(characters("\xED\xA0\x80").empty());
+    assert(characters("\xF4\x90\x80\x80").empty());
+    assert(characters("a\nb").empty());
     std::set<std::string> codes;
     int native = 0;
     for (const auto& layout : all()) {
@@ -33,7 +41,7 @@ int main(int argc, char** argv) {
             }
         }
         for (const auto& popup : layout.popups) {
-            assert(letters.count(popup.first) || popup.first == "'" || popup.first == "\"");
+            assert(letters.count(popup.first) || popup.first == "'" || popup.first == "\"" || popup.first == "," || popup.first == ".");
             assert(!popup.second.empty());
         }
     }
@@ -71,5 +79,19 @@ int main(int argc, char** argv) {
     assert(get("fr").rows[0] == "azertyuiop");
     assert(get("de").rows[0] == "qwertzuiop");
     assert(get("unknown").code == "en");
+    char pattern[] = "/tmp/vitagram-keyboard-lang-XXXXXX";
+    const std::string custom = mkdtemp(pattern);
+    std::ifstream source(std::string(argv[1]) + "/en.lang");
+    std::string catalog((std::istreambuf_iterator<char>(source)), {});
+    catalog.replace(catalog.find("@code = en"), 10, "@code = xx");
+    std::ofstream(custom + "/xx.lang") << catalog << "\n@keyboard.rows = abcdef|ghijkl|mnopqr\n@keyboard.upper.lower = abc\n@keyboard.upper.upper = XYZ\n";
+    std::ofstream(custom + "/bad.lang") << catalog << "\n@code = bad\n@keyboard.rows = abc|def\n";
+    i18n::init(argv[1], "xx", custom);
+    assert(i18n::current() == "xx");
+    assert(keyboard_languages::normalize({"xx"}) == List({"xx"}));
+    assert(get("xx").rows[0] == "abcdef" && upper("abc", "xx") == "XYZ");
+    assert(get("bad").code == "en");
+    assert(get("ru").rows[0] == "йцукенгшщзх");
+    std::filesystem::remove_all(custom);
     std::puts("keyboard layouts: all 19 catalogs, alphabets, locale alternatives, Turkish case, native routes and popup bounds: PASS");
 }

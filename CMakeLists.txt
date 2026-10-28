@@ -17,8 +17,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(VITA_APP_NAME "VitaGram")
 set(VITA_TITLEID  "VITAGRM01")
 # VitaSDK requires ##.##; the package version matches the final two source components.
-set(VITA_VERSION  "38.09")
-set(VITAGRAM_VERSION "0.38.09")
+set(VITA_VERSION  "38.97")
+set(VITAGRAM_VERSION "0.38.97")
 option(VITAGRAM_PERFORMANCE "Collect bounded performance diagnostics" ON)
 option(VITAGRAM_TGS_DIAGNOSTIC "Save one rendered TGS frame for diagnosis" OFF)
 option(VITAGRAM_PICKER_LOG "Write browsed folders and file names to ux0:data/vitagram/picker.log (plain text)" OFF)
@@ -34,7 +34,7 @@ if(VITAGRAM_FFMPEG_ROOT)
 endif()
 unset(ANIMATION_FFMPEG_ROOT CACHE) # an older build directory cached the legacy prefix here
 message(STATUS "FFmpeg: ${ANIMATION_FFMPEG_ROOT}")
-foreach(ANIMATION_LIB avformat avcodec swscale swresample avutil)
+foreach(ANIMATION_LIB avformat avcodec avfilter swscale swresample avutil)
   if(NOT EXISTS "${ANIMATION_FFMPEG_ROOT}/lib/lib${ANIMATION_LIB}.a")
     message(FATAL_ERROR "Missing FFmpeg with the Vita hardware decoder. Run bash ${FFMPEG_BUILD_SCRIPT} first.")
   endif()
@@ -224,6 +224,7 @@ endif()
 add_executable(${PROJECT_NAME}
   src/main.cpp
   src/gxm_guard.cpp
+  src/vita2d_texture_guard.cpp
   src/ui_battery.cpp
   src/i18n.cpp
   src/download_folder_picker.cpp
@@ -317,9 +318,11 @@ else()
 endif()
 
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=utf8_to_ucs2")
-foreach(GXM_CALL BeginScene ReserveVertexDefaultUniformBuffer ReserveFragmentDefaultUniformBuffer SetUniformDataF Draw)
+foreach(GXM_CALL BeginScene EndScene ReserveVertexDefaultUniformBuffer ReserveFragmentDefaultUniformBuffer SetUniformDataF Draw)
   target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=sceGxm${GXM_CALL}")
 endforeach()
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=vita2d_swap_buffers")
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=vita2d_create_empty_texture" "-Wl,--wrap=vita2d_create_empty_texture_format")
 # Every free() zeroes the block first while the vault is on (src/memory_hygiene.h).
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--wrap=free")
 # The prepared VitaSDK linker script reserves this gap for vita-elf-create's
@@ -332,6 +335,7 @@ target_link_libraries(${PROJECT_NAME}
   vitagram_h264
   jansson
   ${ANIMATION_FFMPEG_ROOT}/lib/libavformat.a
+  ${ANIMATION_FFMPEG_ROOT}/lib/libavfilter.a
   ${ANIMATION_FFMPEG_ROOT}/lib/libavcodec.a
   ${ANIMATION_FFMPEG_ROOT}/lib/libswscale.a
   ${ANIMATION_FFMPEG_ROOT}/lib/libswresample.a
@@ -371,6 +375,15 @@ target_link_libraries(${PROJECT_NAME}
   ScePromoterUtil_stub
 )
 
+# The engine is a separately downloaded module, never linked into the base VPK.
+set(VITAGRAM_WEBKIT_ROOT "" CACHE PATH "Prepared Vita WebKit prefix (empty skips building the add-on)")
+target_compile_definitions(${PROJECT_NAME} PRIVATE VITAGRAM_WEBKIT=1)
+target_sources(${PROJECT_NAME} PRIVATE src/webapp_loader.cpp src/webkit_download.cpp src/webview/trace.cpp)
+target_link_libraries(${PROJECT_NAME} SceKernelModulemgr_stub)
+if(VITAGRAM_WEBKIT_ROOT)
+  add_subdirectory(src/webview/module)
+endif()
+
 # VitaGram Updater: a separate tiny application that installs a staged update while VitaGram is not
 # running (the console cannot replace a running application); the scheme PSVitaAlive's self-updater uses.
 # Its own directory keeps vita_create_vpk()'s accumulated flags apart from the main package.
@@ -383,6 +396,8 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/assets/updater-head.bin")
   list(APPEND UPDATER_HEAD_FILES FILE "${CMAKE_SOURCE_DIR}/assets/updater-head.bin" updater/head.bin)
 endif()
 
+# Reserve the browser memory mode before a downloaded module is loaded.
+set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
 vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
@@ -393,6 +408,8 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
   FILE ${CMAKE_BINARY_DIR}/src/updater_app/vitagram-updater.vpk updater/vitagram-updater.vpk
   ${UPDATER_HEAD_FILES}
   FILE assets/cacert.pem certs/cacert.pem
+  FILE assets/webapp-bridge.js assets/webapp-bridge.js
+  FILE src/webview/LICENSE assets/webview-LICENSE.txt
   FILE assets/controller-icons/triangle.png assets/controller-icons/triangle.png
   FILE assets/controller-icons/square.png assets/controller-icons/square.png
   FILE assets/controller-icons/cross.png assets/controller-icons/cross.png

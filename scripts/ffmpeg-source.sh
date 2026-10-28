@@ -26,4 +26,5 @@ prepare_ffmpeg_source() {
     # portrait-video diagnostics. Applied to the verified release only.
     patch --directory="$destination" --strip=1 --forward --silent --input="$project_dir/scripts/ffmpeg-vita-7.1.patch"
     patch --directory="$destination" --strip=1 --forward --silent --input="$project_dir/scripts/ffmpeg-vita-portrait-diagnostics.patch"
+    patch --directory="$destination" --strip=1 --forward --silent --input="$project_dir/scripts/ffmpeg-vita-drain-pictures.patch"
 }

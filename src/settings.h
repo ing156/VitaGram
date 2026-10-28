@@ -6,6 +6,7 @@
 #include "secure_store.h"
 #include "vault.h"
 #include "ui_themes.h"
+#include "user_fonts.h"
 #include <jansson.h>
 #include <sys/stat.h>
 #include <cstdio>
@@ -19,8 +20,11 @@ struct AppSettings {
     int opacity = 75;       // percent of the surface PNGs (rows, message cards) over the wallpaper, 5% steps
     int avatar_shape = 0;   // 0 rounded square, 1 circle
     int chat_open_position = 0; // Latest, Telegram read position, device read position.
+    bool combined_view = false; // Keep the classic full-screen navigation by default.
+    int video_quality = 0; // Maximum: minimum, up to 360p, 480p or 720p.
     int scroll_speed = 0;   // Normal, Fast, Very fast: 2, 4, 6 pages per second.
     std::vector<std::string> keyboard_languages; // Empty = English + supported console language.
+    int keyboard_split = 1; // Small, medium (default), wide.
     bool custom_keyboard = false; // Use the in-app keyboard instead of the Vita IME.
     bool show_threads = false;
     bool user_colors = true;
@@ -51,6 +55,7 @@ struct AppSettings {
     }
     int cache_storage = 0;
     std::string download_dir = "ux0:downloads/vitagram";
+    std::string font_file; // Empty selects the built-in font chain.
     std::string language; // "" = follow the console language, otherwise a code from app0:lang/*.lang
     // load() found a settings.json not sealed by the vault although the vault is on: it was replaced
     // outside VitaGram (or never re-saved after switching encryption on) and has been ignored.
@@ -128,7 +133,12 @@ struct AppSettings {
         retention = value("retention", 2, 4); capacity = value("capacity", 2, 5);
         theme = ui_themes::from_saved_id(json_is_integer(json_object_get(root,"theme")) ? json_integer_value(json_object_get(root,"theme")) : 1);
         if (const char* file = json_string_value(json_object_get(root, "theme_file"))) theme = ui_themes::find_file(file);
+        if (json_t* v = json_object_get(root, "video_quality"))
+            if (json_is_integer(v) && json_integer_value(v) >= 0 && json_integer_value(v) <= 3)
+                video_quality = (int)json_integer_value(v);
         chat_open_position = value("chat_open_position", 0, 2);
+        if (json_t* v = json_object_get(root, "combined_view"))
+            if (json_is_boolean(v)) combined_view = json_is_true(v);
         font = value("font_size", 5, 6);
         request_batch_size = value("request_batch_size", 64, 64);
         opacity = std::max(kMinOpacity, std::min(kMaxOpacity, (value("opacity", 75, 100) + kOpacityStep / 2) / kOpacityStep * kOpacityStep));
@@ -136,6 +146,9 @@ struct AppSettings {
         if (json_t* v = json_object_get(root, "scroll_speed"))
             if (json_is_integer(v) && json_integer_value(v) >= 0 && json_integer_value(v) < ScrollRepeat::kSpeedChoices)
                 scroll_speed = (int)json_integer_value(v);
+        if (json_t* v = json_object_get(root, "keyboard_split"))
+            if (json_is_integer(v) && json_integer_value(v) >= 0 && json_integer_value(v) <= 2)
+                keyboard_split = (int)json_integer_value(v);
         if (json_t* v = json_object_get(root, "custom_keyboard"))
             if (json_is_boolean(v)) custom_keyboard = json_is_true(v);
         if (json_t* languages = json_object_get(root, "keyboard_languages")) {
@@ -195,6 +208,8 @@ struct AppSettings {
         proxy_username = secret_value("proxy_username");
         proxy_password = secret_value("proxy_password");
         language = string_value("language");
+        font_file = string_value("font_file");
+        if (!user_fonts::valid_filename(font_file)) font_file.clear();
         std::string saved_download_dir = string_value("download_dir");
         if (!saved_download_dir.empty() && saved_download_dir != "ux0:download/vitagram" &&
             saved_download_dir != "ux0:/download/vitagram") download_dir = saved_download_dir;
@@ -213,7 +228,10 @@ struct AppSettings {
         json_object_set_new(root, "opacity", json_integer(opacity));
         json_object_set_new(root, "avatar_shape", json_integer(avatar_shape));
         json_object_set_new(root, "chat_open_position", json_integer(chat_open_position));
+        json_object_set_new(root, "combined_view", json_boolean(combined_view));
+        json_object_set_new(root, "video_quality", json_integer(video_quality));
         json_object_set_new(root, "scroll_speed", json_integer(scroll_speed));
+        json_object_set_new(root, "keyboard_split", json_integer(keyboard_split));
         json_object_set_new(root, "custom_keyboard", json_boolean(custom_keyboard));
         json_t* languages = json_array();
         for (const auto& code : keyboard_languages::normalize(keyboard_languages))
@@ -236,6 +254,7 @@ struct AppSettings {
         json_object_set_new(root, "cache_storage", json_integer(cache_storage));
         json_object_set_new(root, "download_dir", json_string(download_dir.c_str()));
         json_object_set_new(root, "language", json_string(language.c_str()));
+        json_object_set_new(root, "font_file", json_string(font_file.c_str()));
         saveThemeHint();
         char* dumped = json_dumps(root, JSON_COMPACT);
         json_decref(root);

@@ -3,6 +3,17 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/vitagram-video-tests.XXXXXX")
 trap 'rm -rf -- "$build_dir"' EXIT
+python3 "$root/tests/background_video_test.py" "$root" "$build_dir"
+python3 "$root/tests/video_packet_wait_test.py" "$root" "$build_dir"
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -I "$root/src" \
+  "$root/tests/video_packet_pacer_test.cpp" -o "$build_dir/video-pacer"
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -I "$root/src" \
+  "$root/tests/video_sync_test.cpp" -o "$build_dir/video-sync"
+"$build_dir/video-sync"
+"$build_dir/video-pacer"
+"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Werror -I "$root/src" \
+  "$root/tests/video_sync_test.cpp" -o "$build_dir/video-sync"
+"$build_dir/video-sync"
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -I "$root/src" -I "$root/tests" -DVITAGRAM_LANG_DIR='"'"$root/assets/lang"'"' \
   -I "$root/build-modern/external/jansson/include" "$root/tests/video_note_test.cpp" \
   -l:libjansson.so.4 -o "$build_dir/message_test"

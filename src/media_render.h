@@ -1,5 +1,6 @@
 #pragma once
 #include <vita2d.h>
+#include <string>
 
 // Called on the UI thread; uploads/evictions happen only between frames.
 // Noto Sans for text + Noto Color Emoji as a color-glyph fallback.
@@ -17,6 +18,9 @@ bool rich_text_set_language_font(const char* path);
 enum class LanguageFontStatus { Loading, Ready, Failed };
 // Queue only the latest request. Does not change the active face. UI thread only.
 LanguageFontStatus rich_text_prepare_language_font(const char* path);
+// User filename only, empty for built-in fonts. Prepare on the UI thread, commit when ready.
+LanguageFontStatus rich_text_prepare_custom_font(const std::string& filename);
+bool rich_text_set_custom_font(const std::string& filename);
 // Japanese uses the permanent fallback face, loaded by the startup worker.
 LanguageFontStatus rich_text_japanese_font_status();
 void emoji_load_one();

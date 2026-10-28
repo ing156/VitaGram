@@ -1,0 +1,1303 @@
+--- a/Source/cmake/WebKitCommon.cmake
++++ b/Source/cmake/WebKitCommon.cmake
+@@ -141,7 +141,9 @@
+     # -----------------------------------------------------------------------------
+     # Determine the operating system
+     # -----------------------------------------------------------------------------
+-    if (UNIX)
++    if (PORT STREQUAL "Vita")
++        set(WTF_OS_UNIX 1)
++    elseif (UNIX)
+         if (APPLE)
+             set(WTF_OS_MACOS 1)
+         elseif (CMAKE_SYSTEM_NAME MATCHES "Linux")
+--- a/Source/WTF/wtf/PlatformOS.h
++++ b/Source/WTF/wtf/PlatformOS.h
+@@ -133,6 +133,9 @@
+ 
+ 
+ /* OS(UNIX) - Any Unix-like system */
++#if defined(WTF_PLATFORM_VITA) && WTF_PLATFORM_VITA
++#define WTF_OS_UNIX 1
++#endif
+ #if    OS(AIX)              \
+     || OS(DARWIN)           \
+     || OS(FREEBSD)          \
+--- a/Source/WebKit/UIProcess/API/C/playstation/WKRunLoop.h
++++ b/Source/WebKit/UIProcess/API/C/playstation/WKRunLoop.h
+@@ -34,6 +34,7 @@
+ typedef void(*WKRunLoopCallback)(void *userData);
+ 
+ WK_EXPORT void WKRunLoopRunMain();
++WK_EXPORT void WKRunLoopIterateMain();
+ WK_EXPORT void WKRunLoopStopMain();
+ WK_EXPORT void WKRunLoopCallOnMainThread(WKRunLoopCallback, void* userData);
+ WK_EXPORT void WKRunLoopInitializeMain();
+--- a/Source/WebKit/UIProcess/API/C/playstation/WKRunLoop.cpp
++++ b/Source/WebKit/UIProcess/API/C/playstation/WKRunLoop.cpp
+@@ -57,3 +57,5 @@
+     // WKRunLoopInitializeMain() should be renamed to more straightforward API name to wrap InitializeWebKit2().
+     WebKit::InitializeWebKit2();
+ }
++
++void WKRunLoopIterateMain() { WTF::RunLoop::cycle(); }
+--- a/Source/WebKit/NetworkProcess/curl/NetworkProcessCurl.cpp
++++ b/Source/WebKit/NetworkProcess/curl/NetworkProcessCurl.cpp
+@@ -44,7 +44,7 @@
+     // Vita firmware trust data is not current enough for a modern browser.
+     // The release VPK carries curl's verified Mozilla CA bundle; peer and
+     // hostname verification remain enabled by CurlHandle::enableSSL().
+-    CurlContext::singleton().sslHandle().setCACertPath("app0:/assets/certificates/cacert.pem"_s);
++    CurlContext::singleton().sslHandle().setCACertPath("app0:certs/cacert.pem"_s);
+ #endif
+ }
+ 
+--- a/Source/WebCore/platform/SharedMemoryVita.cpp
++++ b/Source/WebCore/platform/SharedMemoryVita.cpp
+@@ -25,7 +25,7 @@
+ 
+ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
+ {
+-    char path[] = "ux0:data/vita-stream-browser/shmem-XXXXXX";
++    char path[] = "ux0:data/vitagram/webview/shmem-XXXXXX";
+     int descriptor = mkstemp(path);
+     if (descriptor < 0) {
+         vita_stream_browser_trace("webkit.shmem.mkstemp.failed");
+@@ -33,8 +33,10 @@
+     }
+     // Keep the descriptor-backed file alive but remove its directory entry so
+     // repeated paints cannot leave temporary files behind.
+-    if (unlink(path) < 0)
+-        vita_stream_browser_trace("webkit.shmem.unlink.failed");
++    if (unlink(path) < 0) {
++        close(descriptor);
++        return nullptr;
++    }
+     void* data = calloc(1, size);
+     if (!data) {
+         vita_stream_browser_trace("webkit.shmem.calloc.failed");
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -59,7 +59,7 @@
+ {
+     if (!m_fontManager) {
+ #if PLATFORM(VITA)
+-        m_fontManager = SkFontMgr_New_Custom_Directory("app0:/assets/fonts");
++        m_fontManager = SkFontMgr_New_Custom_Directory("app0:assets");
+ #elif OS(ANDROID)
+         m_fontManager = SkFontMgr_New_Android(nullptr);
+ #elif OS(WINDOWS)
+--- a/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmHKDFOpenSSL.cpp
+@@ -31,7 +31,8 @@
+ #include "ExceptionOr.h"
+ #include "OpenSSLUtilities.h"
+ #if OPENSSL_VERSION_NUMBER >= 0x10100000L
+-#include <openssl/hkdf.h>
++#include <openssl/kdf.h>
++#include <limits>
+ #else
+ #include <openssl/hmac.h>
+ #include <algorithm>
+@@ -91,7 +92,22 @@
+ #if OPENSSL_VERSION_NUMBER < 0x10100000L
+     if (!deriveHKDF(output.mutableSpan(), algorithm, key.key().span(), parameters.saltVector().span(), parameters.infoVector().span()))
+ #else
+-    if (HKDF(output.mutableSpan().data(), output.size(), algorithm, key.key().span().data(), key.key().size(), parameters.saltVector().span().data(), parameters.saltVector().size(), parameters.infoVector().span().data(), parameters.infoVector().size()) <= 0)
++    auto* context = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
++    if (!context)
++        return Exception { ExceptionCode::OperationError };
++    const auto salt = parameters.saltVector().span();
++    const auto info = parameters.infoVector().span();
++    size_t outputLength = output.size();
++    bool valid = key.key().size() <= INT_MAX && salt.size() <= INT_MAX && info.size() <= INT_MAX
++        && EVP_PKEY_derive_init(context) > 0
++        && EVP_PKEY_CTX_set_hkdf_md(context, algorithm) > 0
++        && EVP_PKEY_CTX_set1_hkdf_salt(context, salt.data(), salt.size()) > 0
++        && EVP_PKEY_CTX_set1_hkdf_key(context, key.key().span().data(), key.key().size()) > 0
++        && EVP_PKEY_CTX_add1_hkdf_info(context, info.data(), info.size()) > 0
++        && EVP_PKEY_derive(context, output.mutableSpan().data(), &outputLength) > 0
++        && outputLength == output.size();
++    EVP_PKEY_CTX_free(context);
++    if (!valid)
+ #endif
+         return Exception { ExceptionCode::OperationError };
+ 
+--- a/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoAlgorithmECDSAOpenSSL.cpp
+@@ -45,7 +45,8 @@
+     if (!digest)
+         return Exception { ExceptionCode::OperationError };
+ 
+-    EC_KEY* ecKey = EVP_PKEY_get0_EC_KEY(key.platformKey().get());
++    auto ecKeyOwner = ECKeyPtr(EVP_PKEY_get1_EC_KEY(key.platformKey().get()));
++    EC_KEY* ecKey = ecKeyOwner.get();
+     if (!ecKey)
+         return Exception { ExceptionCode::OperationError };
+ 
+@@ -89,7 +90,8 @@
+     if (!digest)
+         return Exception { ExceptionCode::OperationError };
+ 
+-    EC_KEY* ecKey = EVP_PKEY_get0_EC_KEY(key.platformKey().get());
++    auto ecKeyOwner = ECKeyPtr(EVP_PKEY_get1_EC_KEY(key.platformKey().get()));
++    EC_KEY* ecKey = ecKeyOwner.get();
+     if (!ecKey)
+         return Exception { ExceptionCode::OperationError };
+ 
+--- a/Source/WebCore/crypto/openssl/CryptoKeyECOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoKeyECOpenSSL.cpp
+@@ -358,7 +358,8 @@
+     if (!pkey || EVP_PKEY_base_id(pkey.get()) != EVP_PKEY_EC)
+         return nullptr;
+ 
+-    auto ecKey = EVP_PKEY_get0_EC_KEY(pkey.get());
++    auto ecKeyOwner = ECKeyPtr(EVP_PKEY_get1_EC_KEY(pkey.get()));
++    EC_KEY* ecKey = ecKeyOwner.get();
+     if (!ecKey)
+         return nullptr;
+ 
+@@ -375,7 +376,8 @@
+ 
+ Vector<uint8_t> CryptoKeyEC::platformExportRaw() const
+ {
+-    EC_KEY* key = EVP_PKEY_get0_EC_KEY(platformKey().get());
++    auto keyOwner = ECKeyPtr(EVP_PKEY_get1_EC_KEY(platformKey().get()));
++    EC_KEY* key = keyOwner.get();
+     if (!key)
+         return { };
+     
+@@ -396,7 +398,8 @@
+ {
+     size_t keySizeInBytes = (keySizeInBits() + 7) / 8;
+ 
+-    EC_KEY* key = EVP_PKEY_get0_EC_KEY(platformKey().get());
++    auto keyOwner = ECKeyPtr(EVP_PKEY_get1_EC_KEY(platformKey().get()));
++    EC_KEY* key = keyOwner.get();
+     if (!key)
+         return false;
+ 
+--- a/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
++++ b/Source/WebCore/crypto/openssl/CryptoKeyRSAOpenSSL.cpp
+@@ -164,7 +164,8 @@
+ 
+ size_t CryptoKeyRSA::keySizeInBits() const
+ {
+-    RSA* rsa = EVP_PKEY_get0_RSA(m_platformKey.get());
++    auto rsaOwner = RSAPtr(EVP_PKEY_get1_RSA(m_platformKey.get()));
++    RSA* rsa = rsaOwner.get();
+     if (!rsa)
+         return 0;
+ 
+@@ -297,7 +298,8 @@
+ 
+ auto CryptoKeyRSA::algorithm() const -> KeyAlgorithm
+ {
+-    RSA* rsa = EVP_PKEY_get0_RSA(platformKey());
++    auto rsaOwner = RSAPtr(EVP_PKEY_get1_RSA(platformKey()));
++    RSA* rsa = rsaOwner.get();
+ 
+     auto modulusLength = getRSAModulusLength(rsa);
+     Vector<uint8_t> publicExponent;
+@@ -326,7 +328,8 @@
+ 
+ std::unique_ptr<CryptoKeyRSAComponents> CryptoKeyRSA::exportData() const
+ {
+-    RSA* rsa = EVP_PKEY_get0_RSA(platformKey());
++    auto rsaOwner = RSAPtr(EVP_PKEY_get1_RSA(platformKey()));
++    RSA* rsa = rsaOwner.get();
+     if (!rsa)
+         return nullptr;
+ 
+--- a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
++++ b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
+@@ -32,7 +32,11 @@
+ #include <wtf/TZoneMallocInlines.h>
+ 
+ #if USE(WPE_BACKEND_PLAYSTATION)
++#if PLATFORM(VITA)
++#include <wpe/wpe.h>
++#else
+ #include <wpe/playstation.h>
++#endif
+ #endif
+ 
+ namespace WebKit {
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.h
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.h
+@@ -143,7 +143,12 @@
+     RunLoop::Timer m_exitCompositingTimer;
+ 
+     // The layer tree host that handles accelerated compositing.
++#if PLATFORM(VITA)
++    // Vita paints into the software backing store; no GPU host can be created.
++    static constexpr LayerTreeHost* m_layerTreeHost = nullptr;
++#else
+     std::unique_ptr<LayerTreeHost> m_layerTreeHost;
++#endif
+ 
+     WebCore::Region m_dirtyRegion;
+     WebCore::IntRect m_scrollRect;
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
+@@ -222,7 +222,12 @@
+     if (settings.acceleratedCompositingEnabled())
+         WebProcess::singleton().initializePlatformDisplayIfNeeded();
+ #endif
++#if PLATFORM(VITA)
++    settings.setAcceleratedCompositingEnabled(false);
++    settings.setForceCompositingMode(false);
++#else
+     settings.setForceCompositingMode(store.getBoolValueForKey(WebPreferencesKey::forceCompositingModeKey()));
++#endif
+     // Fixed position elements need to be composited and create stacking contexts
+     // in order to be scrolled by the ScrollingCoordinator.
+     settings.setAcceleratedCompositingForFixedPositionEnabled(settings.acceleratedCompositingEnabled());
+@@ -533,6 +538,9 @@
+ 
+ void DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingMode(GraphicsLayer* graphicsLayer)
+ {
++#if PLATFORM(VITA)
++    RELEASE_ASSERT(!graphicsLayer);
++#else
+ #if PLATFORM(GTK)
+     if (!m_alwaysUseCompositing) {
+         m_webPage->corePage()->settings().setForceCompositingMode(true);
+@@ -580,6 +588,7 @@
+     m_scrollOffset = IntSize();
+     m_displayTimer.stop();
+     m_isWaitingForDidUpdate = false;
++#endif
+ }
+ 
+ void DrawingAreaCoordinatedGraphics::sendEnterAcceleratedCompositingModeIfNeeded()
+@@ -598,6 +607,9 @@
+ 
+ void DrawingAreaCoordinatedGraphics::exitAcceleratedCompositingMode()
+ {
++#if PLATFORM(VITA)
++    return;
++#else
+     if (m_alwaysUseCompositing)
+         return;
+ 
+@@ -637,6 +649,7 @@
+         // UI process, we still need to let it know about the new contents, so send an Update message.
+         send(Messages::DrawingAreaProxy::Update(0, WTFMove(updateInfo)));
+     }
++#endif
+ }
+ 
+ void DrawingAreaCoordinatedGraphics::scheduleDisplay()
+--- a/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
++++ b/Source/WTF/wtf/posix/ThreadingPOSIX.cpp
+@@ -42,6 +42,9 @@
+ #include <wtf/ThreadingPrimitives.h>
+ #include <wtf/WTFConfig.h>
+ #include <wtf/WordLock.h>
++#if PLATFORM(VITA)
++#include <wtf/vita/VitaThreading.h>
++#endif
+ 
+ #if OS(HAIKU)
+ #include <OS.h>
+@@ -83,9 +86,14 @@
+ 
+ namespace WTF {
+ 
+-Thread::~Thread() = default;
+-
+-#if !OS(DARWIN)
++Thread::~Thread()
++{
++#if PLATFORM(VITA)
++    RELEASE_ASSERT(!vitagram_wk_unregister_thread(this));
++#endif
++}
++
++#if !OS(DARWIN) && !PLATFORM(VITA)
+ class Semaphore final {
+     WTF_MAKE_NONCOPYABLE(Semaphore);
+     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(Semaphore);
+@@ -187,6 +195,9 @@
+ 
+ void Thread::initializePlatformThreading()
+ {
++#if PLATFORM(VITA)
++    g_wtfConfig.isThreadSuspendResumeSignalConfigured = true;
++#else
+     if (!g_wtfConfig.isUserSpecifiedThreadSuspendResumeSignalConfigured) {
+         g_wtfConfig.sigThreadSuspendResume = SIGUSR1;
+         if (const char* string = getenv("JSC_SIGNAL_FOR_GC")) {
+@@ -238,6 +249,7 @@
+     bool signalIsInstalled = attemptToSetSignal(g_wtfConfig.sigThreadSuspendResume);
+     RELEASE_ASSERT(signalIsInstalled);
+ #endif
++#endif
+ }
+ 
+ #if OS(LINUX)
+@@ -249,7 +261,7 @@
+ 
+ void Thread::initializeCurrentThreadEvenIfNonWTFCreated()
+ {
+-#if !OS(DARWIN)
++#if !OS(DARWIN) && !PLATFORM(VITA)
+     RELEASE_ASSERT(g_wtfConfig.isThreadSuspendResumeSignalConfigured);
+     sigset_t mask;
+     sigemptyset(&mask);
+@@ -334,7 +346,11 @@
+ #endif
+     if (stackSize)
+         pthread_attr_setstacksize(&attr, stackSize.value());
++#if PLATFORM(VITA)
++    int error = vitagram_wk_pthread_create(&threadHandle, &attr, wtfThreadEntryPoint, context);
++#else
+     int error = pthread_create(&threadHandle, &attr, wtfThreadEntryPoint, context);
++#endif
+     pthread_attr_destroy(&attr);
+     if (error) {
+         LOG_ERROR("Failed to create pthread at entry point %p with context %p", wtfThreadEntryPoint, context);
+@@ -475,7 +494,12 @@
+ auto Thread::suspend(const ThreadSuspendLocker&) -> Expected<void, PlatformSuspendError>
+ {
+     RELEASE_ASSERT_WITH_MESSAGE(this != &Thread::currentSingleton(), "We do not support suspending the current thread itself.");
+-#if OS(DARWIN)
++#if PLATFORM(VITA)
++    int status = vitagram_wk_suspend_thread(this);
++    if (status)
++        return makeUnexpected(status);
++    return { };
++#elif OS(DARWIN)
+     kern_return_t result = thread_suspend(m_platformThread);
+     if (result != KERN_SUCCESS)
+         return makeUnexpected(result);
+@@ -504,7 +528,9 @@
+ 
+ void Thread::resume(const ThreadSuspendLocker&)
+ {
+-#if OS(DARWIN)
++#if PLATFORM(VITA)
++    RELEASE_ASSERT(!vitagram_wk_resume_thread(this));
++#elif OS(DARWIN)
+     thread_resume(m_platformThread);
+ #else
+     if (m_suspendCount == 1) {
+@@ -561,7 +587,12 @@
+ 
+ size_t Thread::getRegisters(const ThreadSuspendLocker&, PlatformRegisters& registers)
+ {
+-#if OS(DARWIN)
++#if PLATFORM(VITA)
++    VitaGcRegisters snapshot;
++    RELEASE_ASSERT(!vitagram_wk_copy_registers(this, &snapshot));
++    registers.stackPointer = reinterpret_cast<void*>(snapshot.general[13]);
++    return sizeof(registers);
++#elif OS(DARWIN)
+     auto metadata = threadStateMetadata();
+     kern_return_t result = thread_get_state(m_platformThread, metadata.flavor, (thread_state_t)&registers, &metadata.userCount);
+     if (result != KERN_SUCCESS) {
+--- a/Source/JavaScriptCore/heap/MachineStackMarker.cpp
++++ b/Source/JavaScriptCore/heap/MachineStackMarker.cpp
+@@ -24,6 +24,9 @@
+ 
+ #include "ConservativeRoots.h"
+ #include "MachineContext.h"
++#if PLATFORM(VITA)
++#include <wtf/vita/VitaThreading.h>
++#endif
+ #include <wtf/BitVector.h>
+ #include <wtf/PageBlock.h>
+ #include <wtf/StdLibExtras.h>
+@@ -110,18 +113,28 @@
+ // See: https://bugs.webkit.org/show_bug.cgi?id=146297
+ void MachineThreads::tryCopyOtherThreadStack(const ThreadSuspendLocker& locker, Thread& thread, void* buffer, size_t capacity, size_t* size)
+ {
++#if PLATFORM(VITA)
++    UNUSED_PARAM(locker);
++    VitaGcRegisters registers;
++    RELEASE_ASSERT(!vitagram_wk_copy_registers(&thread, &registers));
++    size_t registersSize = sizeof(registers);
++    void* stackPointer = reinterpret_cast<void*>(registers.general[13]);
++    RELEASE_ASSERT(thread.stack().contains(stackPointer));
++#else
+     PlatformRegisters registers;
+     size_t registersSize = thread.getRegisters(locker, registers);
++    void* stackPointer = MachineContext::stackPointer(registers);
++#endif
+ 
+     // This is a workaround for <rdar://problem/27607384>. libdispatch recycles work
+     // queue threads without running pthread exit destructors. This can cause us to scan a
+     // thread during work queue initialization, when the stack pointer is null.
+-    if (!MachineContext::stackPointer(registers)) [[unlikely]] {
++    if (!stackPointer) [[unlikely]] {
+         *size = 0;
+         return;
+     }
+ 
+-    std::pair<void*, size_t> stack = captureStack(thread, MachineContext::stackPointer(registers));
++    std::pair<void*, size_t> stack = captureStack(thread, stackPointer);
+ 
+     bool canCopy = *size + registersSize + stack.second <= capacity;
+ 
+@@ -158,6 +171,10 @@
+                     if (result)
+                         isSuspended.set(index);
+                     else {
++#if PLATFORM(VITA)
++                        // Omitting a live mutator's roots would corrupt the heap.
++                        RELEASE_ASSERT_WITH_MESSAGE(false, "Vita GC thread suspension failed: %d", result.error());
++#endif
+ #if OS(DARWIN)
+                         // These threads will be removed from the ThreadGroup. Thus, we do not do anything here except for reporting.
+                         ASSERT(result.error() != KERN_SUCCESS);
+--- a/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
++++ b/Source/WebKit/Shared/unix/AuxiliaryProcessMain.cpp
+@@ -99,11 +99,13 @@
+ 
+ void AuxiliaryProcess::platformInitialize(const AuxiliaryProcessInitializationParameters&)
+ {
++#if !PLATFORM(VITA)
+     struct sigaction signalAction;
+     memset(&signalAction, 0, sizeof(signalAction));
+     RELEASE_ASSERT(!sigemptyset(&signalAction.sa_mask));
+     signalAction.sa_handler = SIG_IGN;
+     RELEASE_ASSERT(!sigaction(SIGPIPE, &signalAction, nullptr));
++#endif // Vita socket calls return errors without POSIX SIGPIPE delivery.
+ }
+ 
+ } // namespace WebKit
+--- a/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
++++ b/Source/WebCore/platform/graphics/texmap/coordinated/GraphicsLayerCoordinated.cpp
+@@ -51,7 +51,11 @@
+     if (factory)
+         return factory->createGraphicsLayer(layerType, client);
+ 
++#if PLATFORM(VITA)
++    RELEASE_ASSERT_NOT_REACHED();
++#else
+     return adoptRef(*new GraphicsLayerCoordinated(layerType, client, CoordinatedPlatformLayer::create()));
++#endif
+ }
+ 
+ GraphicsLayerCoordinated::GraphicsLayerCoordinated(Type layerType, GraphicsLayerClient& client, Ref<CoordinatedPlatformLayer>&& platformLayer)
+--- a/Source/WTF/wtf/Threading.cpp
++++ b/Source/WTF/wtf/Threading.cpp
+@@ -24,6 +24,9 @@
+  */
+ 
+ #include "config.h"
++#if PLATFORM(VITA)
++#include <wtf/vita/VitaThreading.h>
++#endif
+ #include <wtf/Threading.h>
+ 
+ #include <cstring>
+@@ -231,6 +234,9 @@
+ 
+ void Thread::initializeInThread()
+ {
++#if PLATFORM(VITA)
++    RELEASE_ASSERT(!vitagram_wk_register_thread(this));
++#endif
+     if (m_stack.isEmpty())
+         m_stack = StackBounds::currentThreadStackBounds();
+     m_savedLastStackTop = stack().origin();
+--- a/Source/WTF/wtf/PlatformVita.cmake
++++ b/Source/WTF/wtf/PlatformVita.cmake
+@@ -5,6 +5,7 @@
+ # consumers outside the WTF source tree.
+ list(APPEND WTF_PUBLIC_HEADERS
+     unix/UnixFileDescriptor.h
++    vita/VitaThreading.h
+ )
+ 
+ # CMake's Generic-GNU platform file seeds CMAKE_DL_LIBS with "dl" even
+--- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.h
++++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.h
+@@ -81,7 +81,9 @@
+ 
+     RefPtr<WorkerPool> m_cpuWorkerPool;
+     RefPtr<WorkerPool> m_gpuWorkerPool;
++#if !PLATFORM(VITA)
+     std::unique_ptr<BitmapTexturePool> m_texturePool;
++#endif
+ };
+ 
+ } // namespace WebCore
+--- a/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
++++ b/Source/WebCore/platform/graphics/skia/SkiaPaintingEngine.cpp
+@@ -61,6 +61,9 @@
+ 
+ SkiaPaintingEngine::SkiaPaintingEngine(unsigned numberOfCPUThreads, unsigned numberOfGPUThreads)
+ {
++#if PLATFORM(VITA)
++    UNUSED_PARAM(numberOfGPUThreads);
++#else
+     if (ProcessCapabilities::canUseAcceleratedBuffers()) {
+         m_texturePool = makeUnique<BitmapTexturePool>();
+ 
+@@ -68,6 +71,7 @@
+             m_gpuWorkerPool = WorkerPool::create("SkiaGPUWorker"_s, numberOfGPUThreads);
+     }
+ 
++#endif
+     if (numberOfCPUThreads)
+         m_cpuWorkerPool = WorkerPool::create("SkiaCPUWorker"_s, numberOfCPUThreads);
+ }
+@@ -81,7 +85,11 @@
+ 
+ static bool canPerformAcceleratedRendering()
+ {
++#if PLATFORM(VITA)
++    return false;
++#else
+     return ProcessCapabilities::canUseAcceleratedBuffers() && PlatformDisplay::sharedDisplay().skiaGLContext();
++#endif
+ }
+ 
+ void SkiaPaintingEngine::paintIntoGraphicsContext(const GraphicsLayer& layer, GraphicsContext& context, const IntRect& dirtyRect, bool contentsOpaque, float contentsScale) const
+@@ -194,6 +202,9 @@
+ 
+ Ref<CoordinatedTileBuffer> SkiaPaintingEngine::createBuffer(RenderingMode renderingMode, const IntSize& size, bool contentsOpaque) const
+ {
++#if PLATFORM(VITA)
++    RELEASE_ASSERT(renderingMode == RenderingMode::Unaccelerated);
++#else
+     if (renderingMode == RenderingMode::Accelerated) {
+         PlatformDisplay::sharedDisplay().skiaGLContext()->makeContextCurrent();
+ 
+@@ -205,6 +216,7 @@
+         return CoordinatedAcceleratedTileBuffer::create(m_texturePool->acquireTexture(size, textureFlags));
+     }
+ 
++#endif
+     return CoordinatedUnacceleratedTileBuffer::create(size, contentsOpaque ? CoordinatedTileBuffer::NoFlags : CoordinatedTileBuffer::SupportsAlpha);
+ }
+ 
+--- a/Source/WebCore/platform/graphics/ImageBuffer.cpp
++++ b/Source/WebCore/platform/graphics/ImageBuffer.cpp
+@@ -99,7 +99,7 @@
+             if (auto imageBuffer = ImageBuffer::create<ImageBufferIOSurfaceBackend>(size, resolutionScale, colorSpace, pixelFormat, purpose, creationContext))
+                 return imageBuffer;
+         }
+-#elif USE(SKIA)
++#elif USE(SKIA) && !PLATFORM(VITA)
+         if (auto imageBuffer = ImageBuffer::create<ImageBufferSkiaAcceleratedBackend>(size, resolutionScale, colorSpace, pixelFormat, purpose, { }))
+             return imageBuffer;
+ #endif
+--- a/Source/WTF/wtf/PlatformVita.cmake
++++ b/Source/WTF/wtf/PlatformVita.cmake
+@@ -6,6 +6,7 @@
+ list(APPEND WTF_PUBLIC_HEADERS
+     unix/UnixFileDescriptor.h
+     vita/VitaThreading.h
++    vita/VitaSharedMemory.h
+ )
+ 
+ # CMake's Generic-GNU platform file seeds CMAKE_DL_LIBS with "dl" even
+--- a/Source/WTF/wtf/unix/UnixFileDescriptor.h
++++ b/Source/WTF/wtf/unix/UnixFileDescriptor.h
+@@ -31,6 +31,11 @@
+ #include <wtf/StdLibExtras.h>
+ #include <wtf/UniStdExtras.h>
+ 
++#if PLATFORM(VITA)
++#include <memory>
++namespace Vita { class SharedBuffer; }
++#endif
++
+ namespace WTF {
+ 
+ class UnixFileDescriptor {
+@@ -55,7 +60,10 @@
+ 
+     UnixFileDescriptor(UnixFileDescriptor&& o)
+     {
+-        m_value = o.release();
++        m_value = std::exchange(o.m_value, -1);
++#if PLATFORM(VITA)
++        m_memory = std::move(o.m_memory);
++#endif
+     }
+ 
+     UnixFileDescriptor& operator=(UnixFileDescriptor&& o)
+@@ -74,19 +82,38 @@
+             closeWithRetry(std::exchange(m_value, -1));
+     }
+ 
++#if PLATFORM(VITA)
++    explicit UnixFileDescriptor(std::shared_ptr<Vita::SharedBuffer> memory)
++        : m_memory(std::move(memory)) { }
++    const std::shared_ptr<Vita::SharedBuffer>& sharedMemory() const { return m_memory; }
++    explicit operator bool() const { return m_value >= 0 || !!m_memory; }
++#else
+     explicit operator bool() const { return m_value >= 0; }
++#endif
+ 
+     int value() const { return m_value; }
+ 
+     UnixFileDescriptor duplicate() const
+     {
++#if PLATFORM(VITA)
++        if (m_memory)
++            return UnixFileDescriptor { m_memory };
++#endif
+         return UnixFileDescriptor { m_value, Duplicate };
+     }
+ 
+-    int release() WARN_UNUSED_RETURN { return std::exchange(m_value, -1); }
++    int release() WARN_UNUSED_RETURN {
++#if PLATFORM(VITA)
++        RELEASE_ASSERT(!m_memory);
++#endif
++        return std::exchange(m_value, -1);
++    }
+ 
+ private:
+     int m_value { -1 };
++#if PLATFORM(VITA)
++    std::shared_ptr<Vita::SharedBuffer> m_memory;
++#endif
+ };
+ 
+ } // namespace WTF
+--- a/Source/WebCore/platform/SharedMemoryVita.cpp
++++ b/Source/WebCore/platform/SharedMemoryVita.cpp
+@@ -1,16 +1,15 @@
+ #include "config.h"
+ #include "SharedMemory.h"
+ 
+-#include <cstdlib>
+-#include <fcntl.h>
+-#include <unistd.h>
++#include <cstring>
+ #include <wtf/Ref.h>
+ #include <wtf/RefPtr.h>
+ #include <wtf/StdLibExtras.h>
++#include <wtf/vita/VitaSharedMemory.h>
++
++extern "C" unsigned vitagram_webkit_ram_transport_version() { return 1; }
+ 
+ namespace WebCore {
+-
+-extern "C" void vita_stream_browser_trace(const char*);
+ 
+ SharedMemoryHandle::SharedMemoryHandle(const SharedMemoryHandle& handle)
+     : m_handle(handle.m_handle.duplicate())
+@@ -25,85 +24,44 @@
+ 
+ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
+ {
+-    char path[] = "ux0:data/vitagram/webview/shmem-XXXXXX";
+-    int descriptor = mkstemp(path);
+-    if (descriptor < 0) {
+-        vita_stream_browser_trace("webkit.shmem.mkstemp.failed");
++    auto memory = Vita::SharedBuffer::allocate(size);
++    if (!memory)
+         return nullptr;
+-    }
+-    // Keep the descriptor-backed file alive but remove its directory entry so
+-    // repeated paints cannot leave temporary files behind.
+-    if (unlink(path) < 0) {
+-        close(descriptor);
+-        return nullptr;
+-    }
+-    void* data = calloc(1, size);
+-    if (!data) {
+-        vita_stream_browser_trace("webkit.shmem.calloc.failed");
+-        close(descriptor);
+-        return nullptr;
+-    }
+-    vita_stream_browser_trace("webkit.shmem.allocate.ready");
+     RefPtr instance = adoptRef(new SharedMemory);
+-    instance->m_data = data;
++    instance->m_data = memory->data;
+     instance->m_size = size;
+-    instance->m_fileDescriptor = UnixFileDescriptor { descriptor, UnixFileDescriptor::Adopt };
++    instance->m_fileDescriptor = UnixFileDescriptor { std::move(memory) };
+     return instance;
+ }
+ 
+ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection)
+ {
+-    vita_stream_browser_trace("webkit.shmem.map.enter");
+-    void* data = malloc(handle.size());
+-    if (!data) {
+-        vita_stream_browser_trace("webkit.shmem.map.malloc.failed");
++    auto memory = handle.m_handle.sharedMemory();
++    if (!memory || !handle.size() || handle.size() > memory->size)
+         return nullptr;
+-    }
+-    if (lseek(handle.m_handle.value(), 0, SEEK_SET) < 0) {
+-        vita_stream_browser_trace("webkit.shmem.map.seek.failed");
+-        free(data);
+-        return nullptr;
+-    }
+-    size_t offset = 0;
+-    while (offset < handle.size()) {
+-        auto amount = read(handle.m_handle.value(), static_cast<uint8_t*>(data) + offset, handle.size() - offset);
+-        if (amount <= 0) {
+-            vita_stream_browser_trace("webkit.shmem.map.read.failed");
+-            free(data);
+-            return nullptr;
+-        }
+-        offset += static_cast<size_t>(amount);
+-    }
+     RefPtr instance = adoptRef(new SharedMemory);
+-    instance->m_data = data;
++    instance->m_data = memory->data;
+     instance->m_size = handle.size();
+-    vita_stream_browser_trace("webkit.shmem.map.ready");
++    instance->m_fileDescriptor = WTFMove(handle.m_handle);
+     return instance;
+ }
+ 
+ RefPtr<SharedMemory> SharedMemory::wrapMap(void* data, size_t size, int descriptor)
+ {
+-    RefPtr instance = adoptRef(new SharedMemory);
+-    instance->m_data = data;
+-    instance->m_size = size;
+-    instance->m_fileDescriptor = UnixFileDescriptor { descriptor, UnixFileDescriptor::Adopt };
+-    instance->m_isWrappingMap = true;
++    UnixFileDescriptor owner { descriptor, UnixFileDescriptor::Adopt };
++    if (!data)
++        return nullptr;
++    auto instance = allocate(size);
++    if (instance)
++        std::memcpy(instance->m_data, data, size);
+     return instance;
+ }
+ 
+-SharedMemory::~SharedMemory()
+-{
+-    if (!m_isWrappingMap)
+-        free(m_data);
+-}
++SharedMemory::~SharedMemory() = default;
+ 
+ std::optional<SharedMemory::Handle> SharedMemory::createHandle(Protection)
+ {
+-    if (!m_fileDescriptor)
+-        return std::nullopt;
+-    if (lseek(m_fileDescriptor.value(), 0, SEEK_SET) < 0 || write(m_fileDescriptor.value(), m_data, m_size) != static_cast<ssize_t>(m_size))
+-        return std::nullopt;
+-    UnixFileDescriptor duplicate { m_fileDescriptor.value(), UnixFileDescriptor::Duplicate };
++    auto duplicate = m_fileDescriptor.duplicate();
+     if (!duplicate)
+         return std::nullopt;
+     return Handle { WTFMove(duplicate), m_size };
+--- a/Source/WebKit/Platform/IPC/Connection.h
++++ b/Source/WebKit/Platform/IPC/Connection.h
+@@ -34,6 +34,9 @@
+ #include "ReceiverMatcher.h"
+ #include "SyncRequestID.h"
+ #include "Timeout.h"
++#if PLATFORM(VITA)
++#include <wtf/vita/VitaSharedMemory.h>
++#endif
+ #include <atomic>
+ #include <new>
+ #include <tuple>
+@@ -724,6 +727,9 @@
+ 
+     Vector<uint8_t> m_readBuffer;
+     Vector<int> m_fileDescriptors;
++#if PLATFORM(VITA)
++    std::shared_ptr<Vita::AttachmentChannel<UnixFileDescriptor>> m_vitaAttachments;
++#endif
+     std::unique_ptr<UnixMessage> m_pendingOutputMessage;
+ 
+ #if OS(ANDROID)
+--- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
++++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
+@@ -43,6 +43,7 @@
+ #include <wtf/Assertions.h>
+ #include <wtf/MallocSpan.h>
+ #include <wtf/SafeStrerror.h>
++#include <wtf/Scope.h>
+ #include <wtf/StdLibExtras.h>
+ #include <wtf/TZoneMallocInlines.h>
+ #include <wtf/UniStdExtras.h>
+@@ -115,8 +116,8 @@
+     bool isNull() const { return m_isNull; }
+ 
+ #if PLATFORM(VITA)
+-    void setFileDescriptor(int fileDescriptor) { m_fileDescriptor = fileDescriptor; }
+-    int fileDescriptor() const { return m_fileDescriptor; }
++    void setTicket(uint64_t ticket) { m_ticket = ticket; }
++    uint64_t ticket() const { return m_ticket; }
+ #endif
+ 
+ #if OS(ANDROID)
+@@ -135,9 +136,7 @@
+     bool m_isNull;
+ 
+ #if PLATFORM(VITA)
+-    // Vita runs WebKit's logical processes as threads. File descriptors therefore
+-    // share one process table and can be transferred inline after dup().
+-    int m_fileDescriptor { -1 };
++    uint64_t m_ticket { 0 };
+ #endif
+ 
+ #if OS(ANDROID)
+@@ -172,6 +171,14 @@
+ #if PLATFORM(VITA)
+     // Do not commit the full maximum for every logical WebKit connection.
+     // TCP messages grow this buffer only when an individual message needs it.
++    sockaddr_in local { }, peer { };
++    socklen_t length = sizeof(local);
++    RELEASE_ASSERT(!getsockname(socketDescriptor(), reinterpret_cast<sockaddr*>(&local), &length));
++    length = sizeof(peer);
++    RELEASE_ASSERT(!getpeername(socketDescriptor(), reinterpret_cast<sockaddr*>(&peer), &length));
++    auto low = std::min(local.sin_port, peer.sin_port);
++    auto high = std::max(local.sin_port, peer.sin_port);
++    m_vitaAttachments = Vita::AttachmentChannel<UnixFileDescriptor>::acquire((uint64_t(low) << 16) | high);
+     m_readBuffer.reserveInitialCapacity(initialReadBufferSize);
+ #else
+     m_readBuffer.reserveInitialCapacity(messageMaxSize);
+@@ -181,6 +188,9 @@
+ 
+ void Connection::platformInvalidate()
+ {
++#if PLATFORM(VITA)
++    if (m_vitaAttachments) m_vitaAttachments->close();
++#endif
+ #if USE(GLIB)
+     GUniqueOutPtr<GError> error;
+     g_socket_close(m_socket.get(), &error.outPtr());
+@@ -296,11 +306,14 @@
+ #endif
+     for (size_t i = 0; i < attachmentCount; ++i) {
+ #if PLATFORM(VITA)
+-        int fd = !attachmentInfo[i].isNull() ? attachmentInfo[i].fileDescriptor() : -1;
++        auto attachment = attachmentInfo[i].isNull() ? UnixFileDescriptor { } : m_vitaAttachments->take(attachmentInfo[i].ticket());
++        if (!attachmentInfo[i].isNull() && !attachment)
++            return false;
++        attachments[attachmentCount - i - 1] = WTFMove(attachment);
+ #else
+         int fd = !attachmentInfo[i].isNull() ? m_fileDescriptors[fdIndex++] : -1;
+-#endif
+         attachments[attachmentCount - i - 1] = UnixFileDescriptor { fd, UnixFileDescriptor::Adopt };
++#endif
+     }
+ #endif // OS(ANDROID)
+ 
+@@ -313,7 +326,7 @@
+         }
+ 
+ #if PLATFORM(VITA)
+-        auto fd = UnixFileDescriptor { attachmentInfo[attachmentCount].fileDescriptor(), UnixFileDescriptor::Adopt };
++        auto fd = m_vitaAttachments->take(attachmentInfo[attachmentCount].ticket());
+ #else
+         auto fd = UnixFileDescriptor { m_fileDescriptors[attachmentFileDescriptorCount - 1], UnixFileDescriptor::Adopt };
+ #endif
+@@ -589,14 +602,13 @@
+         if (!oolMessageBody)
+             return false;
+ 
++        memcpySpan(oolMessageBody->mutableSpan(), outputMessage.body());
+         auto handle = oolMessageBody->createHandle(WebCore::SharedMemory::Protection::ReadOnly);
+         if (!handle)
+             return false;
+ 
+         outputMessage.messageInfo().setBodyOutOfLine();
+ 
+-        memcpySpan(oolMessageBody->mutableSpan(), outputMessage.body());
+-
+         outputMessage.appendAttachment(handle->releaseHandle());
+     }
+ 
+@@ -606,6 +618,12 @@
+ bool Connection::sendOutputMessage(UnixMessage& outputMessage)
+ {
+     ASSERT(!m_pendingOutputMessage);
++#if PLATFORM(VITA)
++    auto channel = m_vitaAttachments;
++    if (!channel) return false;
++    bool sent = false;
++    auto cleanup = makeScopeExit([&] { if (!sent) channel->close(); });
++#endif
+ 
+ #if OS(ANDROID)
+     RELEASE_ASSERT(m_outgoingHardwareBuffers.isEmpty());
+@@ -698,10 +716,11 @@
+ #else
+             if (!!attachments[i]) {
+ #if PLATFORM(VITA)
+-                int duplicatedDescriptor = dup(attachments[i].value());
+-                if (duplicatedDescriptor < 0)
++                auto duplicate = attachments[i].duplicate();
++                auto ticket = channel->publish(WTFMove(duplicate));
++                if (!ticket)
+                     return false;
+-                attachmentInfo[i].setFileDescriptor(duplicatedDescriptor);
++                attachmentInfo[i].setTicket(ticket);
+ #else
+                 ASSERT(fdPtr);
+                 fdPtr[fdIndex++] = attachments[i].value();
+@@ -817,6 +836,9 @@
+     }
+ #endif
+ 
++#if PLATFORM(VITA)
++    sent = true;
++#endif
+ #if OS(ANDROID)
+     RELEASE_ASSERT(m_outgoingHardwareBuffers.isEmpty());
+     m_outgoingHardwareBuffers = WTFMove(hardwareBuffers);
+--- a/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
++++ b/Source/WebKit/UIProcess/WebsiteData/WebsiteDataStore.cpp
+@@ -234,8 +234,8 @@
+ 
+ static IsPersistent defaultDataStoreIsPersistent()
+ {
+-#if PLATFORM(GTK) || PLATFORM(WPE)
+-    // GTK and WPE ports require explicit configuration of a WebsiteDataStore. All default storage
++#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(VITA)
++    // GTK, WPE and Vita ports require explicit configuration of a WebsiteDataStore. All default storage
+     // locations are relative to the base directories configured by the
+     // WebsiteDataStoreConfiguration. The default data store should (probably?) only be used for
+     // prewarmed processes and C API tests, and should certainly never be allowed to store anything on disk.
+--- a/Source/WTF/wtf/Threading.cpp
++++ b/Source/WTF/wtf/Threading.cpp
+@@ -26,6 +26,7 @@
+ #include "config.h"
+ #if PLATFORM(VITA)
+ #include <wtf/vita/VitaThreading.h>
++#include <wtf/RuntimeApplicationChecks.h>
+ #endif
+ #include <wtf/Threading.h>
+ 
+@@ -171,6 +172,7 @@
+         , thread(WTFMove(thread))
+ #if PLATFORM(VITA)
+         , auxiliaryProcessMainRunLoop(currentThreadAuxiliaryProcessMainRunLoop())
++        , auxiliaryProcessType(processType())
+ #endif
+     {
+     }
+@@ -182,6 +184,7 @@
+     Ref<Thread> thread;
+ #if PLATFORM(VITA)
+     RunLoop* auxiliaryProcessMainRunLoop { };
++    std::optional<AuxiliaryProcessType> auxiliaryProcessType;
+ #endif
+     Mutex mutex;
+ 
+@@ -279,6 +282,8 @@
+ 
+ #if PLATFORM(VITA)
+         setCurrentThreadAuxiliaryProcessMainRunLoop(context->auxiliaryProcessMainRunLoop);
++        if (context->auxiliaryProcessType)
++            setAuxiliaryProcessType(*context->auxiliaryProcessType);
+ #endif
+ 
+ #if !HAVE(STACK_BOUNDS_FOR_NEW_THREAD)
+--- a/Source/WebCore/platform/ProcessIdentifier.cpp
++++ b/Source/WebCore/platform/ProcessIdentifier.cpp
+@@ -27,27 +27,60 @@
+ #include "ProcessIdentifier.h"
+ 
+ #include <wtf/MainThread.h>
++#if PLATFORM(VITA)
++#include <atomic>
++#include <map>
++#include <mutex>
++#include <wtf/RunLoop.h>
++#endif
++
++#if PLATFORM(VITA)
++extern "C" unsigned vitagram_webkit_process_isolation_version() { return 1; }
++#endif
+ 
+ namespace WebCore {
+ namespace Process {
+ 
++#if PLATFORM(VITA)
++// Workers inherit their logical process's main RunLoop, not its thread-local storage.
++static std::mutex identifierLock;
++static std::map<RunLoop*, ProcessIdentifier> identifiers;
++#else
+ static std::optional<ProcessIdentifier> globalIdentifier;
++#endif
+ 
+ ProcessIdentifier generateIdentifier()
+ {
+     ASSERT(isUIThread());
++#if PLATFORM(VITA)
++    static std::atomic<uint64_t> nextIdentifier { 1 };
++#else
+     static uint64_t nextIdentifier { 1 };
++#endif
+     return ProcessIdentifier(nextIdentifier++);
+ }
+ 
+ void setIdentifier(ProcessIdentifier processIdentifier)
+ {
+     ASSERT(isUIThread());
++#if PLATFORM(VITA)
++    std::lock_guard lock(identifierLock);
++    identifiers.insert_or_assign(&RunLoop::mainSingleton(), processIdentifier);
++#else
+     globalIdentifier = processIdentifier;
++#endif
+ }
+ 
+ ProcessIdentifier identifier()
+ {
++#if PLATFORM(VITA)
++    std::lock_guard lock(identifierLock);
++    auto* runLoop = &RunLoop::mainSingleton();
++    auto found = identifiers.find(runLoop);
++    if (found != identifiers.end())
++        return found->second;
++    return identifiers.emplace(runLoop, generateIdentifier()).first->second;
++#else
+     static std::once_flag onceFlag;
+     std::call_once(onceFlag, [] {
+         if (!globalIdentifier)
+@@ -55,6 +88,7 @@
+     });
+ 
+     return *globalIdentifier;
++#endif
+ }
+ 
+ } // namespace Process
+--- a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
++++ b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
+@@ -492,6 +492,10 @@
+ 
+ void NetworkConnectionToWebProcess::didReceiveInvalidMessage(IPC::Connection&, IPC::MessageName messageName, const Vector<uint32_t>&)
+ {
++#if PLATFORM(VITA)
++    extern void vitagramWebKitInvalidMessage(unsigned);
++    vitagramWebKitInvalidMessage(static_cast<unsigned>(messageName));
++#endif
+     RELEASE_LOG_FAULT(IPC, "Received an invalid message '%" PUBLIC_LOG_STRING "' from WebContent process %" PRIu64 ", requesting for it to be terminated.", description(messageName).characters(), m_webProcessIdentifier.toUInt64());
+     m_networkProcess->protectedParentProcessConnection()->send(Messages::NetworkProcessProxy::TerminateWebProcess(m_webProcessIdentifier), 0);
+ }
+--- a/Source/WebKit/NetworkProcess/NetworkProcess.cpp
++++ b/Source/WebKit/NetworkProcess/NetworkProcess.cpp
+@@ -134,6 +134,7 @@
+ namespace WebKit {
+ using namespace WebCore;
+ 
++#if !PLATFORM(VITA)
+ static void callExitSoon(IPC::Connection*)
+ {
+     // If the connection has been closed and we haven't responded in the main thread for 10 seconds
+@@ -148,6 +149,8 @@
+         terminateProcess(EXIT_FAILURE);
+     });
+ }
++
++#endif
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(NetworkProcess);
+ 
+@@ -370,7 +373,9 @@
+ 
+     // We give a chance for didClose() to get called on the main thread but forcefully call _exit() after a delay
+     // in case the main thread is unresponsive or didClose() takes too long.
++#if !PLATFORM(VITA)
+     connection->setDidCloseOnConnectionWorkQueueCallback(callExitSoon);
++#endif
+ 
+     for (auto& supplement : m_supplements.values())
+         supplement->initializeConnection(connection);
+--- a/Source/WebKit/Shared/AuxiliaryProcess.cpp
++++ b/Source/WebKit/Shared/AuxiliaryProcess.cpp
+@@ -67,9 +67,10 @@
+ 
+ void AuxiliaryProcess::didClose(IPC::Connection&)
+ {
++// Vita components share the application heap; exit() would tear it down under other threads.
+ // Stop the run loop for GTK and WPE to ensure a normal exit, since we need
+ // atexit handlers to be called to cleanup resources like EGL displays.
+-#if PLATFORM(GTK) || PLATFORM(WPE)
++#if PLATFORM(GTK) || PLATFORM(WPE) || PLATFORM(VITA)
+     stopRunLoop();
+ #else
+     terminateProcess(EXIT_SUCCESS);
+--- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
++++ b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
+@@ -94,6 +94,11 @@
+ #ifndef NDEBUG
+         fprintf(stderr, "Failed to launch process. err=0x%08x path=%s\n", appLocalPid, m_launchOptions.processPath.utf8().data());
+ #endif
++#if PLATFORM(VITA)
++        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] {
++            protectedThis->didFinishLaunchingProcess(0, IPC::Connection::Identifier { });
++        });
++#endif
+         return;
+     }
+ 
+--- a/Source/WebKit/WebProcess/WebProcess.cpp
++++ b/Source/WebKit/WebProcess/WebProcess.cpp
+@@ -279,7 +279,7 @@
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(WebProcess);
+ 
+-#if !PLATFORM(GTK) && !PLATFORM(WPE)
++#if !PLATFORM(GTK) && !PLATFORM(WPE) && !PLATFORM(VITA)
+ [[noreturn]] static void callExit(IPC::Connection*)
+ {
+     terminateProcess(EXIT_SUCCESS);
+@@ -406,14 +406,16 @@
+ // Unless the main thread doesn't exit after 10 senconds to avoid leaking the process.
+ #if PLATFORM(GTK) || PLATFORM(WPE)
+     IPC::Connection::DidCloseOnConnectionWorkQueueCallback callExitCallback = crashAfter10Seconds;
+-#else
++#elif !PLATFORM(VITA)
+     // We call _exit() directly from the background queue in case the main thread is unresponsive
+     // and AuxiliaryProcess::didClose() does not get called.
+     IPC::Connection::DidCloseOnConnectionWorkQueueCallback callExitCallback = callExit;
+ #endif
++#if !PLATFORM(VITA)
+     connection->setDidCloseOnConnectionWorkQueueCallback(callExitCallback);
+-
+-#if !PLATFORM(GTK) && !PLATFORM(WPE) && !ENABLE(IPC_TESTING_API)
++#endif
++
++#if !PLATFORM(GTK) && !PLATFORM(WPE) && !PLATFORM(VITA) && !ENABLE(IPC_TESTING_API)
+     connection->setShouldExitOnSyncMessageSendFailure(true);
+ #endif
+ 
+--- a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
++++ b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
+@@ -40,6 +40,10 @@
+ #endif
+ 
+ namespace WebKit {
++
++#if PLATFORM(VITA)
++extern "C" unsigned vitagram_webkit_view_geometry_version() { return 1; }
++#endif
+ 
+ #if USE(WPE_BACKEND_PLAYSTATION)
+ 
+@@ -101,6 +105,10 @@
+ void PlayStationWebView::setViewSize(WebCore::IntSize viewSize)
+ {
+     m_viewSize = viewSize;
++#if PLATFORM(VITA)
++    if (auto* drawingArea = m_page->drawingArea())
++        drawingArea->setSize(viewSize);
++#endif
+ }
+ 
+ void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
+--- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
++++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+@@ -461,13 +461,15 @@
+ 
+ void CurlRequest::didCompleteTransfer(CURLcode result)
+ {
+-#if PLATFORM(VITA)
+-    vita_stream_browser_trace(result == CURLE_OK ? "webkit.curl.transfer.complete" : "webkit.curl.transfer.failed");
+-#endif
+     if (isCancelled()) {
+         didCancelTransfer();
+         return;
+     }
++#if PLATFORM(VITA)
++    vita_stream_browser_trace(result == CURLE_OK ? "webkit.curl.transfer.complete" : "webkit.curl.transfer.failed");
++    if (result != CURLE_OK)
++        vita_stream_browser_trace_value("webkit.curl.error", static_cast<unsigned>(result));
++#endif
+ 
+     bool isProxyAuthenticationRequired = result == CURLE_RECV_ERROR && m_response.httpConnectCode == 407;
+     if (needToInvokeDidReceiveResponse() && (result == CURLE_OK || isProxyAuthenticationRequired)) {
+@@ -618,6 +620,7 @@
+ {
+ #if PLATFORM(VITA)
+     vita_stream_browser_trace("webkit.curl.response.dispatch");
++    vita_stream_browser_trace_value("webkit.curl.http_status", static_cast<unsigned>(response.statusCode));
+ #endif
+     ASSERT(!m_responseCompletionHandler);
+     ASSERT(!m_didNotifyResponse || m_multipartHandle);
+--- a/Source/WebKit/WebProcess/WebPage/WebPage.cpp
++++ b/Source/WebKit/WebProcess/WebPage/WebPage.cpp
+@@ -3388,6 +3388,10 @@
+ 
+ void WebPage::updateDrawingAreaLayerTreeFreezeState()
+ {
++#if PLATFORM(VITA)
++    extern void vitagramWebKitRenderingFreeze(unsigned);
++    vitagramWebKitRenderingFreeze(m_layerTreeFreezeReasons.toRaw());
++#endif
+     RefPtr drawingArea = m_drawingArea;
+     if (!drawingArea)
+         return;
+--- a/Source/WebCore/platform/network/curl/CurlContext.cpp
++++ b/Source/WebCore/platform/network/curl/CurlContext.cpp
+@@ -497,10 +497,15 @@
+     // address to CURLOPT_RESOLVE while retaining the original host for HTTP
+     // Host headers, cookies, certificate verification, and TLS SNI.
+     if (localhostAlias == LocalhostAlias::Disable) {
+-        auto host = url.host();
+-        auto port = url.port();
++        // Proxy connections resolve only the proxy; SOCKS5h/CONNECT resolve the target remotely.
++        auto resolveURL = url;
++        const auto& proxy = CurlContext::singleton().proxySettings();
++        if (proxy.mode() == CurlProxySettings::Mode::Custom)
++            resolveURL = URL { proxy.url() };
++        auto host = resolveURL.host();
++        auto port = resolveURL.port();
+         if (!port)
+-            port = WTF::defaultPortForProtocol(url.protocol());
++            port = WTF::defaultPortForProtocol(resolveURL.protocol());
+         if (!host.isEmpty() && port) {
+             auto hostString = host.toString();
+             SceNetInAddr address { };
+--- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
++++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
+@@ -36,6 +36,9 @@
+ #include "WebPageProxy.h"
+ #include <WebCore/Region.h>
+ #include <wpe/wpe.h>
++#if PLATFORM(VITA)
++#include <psp2/kernel/processmgr.h>
++#endif
+ 
+ #if USE(CAIRO)
+ #include <cairo.h>
+@@ -138,6 +141,11 @@
+     wpeEvent.x = event.position.x;
+     wpeEvent.y = event.position.y;
+     wpeEvent.modifiers = 0; // TODO: Handle modifiers.
++#if PLATFORM(VITA)
++    wpeEvent.time = static_cast<uint32_t>(sceKernelGetProcessTimeWide() / 1000);
++    if (event.type == kWKEventMouseDown && event.button == kWKEventMouseButtonLeftButton)
++        wpeEvent.modifiers |= wpe_input_pointer_modifier_button1;
++#endif
+ 
+     const float deviceScaleFactor = 1;
+ 
+@@ -152,6 +160,15 @@
+     const float deviceScaleFactor = 1;
+     int positionX = event.position.x;
+     int positionY = event.position.y;
++
++#if PLATFORM(VITA)
++    wpe_input_axis_2d_event axis { };
++    axis.base = { static_cast<wpe_input_axis_event_type>(wpe_input_axis_event_type_motion_smooth | wpe_input_axis_event_type_mask_2d),
++        static_cast<uint32_t>(sceKernelGetProcessTimeWide() / 1000), positionX, positionY, 0, 0, 0 };
++    axis.x_axis = event.delta.width;
++    axis.y_axis = event.delta.height;
++    WebKit::toImpl(pageRef)->handleNativeWheelEvent(NativeWebWheelEvent(&axis.base, deviceScaleFactor, WebWheelEvent::Phase::PhaseNone, WebWheelEvent::Phase::PhaseNone));
++#else
+ 
+     struct wpe_input_axis_event xEvent = {
+         wpe_input_axis_event_type_motion,
+@@ -168,6 +185,7 @@
+     };
+ 
+     WebKit::toImpl(pageRef)->handleNativeWheelEvent(NativeWebWheelEvent(&yEvent, deviceScaleFactor, WebWheelEvent::Phase::PhaseNone, WebWheelEvent::Phase::PhaseNone));
++#endif
+ }
+ 
+ void WKPagePaint(WKPageRef pageRef, unsigned char* surfaceData, WKSize wkSurfaceSize, WKRect wkPaintRect)

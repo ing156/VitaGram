@@ -14,9 +14,10 @@ The original license text is included as LICENSE.txt.
 
 Changes: converted panel gradients to rounded 9-slice textures at VitaGram
 sizes; removed the white label band to retain readable white text; adjusted
-focus brightness; scaled and darkened the header. Wallpaper is newly drawn
+focus brightness, added a saturated blue navigation fill and a thicker cyan focus outline;
+scaled and darkened the header. Wallpaper uses VitaGram's original shared wave design in a blue/violet palette,
 without VHBB branding. Icons/controller atlases and fonts use VitaGram's
 existing resources and their existing licenses. Segoe UI is not included.
 
-Regenerate with assets/VitaGram_UI_Assets_v1/generate_vhbb_theme.py (Pillow).
+Regenerate with assets/VitaGram_UI_Assets_v1/generate_vhbb_theme.py (Pillow/CairoSVG).
 No endorsement by VHBB's authors is implied.
