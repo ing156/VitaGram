@@ -148,6 +148,43 @@ inline void run(const std::string& directory, int64_t free_bytes, FILE* log, boo
         ok && reads.values.size() == blocks && job.writes.values.size() == blocks && !job.stop && closed == 0 && removed == 0 ? "ok" : "incomplete",
         job.error, closed, removed);
 }
+// Range downloads write far past a file's end; measure whether the filesystem zero-fills that gap.
+constexpr int64_t extend_bytes = 200LL * 1024 * 1024;
+inline void extension(const std::string& directory, int64_t free_bytes, FILE* log) {
+    if (free_bytes < reserve + extend_bytes) { std::fprintf(log, "extend result=skip_space\n"); return; }
+    std::vector<unsigned char> data(block, 0xa5);
+    for (int mode = 0; mode < 2; ++mode) {
+        const auto path = directory + "/vitagram-storage-extend.tmp";
+#ifdef __vita__
+        const int fd = sceIoOpen(path.c_str(), SCE_O_RDWR | SCE_O_CREAT | SCE_O_EXCL, 0666);
+#else
+        const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+#endif
+        if (fd < 0) { std::fprintf(log, "extend result=open_failed code=%d\n", fd); return; }
+        int rc = 0;
+        int64_t resize_us = 0;
+        if (mode == 1) {
+            const auto begin = now();
+#ifdef __vita__
+            SceIoStat stat{}; stat.st_size = extend_bytes;
+            rc = sceIoChstatByFd(fd, &stat, 0x0004); // SCE_CST_SIZE
+#else
+            rc = ::ftruncate(fd, extend_bytes);
+#endif
+            resize_us = now() - begin;
+        }
+        const auto begin = now();
+        const int wrote = rc < 0 ? rc : io(fd, data.data(), block, extend_bytes - block, true);
+        const auto write_us = now() - begin;
+#ifdef __vita__
+        sceIoClose(fd);
+#else
+        ::close(fd);
+#endif
+        std::fprintf(log, "extend mode=%s resize_rc=%d resize_us=%lld far_write_rc=%d far_write_us=%lld cleanup=%d\n",
+            mode ? "resize_then_write" : "far_write", rc, (long long)resize_us, wrote, (long long)write_us, remove(path.c_str()));
+    }
+}
 #ifdef __vita__
 inline void poll(bool (*proceed)(void*), void* context, const char* version) {
     const char* request = "ux0:data/vitagram/storage-test.request";
@@ -165,6 +202,7 @@ inline void poll(bool (*proceed)(void*), void* context, const char* version) {
         const std::string directory = std::string(mount) + "data";
         sceIoMkdir(directory.c_str(), 0777);
         run(directory, info.free_size, log, proceed, context);
+        if (proceed(context)) extension(directory, info.free_size, log);
     }
     std::fclose(log);
 }

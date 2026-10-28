@@ -101,6 +101,8 @@ public:
                 // MOV can otherwise seek past mdat to inspect trailing atoms before playing.
                 format->flags |= AVFMT_FLAG_IGNIDX;
                 clear_ignore_index_ = true;
+                opening_mp4_ = true;
+                state_->beginOpen();
             }
         }
         if (readahead) {
@@ -110,10 +112,12 @@ public:
         return 1;
     }
     void finishOpen(AVFormatContext* format) {
+        if (opening_mp4_) { state_->endOpen(); opening_mp4_ = false; }
         if (clear_ignore_index_ && format) format->flags &= ~AVFMT_FLAG_IGNIDX;
         clear_ignore_index_ = false;
     }
     void release() {
+        if (opening_mp4_) { state_->endOpen(); opening_mp4_ = false; }
         ahead_.reset(); // Join before closing the descriptor or releasing the stream.
         stream_diagnostics::remove(this);
         if (io_) { av_freep(&io_->buffer); avio_context_free(&io_); }
@@ -153,7 +157,8 @@ private:
                     std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
             }
         } waiting{self.video_waiting_};
-        int64_t last_prefix = -1;
+        int64_t last_prefix = -1, last_tail_end = -1;
+        bool last_tail_active = false;
         for (;;) {
             if (self.interrupt_.callback && self.interrupt_.callback(self.interrupt_.opaque)) return AVERROR_EXIT;
             auto s = self.state_->snapshot();
@@ -162,7 +167,7 @@ private:
             }
             if (s.size <= 0 || (!self.complete_size_ && s.path.empty())) return AVERROR(EIO);
             if (self.position_ >= s.size) return AVERROR_EOF;
-            int64_t available = std::min(s.size, s.prefix) - self.position_;
+            int64_t available = s.available(self.position_);
             const int64_t reserve = std::min(self.resume_bytes_, s.size - self.position_);
             if (available > 0 && (!waiting.active || s.complete || available >= reserve)) {
                 int count = static_cast<int>(std::min<int64_t>(requested, available));
@@ -181,12 +186,19 @@ private:
                 return static_cast<int>(got);
             }
             if (s.complete) return AVERROR(EIO);
-            stream_diagnostics::update(&self, self.video_waiting_ != nullptr, "wait_prefix", self.position_, s.prefix, s.size);
+            if (self.opening_mp4_) self.state_->requestTail(self.position_);
+            const bool tail_active = self.state_->tailActive();
+            stream_diagnostics::update(&self, self.video_waiting_ != nullptr, "wait_prefix", self.position_, s.prefix, s.size,
+                0, s.tail_begin, s.tail_end, tail_active);
             if (!waiting.active) { waiting.started = std::chrono::steady_clock::now(); waiting.active = true; }
             if (waiting.video_waiting && std::chrono::steady_clock::now() - waiting.started >= std::chrono::milliseconds(500))
                 *waiting.video_waiting = true;
-            if (s.prefix != last_prefix) { last_prefix = s.prefix; progress_at = std::chrono::steady_clock::now(); }
-            if (std::chrono::steady_clock::now() - progress_at > std::chrono::seconds(60)) return AVERROR(ETIMEDOUT);
+            if (s.prefix != last_prefix || s.tail_end != last_tail_end || tail_active != last_tail_active) {
+                last_prefix = s.prefix; last_tail_end = s.tail_end; last_tail_active = tail_active;
+                progress_at = std::chrono::steady_clock::now();
+            }
+            const auto timeout = std::chrono::microseconds(tail_active ? download_stream::tail_timeout_us : 60000000);
+            if (std::chrono::steady_clock::now() - progress_at > timeout) return AVERROR(ETIMEDOUT);
             std::unique_lock<std::mutex> lock(self.state_->mutex);
             self.state_->changed.wait_for(lock, std::chrono::milliseconds(20));
         }
@@ -211,6 +223,6 @@ private:
     AVIOContext* io_ = nullptr;
     int fd_ = -1;
     int64_t position_ = 0, complete_size_ = 0, resume_bytes_ = 0;
-    bool pinned_ = false, clear_ignore_index_ = false;
+    bool pinned_ = false, clear_ignore_index_ = false, opening_mp4_ = false;
     std::atomic<bool>* video_waiting_ = nullptr;
 };

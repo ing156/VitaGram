@@ -106,7 +106,7 @@ tests/font-stubs/*
 /release/
 /releases/
 .kilo/
-
+graphify-out/
 # download metadata and incomplete dependency downloads
 *:Zone.Identifier
 /assets/*.download.*

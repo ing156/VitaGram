@@ -23,3 +23,7 @@ trap 'rm -rf -- "$build_dir"' EXIT
 "$build_dir/chat_bubble_test"
 python3 "$root/tests/chat_modal_test.py"
 python3 "$root/tests/settings_menu_test.py"
+
+"${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -I "$root/src" \
+  "$root/tests/chat_calendar_test.cpp" -o "$build_dir/chat_calendar_test"
+"$build_dir/chat_calendar_test"

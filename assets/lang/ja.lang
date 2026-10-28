@@ -1076,3 +1076,13 @@ settings.video_480 = 最大 480p
 settings.video_720 = 最大 720p
 video.quality = 動画の画質
 video.quality_unavailable = 選択した画質は利用できません。
+
+calendar.weekday.0 = 月
+calendar.weekday.1 = 火
+calendar.weekday.2 = 水
+calendar.weekday.3 = 木
+calendar.weekday.4 = 金
+calendar.weekday.5 = 土
+calendar.weekday.6 = 日
+calendar.back = {circle} 戻る
+calendar.hint = L/R: 月 · {dpad}: 日 · {cross}: 移動 · {circle}: 戻る

@@ -12,6 +12,7 @@
 #endif
 #include "history_selection.h"
 #include "history_scroll.h"
+#include "chat_calendar.h"
 #include "chat_bubble.h"
 #include "reaction_input.h"
 #include "quote_layout.h"
@@ -1421,6 +1422,24 @@ static std::vector<HistoryRow> history_layout(vita2d_pgf* font, TelegramClient& 
     return rows;
 }
 
+struct HistoryDateChip {
+    int x = 0, y = 0, width = 0, index = -1;
+    bool hit(int px, int py) const { return index >= 0 && px >= x && px < x+width && py >= y && py < y+22; }
+};
+static HistoryDateChip history_date_chip(vita2d_pgf* font, const std::vector<HistoryRow>& rows) {
+    for (const auto& row : rows) if (row.top+row.height > history_view.top) {
+        const int width = rich_text_width(font, 0.55f, row.day.c_str())+24;
+        return {history_view.center()-width/2, std::max(history_view.top, row.day_top), width, row.index};
+    }
+    return {};
+}
+static ChatCalendar local_calendar(int64_t timestamp) {
+    SceDateTime date{}; SceRtcTick utc{}, local{};
+    if (sceRtcSetTime_t(&date, static_cast<time_t>(timestamp)) >= 0 && sceRtcGetTick(&date, &utc) >= 0 &&
+        sceRtcConvertUtcToLocalTime(&utc, &local) >= 0) sceRtcSetTick(&date, &local);
+    return {date.year, date.month, date.day};
+}
+
 static std::string delivery_label(DeliveryState state) {
     switch (state) {
         case DeliveryState::Pending: return tr("delivery.sending");
@@ -2432,12 +2451,16 @@ int main() {
         seek_open = true; seek_touching = false; touch_down = false; scrub_kind = 0;
     };
     // Tools own input, but never change the layout of the chat underneath.
+    bool calendar_open = false;
+    ChatCalendar calendar, calendar_today;
+    int64_t calendar_chat = 0, calendar_thread = 0;
+    int calendar_topic = 0;
     auto tool_window_open = [&]() {
         return search_open || stickers_open || gifs_open || reactions_open || upload_picker.active() ||
             circle_recorder.active() || recorder.active();
     };
     auto chat_modal_open = [&]() {
-        return tool_window_open() || kb.active() || qr_scanner.active() || seek_open || seek_touch_release ||
+        return calendar_open || tool_window_open() || kb.active() || qr_scanner.active() || seek_open || seek_touch_release ||
             unsupported_video_prompt || spoiler_prompt || !pending_web_link.empty() || bot_panel ||
             tg.botWebApp().phase != TelegramClient::BotWebApp::Closed || confirm_leave || compose_wheel.busy();
     };
@@ -2749,6 +2772,7 @@ int main() {
         unsigned physical_pressed = pressed;
         bool navigation_handled = false;
         auto repeat_scroll = [&](ScrollContext context, double page_steps) {
+            if (calendar_open) return;
             if ((tg.botWebApp().phase != TelegramClient::BotWebApp::Closed || (bot_panel && context != ScrollContext::Bots)) || navigation_handled || compose_wheel.busy()) return;
             navigation_handled = true;
             constexpr unsigned arrows = SCE_CTRL_UP | SCE_CTRL_DOWN;
@@ -3424,6 +3448,55 @@ int main() {
             !compose_wheel.busy() && !post_open && !photo_open && !video_fullscreen && !tg.topicsOpen() &&
             !stickers_open && !gifs_open && !chat_menu_open && !circle_recorder.active() &&
             !recorder.active() && !upload_picker.active() && pending_web_link.empty();
+        if (calendar_open && (tg.currentChatId() != calendar_chat || tg.currentThreadId() != calendar_thread ||
+            tg.currentTopicId() != calendar_topic || settings_open)) calendar_open = false;
+        if (!calendar_open && tap && chat_ui_visible() && !post_open && !photo_open && !tg.topicsOpen() &&
+            !chat_menu_open && tg.currentChatId() && history_view.historyHit(touch_x, touch_y, history_bottom)) {
+            const auto rows = history_layout(font, tg, message_index);
+            auto chip = history_date_chip(font, rows);
+            int index = chip.hit(touch_x, touch_y) ? chip.index : -1;
+            for (const auto& row : rows) if (row.day_top >= history_view.top &&
+                touch_y >= row.day_top && touch_y < row.day_top+22 &&
+                std::abs(touch_x-history_view.center()) < (rich_text_width(font, 0.55f, row.day.c_str())+24)/2)
+                index = row.index;
+            if (index >= 0) {
+                calendar_today = local_calendar(time(nullptr));
+                calendar = local_calendar(tg.messages()[index].date);
+                calendar.moveMonth(0, calendar_today);
+                calendar_chat = tg.currentChatId(); calendar_thread = tg.currentThreadId(); calendar_topic = tg.currentTopicId();
+                calendar_open = true; tap = false;
+            }
+        }
+        if (calendar_open) {
+            int chosen = 0;
+            if (pressed & SCE_CTRL_CIRCLE) calendar_open = false;
+            if (pressed & SCE_CTRL_LTRIGGER) calendar.moveMonth(-1, calendar_today);
+            if (pressed & SCE_CTRL_RTRIGGER) calendar.moveMonth(1, calendar_today);
+            int delta = (pressed & SCE_CTRL_LEFT ? -1 : pressed & SCE_CTRL_RIGHT ? 1 :
+                pressed & SCE_CTRL_UP ? -7 : pressed & SCE_CTRL_DOWN ? 7 : 0);
+            calendar.day = std::clamp(calendar.day+delta, 1, ChatCalendar::days(calendar.year, calendar.month));
+            if (pressed & SCE_CTRL_CROSS) chosen = calendar.day;
+            if (tap) {
+                if (touch_y >= 94 && touch_y < 138) {
+                    if (touch_x >= 250 && touch_x < 310) calendar.moveMonth(-1, calendar_today);
+                    if (touch_x >= 650 && touch_x < 710) calendar.moveMonth(1, calendar_today);
+                }
+                if (touch_x >= 250 && touch_x < 710 && touch_y >= 456 && touch_y < 500) calendar_open = false;
+                chosen = calendar.hit(touch_x, touch_y);
+            }
+            if (chosen && calendar.enabled(chosen, calendar_today)) {
+                SceDateTime date{};
+                date.year = calendar.year; date.month = calendar.month; date.day = chosen;
+                date.hour = 23; date.minute = 59; date.second = 59;
+                SceRtcTick local{}, utc{}; time_t timestamp = 0;
+                if (sceRtcGetTick(&date, &local) >= 0 && sceRtcConvertLocalTimeToUtc(&local, &utc) >= 0 &&
+                    sceRtcSetTick(&date, &utc) >= 0 && sceRtcGetTime_t(&date, &timestamp) >= 0 && timestamp > 0 && timestamp <= INT32_MAX) {
+                    tg.openChatDate((int32_t)std::min<int64_t>(timestamp, time(nullptr)));
+                    calendar_open = false;
+                }
+            }
+            tap = false; pressed = released = 0; scroll_direction = {}; navigation_handled = true;
+        }
         if (tap && tool_window_open() && !kb.active() && chat_view::ToolWindow::backHit(touch_x, touch_y)) {
             pressed |= SCE_CTRL_CIRCLE; tap = false;
         }
@@ -6148,12 +6221,13 @@ int main() {
             } else {
                 bot_message_hits.clear();
                 auto history_rows = history_layout(font, tg, message_index);
+                const auto date_chip = history_date_chip(font, history_rows);
                 vita2d_enable_clipping();
                 vita2d_set_clip_rectangle(history_view.left(), history_view.top, 960, history_bottom);
                 for (const auto& entry : history_rows) {
                     int i = entry.index;
                     if (!decode_cooldown) tg.ensureMessageMedia((size_t)i);
-                    if (entry.day_top >= 0) {
+                    if (entry.day_top >= 0 && entry.index != date_chip.index) {
                         int width = rich_text_width(font, 0.55f, entry.day.c_str()) + 24;
                         skin_box(ui_skin::Slice::DateChip, history_view.center()-width/2, entry.day_top, width, 22, selected, true);
                         draw_text(font, history_view.center()+12-width/2, entry.day_top+16, entry.day, muted, 0.55f);
@@ -6333,6 +6407,10 @@ int main() {
                         const int badge_left = draw_comments_badge(font, badge_right, y + time_row, m, ink, accent);
                         comments_rects.push_back({m.id, {true, (float)badge_left - 10, (float)(y + time_row - 18), (float)(badge_right - badge_left + 20), 26}});
                     }
+                }
+                if (date_chip.index >= 0) {
+                    skin_box(ui_skin::Slice::DateChip, date_chip.x, date_chip.y, date_chip.width, 22, selected, true);
+                    draw_text(font, date_chip.x+12, date_chip.y+16, message_day(msgs[date_chip.index]), muted, 0.55f);
                 }
                 vita2d_disable_clipping();
                 if (msgs.empty()) draw_text(font, history_view.left()+38, history_view.top+60, tr("chat.no_messages"), muted, 0.75f);
@@ -7217,6 +7295,34 @@ int main() {
                 draw_text(font, 28, 528, font_pending ? tr("settings.font_loading") :
                     settings_error.empty() ? tr("settings.font_hint") : std::string(settings_error), ink, 0.55f);
             } else draw_text(font, 28, 528, tr("settings.footer"), RGBA8(240,247,255,255), 0.6f);
+        }
+        if (calendar_open) {
+            vita2d_disable_clipping();
+            vita2d_draw_rectangle(0, 0, 960, 544, RGBA8(0,0,0,170));
+            skin_box(ui_skin::Slice::Panel, 250, 80, 460, 424, white, true);
+            draw_text(font, 270, 122, "<", ink, 0.8f);
+            draw_text(font, 665, 122, ">", ink, 0.8f);
+            const auto title = fit_text(font, tr(("month."+std::to_string(calendar.month)).c_str())+" "+std::to_string(calendar.year), 320, 0.65f);
+            draw_text(font, 480-rich_text_width(font, 0.65f, title.c_str())/2, 122, title, ink, 0.65f);
+            for (int c = 0; c < 7; ++c)
+                draw_text(font, 280+c*60, 170, tr(("calendar.weekday."+std::to_string(c)).c_str()), muted, 0.5f);
+            for (int d = 1; d <= ChatCalendar::days(calendar.year, calendar.month); ++d) {
+                int x = calendar.x(d), y = calendar.y(d);
+                const bool enabled = calendar.enabled(d, calendar_today);
+                if (d == calendar.day) {
+                    if (!ui_skin::nine(ui_skin::Slice::FocusRing, x, y, 54, 38)) {
+                        vita2d_draw_rectangle(x, y, 54, 2, accent);
+                        vita2d_draw_rectangle(x, y+36, 54, 2, accent);
+                        vita2d_draw_rectangle(x, y+2, 2, 34, accent);
+                        vita2d_draw_rectangle(x+52, y+2, 2, 34, accent);
+                    }
+                }
+                const std::string label = std::to_string(d);
+                draw_text(font, x+27-rich_text_width(font, 0.65f, label.c_str())/2, y+26, label, enabled ? ink : muted, 0.65f);
+                if (!enabled) vita2d_draw_line(x+15, y+18, x+39, y+18, muted);
+            }
+            draw_text(font, 272, 482, fit_text(font, tr("calendar.back"), 416, 0.55f), ink, 0.55f);
+            draw_text(font, 28, 530, fit_text(font, tr("calendar.hint"), 904, 0.5f), RGBA8(255,255,255,255), 0.5f);
         }
         vita2d_disable_clipping();
         sceGxmSetViewport(vita2d_get_context(), 480.f, 480.f, 272.f, -272.f, 0.5f, 0.5f);

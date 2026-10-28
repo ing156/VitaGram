@@ -45,7 +45,7 @@ int main() {
     bool settings_open = false, photo_open = false, video_fullscreen = false;
     bool search_open = false, stickers_open = false, gifs_open = false, reactions_open = false;
     bool seek_open = false, seek_touch_release = false, unsupported_video_prompt = false;
-    bool spoiler_prompt = false, bot_panel = false, confirm_leave = false;
+    bool spoiler_prompt = false, bot_panel = false, confirm_leave = false, calendar_open = false;
     std::string pending_web_link;
     Active upload_picker, circle_recorder, recorder, kb, qr_scanner, compose_wheel;
 '''
@@ -66,7 +66,7 @@ fixture += r'''
     bool* events[] = {&search_open, &stickers_open, &gifs_open, &reactions_open,
         &upload_picker.on, &circle_recorder.on, &recorder.on, &kb.on, &qr_scanner.on,
         &seek_open, &seek_touch_release, &unsupported_video_prompt, &spoiler_prompt,
-        &bot_panel, &confirm_leave, &compose_wheel.on};
+        &bot_panel, &confirm_leave, &compose_wheel.on, &calendar_open};
     const auto base = chat_view::layout(true, true);
     int transitions = 0;
     for (bool combined : {false, true}) for (int chat : {0, 1}) {

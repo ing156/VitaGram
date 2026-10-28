@@ -1083,3 +1083,13 @@ settings.video_480 = Hasta 480p
 settings.video_720 = Hasta 720p
 video.quality = Calidad de vídeo
 video.quality_unavailable = La calidad seleccionada no está disponible.
+
+calendar.weekday.0 = Lu
+calendar.weekday.1 = Ma
+calendar.weekday.2 = Mi
+calendar.weekday.3 = Ju
+calendar.weekday.4 = Vi
+calendar.weekday.5 = Sá
+calendar.weekday.6 = Do
+calendar.back = {circle} Atrás
+calendar.hint = L/R: mes · {dpad}: día · {cross}: ir · {circle}: atrás

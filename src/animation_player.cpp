@@ -1200,8 +1200,11 @@ void AnimationPlayer::decode(const std::string& source_path, unsigned generation
                 const int64_t packet_us = av_sat_sub64(av_rescale_q(packet->dts, stream->time_base, AV_TIME_BASE_Q), timeline_origin_us);
                 while (!interrupted(&job)) {
                     decoder_stage("pace_packet");
-                    if (paused_ && seek_base > 0 && !had_frame) break; // paused seek preview
-                    if (packet_pacer.ready(packet_us, had_frame ? video_time() : -1, sceKernelGetSystemTimeWide(),
+                    // Until the first picture after a seek, bound input from the seek target: an unpaced
+                    // flood of 13+ s of packets made SceVideodec fail with 0x8062000a.
+                    const bool seek_preview = seek_base > 0 && !had_frame;
+                    if (paused_ && seek_preview && packet_us - seek_base <= 4000000) break; // paused seek preview
+                    if (packet_pacer.ready(packet_us, had_frame ? video_time() : seek_preview ? seek_base : -1, sceKernelGetSystemTimeWide(),
                                            audio_.videoFrameStalled() || audio_.videoFrameLagging(), paused_)) break;
                     // Hardware can finish pictures while no new packet is submitted.
                     const unsigned before = frames_decoded;

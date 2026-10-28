@@ -1084,3 +1084,13 @@ settings.video_480 = En fazla 480p
 settings.video_720 = En fazla 720p
 video.quality = Video kalitesi
 video.quality_unavailable = Seçilen kalite kullanılamıyor.
+
+calendar.weekday.0 = Pt
+calendar.weekday.1 = Sa
+calendar.weekday.2 = Ça
+calendar.weekday.3 = Pe
+calendar.weekday.4 = Cu
+calendar.weekday.5 = Ct
+calendar.weekday.6 = Pa
+calendar.back = {circle} Geri
+calendar.hint = L/R: ay · {dpad}: gün · {cross}: git · {circle}: geri

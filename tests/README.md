@@ -954,3 +954,38 @@ English fallback and rejected mismatched file codes. `run-keyboard-tests.sh` loa
 a new profile from a temporary .lang, exercises touch input, registration and
 native-IME fallback, rejects malformed rows and checks invalid UTF-8. Vita file
 discovery, custom glyphs, touch geometry and actual native IME still need a device.
+
+Language dropdown (0.38.97): `python3 tests/settings_menu_test.py` also compiles
+the production language opener and confirmation handler: saved selection, automatic
+mode, cancel without applying, unknown saved code and asynchronous apply request.
+On Vita check touch/controller scrolling through the last page, language font
+loading, and light/dark/custom palettes at all font sizes.
+
+MP4 tail ranges (0.38.98): `bash tests/run-download-stream-tests.sh` checks a shared,
+bounded tail window, readable head/gap/tail extents, fallback on timeout/error,
+reader cancellation, invalidation, completion and real H.264/AAC startup before
+full download through POSIX and mocked Vita reads with bounded read-ahead.
+`bash tests/run-transfer-tests.sh` checks range request parameters, replacement of
+unsent retries, preserved head progress, full-download restoration and cancellation.
+Only MP4 opening can request one tail of at most 8 MiB; ordinary playback gaps
+and seek limits keep the sequential path. A 30-second range deadline falls back
+to the full download. Real Vita must check nonsequential file growth/free space,
+card stalls, Wi-Fi loss, close/reopen, quality switching, sleep/resume, A/V sync
+and cache encryption after completion; host tests do not establish card behavior.
+
+Chat calendar checks in `run-chat-scroll-tests.sh` cover leap years, month bounds, future dates, Monday-first cell layout, gaps and unused cells, and calendar modal visibility. On Vita verify floating date overlap, touch and controller month/day navigation, empty/error/offline history, stale replies after switching chats/topics, and light/dark/custom themes at every font size.
+
+Slow Vita tail writes (0.39.01): the stream suite advances the coordinator clock
+by the observed 58.48-second file-growth stall, verifies that the tail remains
+active, accepts late confirmed bytes after fallback and retries after reopening.
+MP4-tail and active decoder waits now allow 120 seconds; ordinary sequential
+waits retain their 60-second limit. Performance stream entries include tail
+extents and active state. Real Vita still needs to verify file-growth latency,
+first playback, reopening and cancellation; increasing the wait does not remove
+the storage cost of extending the temporary file.
+
+MP4 event ordering (0.39.02): the transfer suite delivers a newer live message
+before an older queued file update and verifies that the message publishes the
+readable tail before suppressing that update. Older messages and cached reparses
+must not rewind the stream. Real Vita must still confirm playback after the
+observed storage stall; this fix does not reduce file-extension latency.

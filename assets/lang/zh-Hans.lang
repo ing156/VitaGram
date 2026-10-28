@@ -1076,3 +1076,13 @@ settings.video_480 = 最高 480p
 settings.video_720 = 最高 720p
 video.quality = 视频画质
 video.quality_unavailable = 所选画质不可用。
+
+calendar.weekday.0 = 一
+calendar.weekday.1 = 二
+calendar.weekday.2 = 三
+calendar.weekday.3 = 四
+calendar.weekday.4 = 五
+calendar.weekday.5 = 六
+calendar.weekday.6 = 日
+calendar.back = {circle} 返回
+calendar.hint = L/R: 月份 · {dpad}: 日期 · {cross}: 跳转 · {circle}: 返回

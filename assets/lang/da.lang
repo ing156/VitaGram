@@ -1081,3 +1081,13 @@ settings.video_480 = Op til 480p
 settings.video_720 = Op til 720p
 video.quality = Videokvalitet
 video.quality_unavailable = Den valgte kvalitet er ikke tilgængelig.
+
+calendar.weekday.0 = Ma
+calendar.weekday.1 = Ti
+calendar.weekday.2 = On
+calendar.weekday.3 = To
+calendar.weekday.4 = Fr
+calendar.weekday.5 = Lø
+calendar.weekday.6 = Sø
+calendar.back = {circle} Tilbage
+calendar.hint = L/R: måned · {dpad}: dag · {cross}: gå · {circle}: tilbage

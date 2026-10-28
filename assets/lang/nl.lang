@@ -1084,3 +1084,13 @@ settings.video_480 = Tot 480p
 settings.video_720 = Tot 720p
 video.quality = Videokwaliteit
 video.quality_unavailable = De gekozen kwaliteit is niet beschikbaar.
+
+calendar.weekday.0 = Ma
+calendar.weekday.1 = Di
+calendar.weekday.2 = Wo
+calendar.weekday.3 = Do
+calendar.weekday.4 = Vr
+calendar.weekday.5 = Za
+calendar.weekday.6 = Zo
+calendar.back = {circle} Terug
+calendar.hint = L/R: maand · {dpad}: dag · {cross}: openen · {circle}: terug

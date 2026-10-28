@@ -1080,3 +1080,13 @@ settings.video_480 = Enintään 480p
 settings.video_720 = Enintään 720p
 video.quality = Videon laatu
 video.quality_unavailable = Valittu laatu ei ole saatavilla.
+
+calendar.weekday.0 = Ma
+calendar.weekday.1 = Ti
+calendar.weekday.2 = Ke
+calendar.weekday.3 = To
+calendar.weekday.4 = Pe
+calendar.weekday.5 = La
+calendar.weekday.6 = Su
+calendar.back = {circle} Takaisin
+calendar.hint = L/R: kuukausi · {dpad}: päivä · {cross}: avaa · {circle}: takaisin

@@ -18,6 +18,7 @@ int sceIoClose(int fd) { return ::close(fd); }
 int sceIoPread(int fd, void* data, unsigned size, int64_t offset) { return ::pread(fd, data, size, offset); }
 int sceIoPwrite(int fd, const void* data, unsigned size, int64_t offset) { return ::pwrite(fd, data, size, offset); }
 int sceIoRemove(const char* path) { return ::unlink(path); }
+int sceIoChstatByFd(int fd, const SceIoStat* stat, unsigned int cbit) { assert(cbit == 0x0004); return ::ftruncate(fd, stat->st_size); }
 #endif
 static bool proceed(void* value) { return *static_cast<bool*>(value); }
 int main(int argc, char** argv) {
@@ -41,6 +42,9 @@ int main(int argc, char** argv) {
     storage_probe::run(directory, storage_probe::reserve + storage_probe::file_bytes, log,
         [](void* p) { return static_cast<std::atomic<int>*>(p)->fetch_sub(1) > 0; }, &budget);
     assert(access(path.c_str(), F_OK) != 0); // Cancellation after temporary data has been written.
+    storage_probe::extension(directory, storage_probe::reserve, log);
+    storage_probe::extension(directory, storage_probe::reserve + storage_probe::extend_bytes, log);
+    assert(access((directory + "/vitagram-storage-extend.tmp").c_str(), F_OK) != 0);
     std::rewind(log);
     std::string output; char line[512]; while (std::fgets(line, sizeof(line), log)) output += line;
     assert(output.find("result=skip_space") != std::string::npos);
@@ -48,6 +52,9 @@ int main(int argc, char** argv) {
     assert(output.find("result=cancelled") != std::string::npos);
     assert(output.find("result=incomplete") != std::string::npos);
     assert(output.find("result=ok") != std::string::npos);
+    assert(output.find("extend result=skip_space") != std::string::npos);
+    assert(output.find("extend mode=far_write resize_rc=0 resize_us=0 far_write_rc=65536") != std::string::npos);
+    assert(output.find("extend mode=resize_then_write resize_rc=0") != std::string::npos);
     assert(output.find("concurrent_read_64k n=64") != std::string::npos);
     assert(output.find("concurrent_write_64k n=64") != std::string::npos);
     std::fclose(log);

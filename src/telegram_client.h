@@ -329,6 +329,7 @@ public:
     // UI thread, immediately after committing a new catalog. No network requests.
     void refreshLanguage();
     bool openPinnedMessage(int64_t message_id);
+    void openChatDate(int32_t date);
     int64_t takeMessageJump() { int64_t id = message_jump_generation_ == history_generation_ ? message_jump_ : 0; message_jump_ = 0; return id; }
     // Whether the jump taken last should also open the expanded post (true except when returning from comments to a list view).
     bool messageJumpOpensPost() const { return message_jump_post_; }
@@ -687,7 +688,7 @@ private:
     void sampleQueues(); // queue_mutex_ held; diagnostics never wait.
     std::atomic<int64_t> interaction_until_{0};
     // Set while the open chat waits for its first history page (Worker/Parser).
-    std::atomic<int64_t> foreground_until_{0};
+    std::atomic<int64_t> foreground_until_{0}, video_hold_until_{0};
     media_trash::Sweeper trash_; // Storage thread only.
     int64_t folder_selected_at_ = 0;
     bool folder_first_seen_ = false;
@@ -800,6 +801,7 @@ private:
     void requestFile(int32_t file_id, int priority = 16, bool visible_avatar=false);
     void dropListAvatarDownloads();
     void updateFile(void* file_obj, bool stream_update = true);
+    void serviceStreamTails();
     download_stream::Shared mediaStream(void* file_obj, bool live_update = false);
     std::unordered_map<int32_t, std::weak_ptr<download_stream::State>> media_streams_;
     void setInput(InputKind kind, const i18n::Text& status);

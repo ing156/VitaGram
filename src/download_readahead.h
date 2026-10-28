@@ -74,7 +74,7 @@ private:
         std::unique_lock<std::mutex> lock(mutex_);
         while (!stop_) {
             const auto snapshot = state_->snapshot();
-            const auto available = (complete_size_ ? complete_size_ : std::min(snapshot.size, snapshot.prefix)) - filled_;
+            const auto available = complete_size_ ? complete_size_ - filled_ : snapshot.available(filled_);
             if (!active_ || error_ || blocks_.size() >= 16 || available <= 0) {
                 changed_.wait_for(lock, std::chrono::milliseconds(20));
                 continue;

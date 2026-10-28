@@ -69,6 +69,7 @@ static void raw_reads() {
         char line[512]{}; assert(std::fgets(line, sizeof(line), trace)); std::fclose(trace);
         assert(std::strstr(line, "role=video stage=wait_prefix"));
         assert(std::strstr(line, "position=16 prefix=16"));
+        assert(std::strstr(line, "tail_begin=0 tail_end=0 tail_active=0"));
     }
     state->update(path, bytes.size(), 0, 80, false);
     assert(blocked.wait_for(500ms) == std::future_status::ready && blocked.get() == 64);
@@ -214,20 +215,21 @@ static void large_reads() {
     std::puts("1 GiB sparse stream: 128 MiB boundary, growing prefix, tail seek and EOF passed");
 }
 
-// Use FFmpeg's MP4 muxer to make a front-moov variant of the real H.264/AAC fixture.
-static void faststart(const char* source) {
+// Remux the fixture with interleaved audio/video and either front or trailing metadata.
+static void faststart(const char* source, bool front = true) {
+    const char* target = front ? "fast.mp4" : "tail.mp4";
     AVFormatContext *in = nullptr, *out = nullptr;
     assert(avformat_open_input(&in, source, nullptr, nullptr) >= 0);
-    assert(avformat_alloc_output_context2(&out, nullptr, "mp4", "fast.mp4") >= 0);
+    assert(avformat_alloc_output_context2(&out, nullptr, "mp4", target) >= 0);
     for (unsigned i = 0; i < in->nb_streams; ++i) {
         auto* stream = avformat_new_stream(out, nullptr);
         assert(stream && avcodec_parameters_copy(stream->codecpar, in->streams[i]->codecpar) >= 0);
         stream->codecpar->codec_tag = 0;
         stream->time_base = in->streams[i]->time_base;
     }
-    assert(avio_open(&out->pb, "fast.mp4", AVIO_FLAG_WRITE) >= 0);
+    assert(avio_open(&out->pb, target, AVIO_FLAG_WRITE) >= 0);
     AVDictionary* options = nullptr;
-    av_dict_set(&options, "movflags", "faststart", 0);
+    if (front) av_dict_set(&options, "movflags", "faststart", 0);
     assert(avformat_write_header(out, &options) >= 0);
     av_dict_free(&options);
     auto* packet = av_packet_alloc();
@@ -240,7 +242,7 @@ static void faststart(const char* source) {
     assert(rc == AVERROR_EOF && av_write_trailer(out) >= 0);
     av_packet_free(&packet);
     avio_closep(&out->pb); avformat_free_context(out); avformat_close_input(&in);
-    FILE* file = std::fopen("fast.mp4", "ab"); assert(file);
+    FILE* file = std::fopen(target, "ab"); assert(file);
     const uint8_t trailing[] = {0, 0, 0, 16, 'f', 'r', 'e', 'e', 0, 0, 0, 0, 0, 0, 0, 0};
     assert(std::fwrite(trailing, 1, sizeof(trailing), file) == sizeof(trailing));
     assert(std::fclose(file) == 0);
@@ -354,6 +356,69 @@ static void growing_mp4() {
     std::printf("Progressive MP4: %d video frames, %d audio frames; early start, starvation, rename and complete-file parity passed\n", video_frames, audio_frames);
 }
 
+static void tail_windows() {
+    using download_stream::State;
+    constexpr int64_t size = 32 * 1024 * 1024, head = 8 * 1024 * 1024, tail = size - 1024 * 1024;
+    State state(10);
+    state.update("partial", size, 0, head, false);
+    state.requestTail(tail); assert(state.pollTail(1, true) == -1);
+    state.beginOpen(); state.beginOpen();
+    state.requestTail(head + 2 * 1024 * 1024); assert(state.pollTail(1, true) == -1);
+    state.requestTail(tail);
+    assert(state.pollTail(1, true) == tail);
+    state.requestTail(tail + 65536); assert(state.pollTail(2, true) == -1);
+    state.endOpen(); // The second reader still needs the same header.
+    state.update("partial", size, tail, 65536, false);
+    auto snapshot = state.snapshot();
+    assert(snapshot.prefix == head && snapshot.available(head) == 0);
+    assert(snapshot.available(tail) == 65536 && snapshot.available(tail + 65536) == 0);
+    assert(state.pollTail(3, true) == -1);
+    state.update("partial", size, tail, size - tail, false);
+    assert(state.pollTail(4, true) == 0 && !state.tailActive());
+    state.update("partial", size, 0, head + 65536, false);
+    assert(state.snapshot().available(tail) == size - tail);
+    state.endOpen(); state.requestTail(tail); assert(state.pollTail(5, true) == -1);
+    state.update("replacement", size, 0, 16, false);
+    assert(state.snapshot().available(tail) == 0 && state.snapshot().prefix == 16);
+    for (int reason = 0; reason < 4; ++reason) {
+        State fallback(11);
+        fallback.update("partial", size, 0, head, false);
+        fallback.beginOpen(); fallback.requestTail(tail);
+        assert(fallback.pollTail(1, true) == tail);
+        if (reason == 0) fallback.tailError(tail);
+        if (reason == 1) fallback.endOpen();
+        const auto action = fallback.pollTail(reason == 2 ? download_stream::tail_timeout_us + 1 : 2, reason != 3);
+        assert(action == (reason == 3 ? -2 : 0));
+        assert(fallback.pollTail(download_stream::tail_timeout_us + 2, true) == -1);
+    }
+    State slow(13);
+    slow.update("partial", size, 0, head, false);
+    slow.beginOpen(); slow.requestTail(tail); assert(slow.pollTail(1, true) == tail);
+    assert(slow.pollTail(58478809, true) == -1 && slow.tailActive()); // Real Vita's 58.48 s file growth.
+    slow.update("partial", size, tail, size - tail, false);
+    assert(slow.snapshot().available(tail) == size - tail && slow.pollTail(58478810, true) == 0);
+    slow.endOpen();
+    State reopened(14);
+    reopened.update("partial", size, 0, head, false);
+    reopened.beginOpen(); reopened.requestTail(tail); assert(reopened.pollTail(1, true) == tail);
+    const auto previous_generation = reopened.generation;
+    reopened.endOpen(); assert(reopened.pollTail(2, true) == 0);
+    // Late updates remain valid after the ordinary download has been restored.
+    reopened.update("partial", size, tail, 65536, false);
+    assert(reopened.snapshot().available(tail) == 65536 && reopened.snapshot().prefix == head);
+    reopened.beginOpen(); reopened.requestTail(tail + 65536);
+    assert(reopened.pollTail(3, true) == tail + 65536 && reopened.generation != previous_generation);
+    reopened.update("partial", size, tail + 65536, size - tail - 65536, false);
+    assert(reopened.snapshot().available(tail) == size - tail && reopened.pollTail(4, true) == 0);
+    reopened.endOpen();
+    State complete(12);
+    complete.update("partial", size, 0, head, false);
+    complete.beginOpen(); complete.requestTail(tail); assert(complete.pollTail(1, true) == tail);
+    complete.update("final", size, 0, size, true);
+    assert(complete.pollTail(2, true) == -1 && complete.snapshot().available(head) == size - head);
+    std::puts("MP4 ranges: shared readers, gaps, bounded tail, restore, timeout, cancellation and invalidation passed");
+}
+
 static void tail_metadata(const char* path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     const auto size = int64_t(input.tellg());
@@ -367,12 +432,32 @@ static void tail_metadata(const char* path) {
     const auto waiting_view = MediaLoadView::make(size, 1024 * 1024, false, opened);
     assert(waiting_view.downloading && waiting_view.waiting && !waiting_view.controls);
     assert(waiting_view.percent > 0 && waiting_view.percent < 100);
+    std::atomic<bool> audio_first{false}, audio_opened{false};
+    auto audio = std::async(std::launch::async, [&] { return decode(state, AVMEDIA_TYPE_AUDIO, audio_first, &audio_opened); });
+    int64_t offset = -1;
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (offset < 0 && std::chrono::steady_clock::now() < deadline) {
+        offset = state->pollTail(1, true);
+        std::this_thread::sleep_for(1ms);
+    }
+    assert(offset > 1024 * 1024 && size - offset <= download_stream::mp4_tail_bytes);
+    state->update(path, size, offset, 0, false);
+    assert(state->snapshot().prefix == 1024 * 1024 && state->snapshot().available(offset) == 0);
+    state->update(path, size, offset, size - offset, false);
+    while ((!first || !audio_first) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    assert(opened && audio_opened && first && audio_first && !state->snapshot().complete);
+    assert(state->pollTail(2, true) == 0); // Restore sequential download after the tail.
+    assert(state->snapshot().available(1024 * 1024) == 0); // The gap was never published.
     state->update(path, size, 0, size, true);
-    assert(job.wait_for(20s) == std::future_status::ready && job.get() > 0);
+    const auto completed = job.wait_for(20s);
+    if (completed != std::future_status::ready) stream_diagnostics::write(stderr);
+    assert(completed == std::future_status::ready && job.get() > 0);
+    assert(audio.wait_for(20s) == std::future_status::ready && audio.get() > 0);
     assert(first && !download_stream::reading());
     const auto completed_view = MediaLoadView::make(size, size, true, opened);
     assert(completed_view.controls && !completed_view.downloading && !completed_view.waiting);
-    std::puts("MP4 tail metadata: waits for missing header bytes and decodes after completion");
+    std::puts("MP4 tail metadata: video and audio start from head + tail before full download");
 }
 
 static void seek_target(const char* path) {
@@ -468,7 +553,7 @@ static void read_ahead_stall() {
 int main(int argc, char** argv) {
     assert(argc == 2);
     av_log_set_level(AV_LOG_ERROR);
-    read_ahead_stall(); raw_reads(); video_buffer_window(); completed_snapshot(); large_reads(); faststart(argv[1]); large_mp4(); growing_mp4(); tail_metadata(argv[1]); seek_target(argv[1]);
+    tail_windows(); read_ahead_stall(); raw_reads(); video_buffer_window(); completed_snapshot(); large_reads(); faststart(argv[1]); large_mp4(); growing_mp4(); faststart(argv[1], false); tail_metadata("tail.mp4"); seek_target(argv[1]);
     assert(MediaLoadView::make(0, 262144, false, false).percent == -1);
     assert(MediaLoadView::make(1024, 2048, false, false).percent == 99);
     assert(MediaLoadView::make(1024, 1024, true, false).waiting); // Download complete; decoder still opening.

@@ -1188,3 +1188,13 @@ settings.section.updates = Updates and installation
 settings.section.about = About and diagnostics
 common.back = Back
 settings.cache_cleanup_hint = Applies retention and size limits; does not clear all media.
+
+calendar.weekday.0 = Mo
+calendar.weekday.1 = Tu
+calendar.weekday.2 = We
+calendar.weekday.3 = Th
+calendar.weekday.4 = Fr
+calendar.weekday.5 = Sa
+calendar.weekday.6 = Su
+calendar.back = {circle} Back
+calendar.hint = L/R: month · {dpad}: day · {cross}: go · {circle}: back

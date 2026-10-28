@@ -169,17 +169,6 @@ local logs, crash dumps, API configuration, account data or signing keys.
 
 ### Local release preparation / Локальная подготовка выпуска
 
-The prepared notes for the current release are in
-[releases/v0.38.07.md](releases/v0.38.07.md). The local bundle is
-`release/v0.38.07/`; it is intentionally ignored by Git. Use its `RELEASE.md`
-as the GitHub release body and attach `vitagram.vpk`, `vitagram.vpk.sig`,
-`VitaGram-Palette-Studio.html` and `SHA256SUMS`. The ZIP is a convenience copy
-of the complete bundle, not an additional updater package.
-
-Описание текущего выпуска: [releases/v0.38.07.md](releases/v0.38.07.md).
-Локальный комплект: `release/v0.38.07/`; он намеренно не добавляется в Git.
-В нём лежат VPK, подпись, автономный мастер, описание, лицензия и SHA256SUMS.
-ZIP рядом с каталогом — копия этого комплекта для переноса.
 
 If the release version changes before pushing, update the CMake version fields,
 README and release notes, rebuild the VPK/editor, sign with the new app version,

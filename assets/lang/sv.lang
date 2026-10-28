@@ -1080,3 +1080,13 @@ settings.video_480 = Upp till 480p
 settings.video_720 = Upp till 720p
 video.quality = Videokvalitet
 video.quality_unavailable = Den valda kvaliteten är inte tillgänglig.
+
+calendar.weekday.0 = Må
+calendar.weekday.1 = Ti
+calendar.weekday.2 = On
+calendar.weekday.3 = To
+calendar.weekday.4 = Fr
+calendar.weekday.5 = Lö
+calendar.weekday.6 = Sö
+calendar.back = {circle} Tillbaka
+calendar.hint = L/R: månad · {dpad}: dag · {cross}: gå · {circle}: tillbaka

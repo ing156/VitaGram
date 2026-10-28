@@ -385,6 +385,8 @@ int main(int argc, char** argv) {
     // ...but not indefinitely: an open video must not starve thumbnails and avatars.
     assert(!td_request_allowed(1,false,false,false,true,kTdHoldMaxUs-1));
     assert(td_request_allowed(1,false,false,false,true,kTdHoldMaxUs));
+    assert(!td_request_allowed(1,false,false,false,true,kTdHoldMaxUs * 20,true)); // open video keeps background held
+    assert(td_request_allowed(9,false,false,false,true,0,true));
     assert(td_request_allowed(1,false,false,true,false,kTdHoldMaxUs));
     assert(!td_request_allowed(1,false,true,false,true,kTdHoldMaxUs)); // Congestion still applies.
     assert(td_request_allowed(5,false,false,true));

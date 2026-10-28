@@ -28,6 +28,11 @@ int sceIoPread(int fd, void* data, unsigned size, int64_t offset) {
     if (mode == 2) return static_cast<int>(0x80010005u);
     return ::pread(fd, data, size, offset);
 }
+#include <sys/stat.h>
+#include <psp2/io/stat.h>
+static int resized = 0;
+int sceIoGetstatByFd(int fd, SceIoStat* out) { struct stat s{}; const int rc = fstat(fd, &s); out->st_size = s.st_size; return rc; }
+int sceIoChstatByFd(int fd, const SceIoStat* in, unsigned int bits) { assert(bits == 0x0004); ++resized; return ftruncate(fd, in->st_size); }
 int main() {
     char path[] = "/tmp/vitagram-positioned-XXXXXX";
     int temporary = mkstemp(path); assert(temporary >= 0); ::close(temporary);
@@ -37,9 +42,11 @@ int main() {
     file.enable_native_positioned_io(td::CSlice(static_cast<const char*>(path)), true).ensure(); assert(opened == 1);
     file.seek(7).ensure();
     mode = 1; assert(file.pwrite("abcd", 1024).move_as_ok() == 4);
+    assert(resized == 1); // A gap past EOF is sized before the write.
     assert(trace_path == path && trace_fd == file.get_native_fd().fd());
     assert(trace_offset == 1024 && trace_bytes == 4);
     assert(lseek(file.get_native_fd().fd(), 0, SEEK_CUR) == 7);
+    assert(file.pwrite("ef", 1028).move_as_ok() == 2 && resized == 1); // Appends never resize.
     char data[4]{}; mode = 1;
     assert(file.pread(td::MutableSlice(data, 4), 1024).move_as_ok() == 4);
     assert(td::Slice(data, 4) == "abcd");

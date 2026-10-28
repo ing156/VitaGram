@@ -1949,6 +1949,54 @@ int main() {
         pins.worker_started_=false;
     }
 
+    {
+        TelegramClient client;
+        client.current_chat_id_ = 42; client.ready_ = client.worker_started_ = true;
+        auto request = [&] { return parse(client.outgoing_.back().text.c_str()); };
+        auto reply = [&](const char* text) {
+            auto* req = request(); auto* result = parse(text);
+            json_object_set(result, "@extra", json_object_get(req, "@extra"));
+            json_decref(req); client.process(result);
+        };
+        client.openChatDate(0); assert(client.outgoing_.empty());
+        client.ready_ = false; client.openChatDate(1700000000);
+        assert(client.outgoing_.empty() && !client.historyError().empty()); client.ready_ = true;
+        client.openChatDate(1700000000);
+        auto* req = request();
+        assert(MediaUploads::string(req, "@type") == "getChatMessageByDate");
+        assert(MediaUploads::number(req, "date") == 1700000000); json_decref(req);
+        auto* stale = parse(R"({"@type":"message","id":500,"chat_id":42})");
+        req = request(); json_object_set(stale, "@extra", json_object_get(req, "@extra")); json_decref(req);
+        client.openChatDate(1700000100);
+        const auto count = client.outgoing_.size(); client.process(stale);
+        assert(client.outgoing_.size() == count && client.history_pending_);
+        reply(R"({"@type":"message","id":501,"chat_id":42})");
+        req = request();
+        assert(MediaUploads::string(req, "@type") == "getChatHistory");
+        assert(MediaUploads::number(req, "from_message_id") == 501);
+        assert(MediaUploads::number(req, "limit") == 60); json_decref(req);
+        client.current_topic_ = 7;
+        client.openChatDate(1700000000);
+        reply(R"({"@type":"message","id":600,"chat_id":42})");
+        req = request();
+        assert(MediaUploads::string(req, "@type") == "searchChatMessages");
+        assert(MediaUploads::number(json_object_get(req, "topic_id"), "forum_topic_id") == 7); json_decref(req);
+        reply(R"({"@type":"foundChatMessages","messages":[{"id":550,"chat_id":42}]})");
+        req = request(); assert(MediaUploads::number(req, "from_message_id") == 550);
+        assert(MediaUploads::string(req, "@type") == "getForumTopicHistory"); json_decref(req);
+        client.current_topic_ = 0; client.current_thread_ = 99;
+        client.openChatDate(1700000000);
+        reply(R"({"@type":"message","id":600,"chat_id":42})");
+        req = request(); assert(MediaUploads::number(json_object_get(req, "topic_id"), "message_thread_id") == 99); json_decref(req);
+        reply(R"({"@type":"foundChatMessages","messages":[]})");
+        assert(!client.history_pending_ && !client.historyError().empty());
+        client.openChatDate(1700000000);
+        reply(R"({"@type":"error","code":404,"message":"Not found"})");
+        assert(!client.history_pending_ && !client.historyError().empty());
+        client.worker_started_ = false;
+        std::puts("Chat date jump: bounded windows, stale replies, topics, comments and missing dates passed");
+    }
+
     TelegramClient speech;
     speech.current_chat_id_=42;
     speech.process(parse(R"({"@type":"updateNewMessage","message":{"id":501,"chat_id":42,"content":{"@type":"messageVoiceNote","voice_note":{"duration":8,"voice":{"id":50},"speech_recognition_result":{"@type":"speechRecognitionResultPending","partial_text":"Привет"}}}}})"));
@@ -2731,6 +2779,66 @@ int main() {
         assert(streaming.media_streams_.empty());
     }
     std::puts("Progressive playback: live prefix bounds, offset gaps, stale message metadata, completion before cache validation and stable source passed");
+
+    {
+        TelegramClient client;
+        client.ready_ = client.worker_started_ = true;
+        client.active_animation_file_ = 902;
+        auto stream = std::make_shared<download_stream::State>(902);
+        client.media_streams_[902] = stream;
+        constexpr int64_t size = 32 * 1024 * 1024, head = 8 * 1024 * 1024, tail = size - 1024 * 1024;
+        stream->update("partial.mp4", size, 0, head, false);
+        stream->beginOpen(); stream->requestTail(tail);
+        client.requestFile(902, 32); assert(client.outgoing_.size() == 1);
+        client.serviceStreamTails();
+        assert(client.outgoing_.size() == 1); // Unsent full request replaced, not stacked.
+        auto* request = parse(client.outgoing_.back().text.c_str());
+        assert(MediaUploads::number(request, "offset") == tail && MediaUploads::number(request, "limit") == size - tail);
+        json_decref(request);
+        client.requestFile(902, 32); client.serviceStreamTails(); assert(client.outgoing_.size() == 1);
+        client.process(parse(R"({"@type":"updateFile","file":{"@type":"file","id":902,"size":33554432,"local":{"path":"partial.mp4","is_downloading_completed":false,"download_offset":32505856,"downloaded_prefix_size":1048576,"downloaded_size":9437184}}})"));
+        assert(stream->snapshot().prefix == head && stream->snapshot().available(tail) == size - tail);
+        client.serviceStreamTails();
+        assert(client.outgoing_.size() == 1);
+        request = parse(client.outgoing_.back().text.c_str());
+        assert(MediaUploads::number(request, "offset") == 0 && MediaUploads::number(request, "limit") == 0);
+        json_decref(request); stream->endOpen();
+        client.outgoing_.clear();
+        auto canceled = std::make_shared<download_stream::State>(903);
+        client.media_streams_[903] = canceled; client.active_animation_file_ = 903;
+        canceled->update("partial.mp4", size, 0, head, false);
+        canceled->beginOpen(); canceled->requestTail(tail); client.serviceStreamTails();
+        assert(client.outgoing_.size() == 1);
+        auto* stale_error = parse(R"({"@type":"error","code":400,"message":"old range"})");
+        json_object_set_new(stale_error, "@extra", json_pack("{s:s,s:i,s:I,s:I}", "kind", "stream_tail", "file", 903,
+            "offset", (json_int_t)tail, "generation", (json_int_t)stream->generation));
+        client.process(stale_error); client.serviceStreamTails();
+        assert(canceled->tailActive() && client.outgoing_.size() == 1);
+        client.active_animation_file_ = 0; client.serviceStreamTails();
+        assert(client.outgoing_.empty() && !canceled->tailActive());
+        canceled->endOpen(); client.worker_started_ = false;
+    }
+    std::puts("MP4 tail transfer: bounded request, retry isolation, prefix preservation, full-download restore and queued cancellation passed");
+
+    {
+        TelegramClient client;
+        auto stream = std::make_shared<download_stream::State>(904);
+        client.media_streams_[904] = stream;
+        constexpr int64_t size = 33554432, head = 8388608, tail = 32505856;
+        stream->update("partial.mp4", size, 0, head, false);
+        stream->beginOpen(); stream->requestTail(tail);
+        assert(stream->pollTail(1, true) == tail);
+        // Foreground messages can overtake queued file updates after a storage stall.
+        client.process(parse(R"({"@type":"message","@received_at":200,"id":904,"chat_id":42,"content":{"@type":"messageVideo","video":{"video":{"@type":"file","id":904,"size":33554432,"local":{"path":"partial.mp4","is_downloading_completed":false,"download_offset":32505856,"downloaded_prefix_size":1048576}}}}})"));
+        client.process(parse(R"({"@type":"updateFile","@received_at":100,"file":{"@type":"file","id":904,"size":33554432,"local":{"path":"partial.mp4","is_downloading_completed":false,"download_offset":32505856,"downloaded_prefix_size":1048576}}})"));
+        assert(stream->snapshot().prefix == head && stream->snapshot().available(tail) == size - tail);
+        client.process(parse(R"({"@type":"message","@received_at":150,"id":904,"chat_id":42,"content":{"@type":"messageVideo","video":{"video":{"@type":"file","id":904,"size":33554432,"local":{"path":"old.mp4","is_downloading_completed":false,"download_offset":0,"downloaded_prefix_size":0}}}}})"));
+        assert(stream->snapshot().path == "partial.mp4" && stream->snapshot().prefix == head);
+        assert(stream->snapshot().available(tail) == size - tail);
+        assert(stream->pollTail(2, true) == 0);
+        stream->endOpen();
+    }
+    std::puts("MP4 tail events: newer message publishes extents before suppressing older file updates; stale messages cannot rewind playback");
 
     // Real disk cleanup, asynchronous lifecycle and crash recovery, using only
     // the test runner's isolated temporary working directory.

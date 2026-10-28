@@ -1076,3 +1076,13 @@ settings.video_480 = 최대 480p
 settings.video_720 = 최대 720p
 video.quality = 동영상 화질
 video.quality_unavailable = 선택한 화질을 사용할 수 없습니다.
+
+calendar.weekday.0 = 월
+calendar.weekday.1 = 화
+calendar.weekday.2 = 수
+calendar.weekday.3 = 목
+calendar.weekday.4 = 금
+calendar.weekday.5 = 토
+calendar.weekday.6 = 일
+calendar.back = {circle} 뒤로
+calendar.hint = L/R: 월 · {dpad}: 날짜 · {cross}: 이동 · {circle}: 뒤로
